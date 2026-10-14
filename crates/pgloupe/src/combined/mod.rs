@@ -1,12 +1,14 @@
 //! The combined report: log statistics joined with `pg_stat_statements` deltas.
 
 mod findings;
+mod html;
 mod join;
 #[cfg(test)]
 mod testkit;
 mod text;
 
 pub use findings::{Context, findings};
+pub use html::{HtmlError, html};
 pub use join::{Joined, join, rank};
 pub use text::text;
 

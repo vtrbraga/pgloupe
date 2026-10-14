@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pgloupe report</title>
+<style>{{ css }}</style>
+</head>
+<body>
+<header>
+<h1>pgloupe report</h1>
+<p class="meta">
+<span>{{ report.generator }}</span>
+{% if report.inputs.logs %}<span>logs: {{ report.inputs.logs.source }} ({{ report.inputs.logs.inputs }} input{% if report.inputs.logs.inputs != 1 %}s{% endif %}){% if report.windows.logs %} {{ report.windows.logs.from }} → {{ report.windows.logs.to }}{% endif %}</span>{% else %}<span>logs: none</span>{% endif %}
+{% if report.inputs.stats %}<span>pg_stat_statements: {{ report.windows.stats.from }} → {{ report.windows.stats.to }} (server {{ report.inputs.stats.server_version_num }}, reset {{ report.inputs.stats.reset }})</span>{% else %}<span>pg_stat_statements: none</span>{% endif %}
+{% if report.windows.overlap_pct is not none %}<span>overlap: {{ report.windows.overlap_pct|round(0)|int }}%</span>{% endif %}
+</p>
+</header>
+<main>
+
+{% if report.findings %}
+<section id="findings">
+<h2>Findings</h2>
+<ul class="findings">
+{% for f in report.findings %}<li class="finding {{ f.severity }}"><code>{{ f.code }}</code>{{ f.message }}</li>
+{% endfor %}</ul>
+</section>
+{% endif %}
+
+<section id="summary">
+<h2>Summary</h2>
+<div class="cards">
+{% if report.logs %}
+<div class="card"><b>{{ report.logs.overview.records|n }}</b><span>log records</span></div>
+<div class="card"><b>{{ report.logs.errors|length }}</b><span>error kinds</span></div>
+<div class="card"><b>{{ report.logs.locks.waits|int }}</b><span>lock waits</span></div>
+<div class="card"><b>{{ report.logs.temp_files.bytes|bytes }}</b><span>temp files</span></div>
+{% endif %}
+{% if report.inputs.stats %}
+<div class="card"><b>{{ report.inputs.stats.counts.entries|int }}</b><span>statistics entries</span></div>
+<div class="card"><b>{{ report.inputs.stats.counts.new|int }}</b><span>new in window</span></div>
+{% endif %}
+<div class="card"><b>{{ report.statements|length }}</b><span>statements shown (by {{ report.statements_by }})</span></div>
+</div>
+</section>
+
+<section id="statements">
+<h2>Statements</h2>
+{% if report.statements %}
+<input id="filter" class="filter" type="search" placeholder="filter statements (needs JavaScript)" aria-label="filter statements">
+<table id="statements-table">
+<thead><tr>
+<th data-sort>link</th><th class="num" data-sort>log calls</th><th class="num" data-sort>stats calls</th><th class="num" data-sort>coverage</th>
+<th class="num" data-sort>total</th><th class="num" data-sort>mean</th><th class="num" data-sort>p95</th><th class="num" data-sort>max</th>
+<th class="num" data-sort>share</th><th class="num" data-sort>errors</th><th data-sort>statement</th>
+</tr></thead>
+<tbody>
+{% for row in report.statements %}
+{% set total = row.stats.total_exec_ms if row.stats else (row.log.total_ms if row.log else none) %}
+{% set mean = row.stats.mean_ms if row.stats else (row.log.mean_ms if row.log else none) %}
+{% set share = row.stats.share_pct if row.stats else (row.log.share_pct if row.log else none) %}
+<tr data-text="{{ row.text|lower }}">
+<td><span class="link {{ row.link }}">{{ row.link }}</span></td>
+<td class="num" data-v="{{ row.log.calls if row.log else '' }}">{% if row.log %}{{ row.log.calls|n }}{% else %}—{% endif %}</td>
+<td class="num" data-v="{{ row.stats.calls if row.stats else '' }}">{% if row.stats %}{{ row.stats.calls|n }}{% else %}—{% endif %}</td>
+<td class="num" data-v="{{ row.coverage if row.coverage is not none else '' }}">{{ row.coverage|coverage }}</td>
+<td class="num" data-v="{{ total if total is not none else '' }}">{{ total|ms }}</td>
+<td class="num" data-v="{{ mean if mean is not none else '' }}">{{ mean|ms }}</td>
+<td class="num" data-v="{{ row.log.p95_ms if row.log and row.log.p95_ms is not none else '' }}">{{ (row.log.p95_ms if row.log else none)|ms }}</td>
+<td class="num" data-v="{{ row.log.max_ms if row.log and row.log.max_ms is not none else '' }}">{{ (row.log.max_ms if row.log else none)|ms }}</td>
+<td class="num" data-v="{{ share if share is not none else '' }}">{{ share|pct }}</td>
+<td class="num" data-v="{{ row.log.errors if row.log else '' }}">{% if row.log %}{{ row.log.errors|int }}{% else %}—{% endif %}</td>
+<td><details><summary><code>{{ row.text|cut(110) }}</code></summary>
+<pre>{{ row.text }}</pre>
+<div>fingerprint <code>{{ row.fingerprint|short }}</code>{% if row.stats %} · {{ row.stats.entries }} statistics entr{% if row.stats.entries == 1 %}y{% else %}ies{% endif %}, queryid {% for q in row.stats.queryids %}<code>{{ q }}</code> {% endfor %}{% if row.stats.queryid_count > row.stats.queryids|length %}(+{{ row.stats.queryid_count - row.stats.queryids|length }} more){% endif %}{% endif %}{% if row.query_id_matches is not none %} · logged query_id {% if row.query_id_matches %}matches{% else %}does not match{% endif %}{% endif %}</div>
+{% if row.stats %}<div>statistics: {{ row.stats.rows|int }} rows · {{ row.stats.shared_blks_hit|int }} shared hit · {{ row.stats.shared_blks_read|int }} shared read · {{ row.stats.temp_blks_written|int }} temp written · WAL {{ row.stats.wal_bytes|bytes }}{% if row.stats.flags %} · <span class="flags">{{ row.stats.flags|join(", ") }}</span>{% endif %}</div>{% endif %}
+{% if row.log %}<div>log: p50 {{ row.log.p50_ms|ms }} · p95 {{ row.log.p95_ms|ms }} · p99 {{ row.log.p99_ms|ms }} · max {{ row.log.max_ms|ms }} · {{ row.log.lock_waits|int }} lock waits ({{ row.log.lock_wait_ms|ms }}) · {{ row.log.temp_files|int }} temp files ({{ row.log.temp_bytes|bytes }})</div>{% endif %}
+</details></td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+{% else %}
+<p class="none">No statements.</p>
+{% endif %}
+</section>
+
+{% if report.logs %}
+<section id="errors">
+<h2>Errors</h2>
+{% if report.logs.errors %}
+<table><thead><tr><th>level</th><th>sqlstate</th><th class="num">count</th><th>first message</th><th>first seen</th><th>last seen</th></tr></thead><tbody>
+{% for e in report.logs.errors %}<tr><td>{{ e.level }}</td><td>{{ e.sqlstate or "—" }}</td><td class="num">{{ e.count|int }}</td><td>{{ e.first_message }}</td><td>{{ e.first_seen }}</td><td>{{ e.last_seen }}</td></tr>
+{% endfor %}</tbody></table>
+{% else %}<p class="none">None.</p>{% endif %}
+</section>
+
+<section id="locks">
+<h2>Locks</h2>
+<p>{{ report.logs.locks.waits|int }} waits, {{ report.logs.locks.acquired|int }} acquired, total wait {{ report.logs.locks.total_wait_ms|ms }}, longest {{ report.logs.locks.max_wait_ms|ms }}, {{ report.logs.locks.deadlocks|int }} deadlocks.</p>
+</section>
+
+<section id="temp-files">
+<h2>Temp files</h2>
+<p>{{ report.logs.temp_files.files|int }} files, {{ report.logs.temp_files.bytes|bytes }} in total, largest {{ report.logs.temp_files.max_bytes|bytes }}.</p>
+</section>
+
+<section id="connections">
+<h2>Connections</h2>
+<p>{{ report.logs.connections.received|int }} received, {{ report.logs.connections.authenticated|int }} authenticated, {{ report.logs.connections.authorized|int }} authorized, {{ report.logs.connections.disconnections|int }} disconnections{% if report.logs.connections.session_ms.count %}; sessions p50 {{ report.logs.connections.session_ms.p50|ms }}, p95 {{ report.logs.connections.session_ms.p95|ms }}, longest {{ report.logs.connections.session_ms.max|ms }}{% endif %}.</p>
+</section>
+
+<section id="checkpoints">
+<h2>Checkpoints</h2>
+{% if report.logs.checkpoints %}
+<table><thead><tr><th>kind</th><th class="num">started</th><th class="num">completed</th><th>reasons</th><th class="num">buffers</th><th class="num">write p95</th><th class="num">sync p95</th><th class="num">total p95</th></tr></thead><tbody>
+{% for c in report.logs.checkpoints %}<tr><td>{{ c.kind }}</td><td class="num">{{ c.started|int }}</td><td class="num">{{ c.completed|int }}</td><td>{% for name, n in c.reasons|items %}{{ name }}: {{ n }}{% if not loop.last %}, {% endif %}{% endfor %}</td><td class="num">{{ c.buffers|int }}</td><td class="num">{{ c.write_ms.p95|ms }}</td><td class="num">{{ c.sync_ms.p95|ms }}</td><td class="num">{{ c.total_ms.p95|ms }}</td></tr>
+{% endfor %}</tbody></table>
+{% else %}<p class="none">None.</p>{% endif %}
+</section>
+
+<section id="autovacuum">
+<h2>Autovacuum</h2>
+{% if report.logs.autovacuum %}
+<table><thead><tr><th>table</th><th class="num">vacuums</th><th class="num">analyzes</th><th class="num">total time</th><th class="num">longest</th></tr></thead><tbody>
+{% for t in report.logs.autovacuum %}<tr><td>{{ t.table }}</td><td class="num">{{ t.vacuums|int }}</td><td class="num">{{ t.analyzes|int }}</td><td class="num">{{ t.total_ms|ms }}</td><td class="num">{{ t.max_ms|ms }}</td></tr>
+{% endfor %}</tbody></table>
+{% else %}<p class="none">None.</p>{% endif %}
+</section>
+
+<section id="timeline">
+<h2>Timeline</h2>
+<p class="none">Statements per {{ bucket_label }} bucket, errors in red.</p>
+{{ timeline_svg }}
+</section>
+
+<section id="diagnostics">
+<h2>Diagnostics</h2>
+<p>{{ report.logs.diagnostics.lines|int }} lines, {{ report.logs.diagnostics.records|n }} records, {{ report.logs.diagnostics.skipped|int }} skipped, {{ report.logs.diagnostics.unparsed_statements|int }} unparsed statements.</p>
+{% if report.logs.diagnostics.warnings %}<ul>{% for w in report.logs.diagnostics.warnings %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}
+{% if report.logs.diagnostics.unmatched_shapes %}<p>Most common lines that could not be decoded:</p><ul>{% for s in report.logs.diagnostics.unmatched_shapes %}<li>{{ s.count }}× <code>{{ s.shape }}</code> (first at line {{ s.first_line }})</li>{% endfor %}</ul>{% endif %}
+<p class="none">Files: {% for f in report.logs.files %}{{ f.path }} ({{ f.format }}, {{ f.bytes|bytes }}){% if not loop.last %}; {% endif %}{% endfor %}</p>
+</section>
+{% endif %}
+
+</main>
+<footer>{{ report.generator }} · schema {{ report.schema_version }}</footer>
+<script type="application/json" id="pgloupe-data">{{ data_json }}</script>
+<script>{{ js }}</script>
+</body>
+</html>
