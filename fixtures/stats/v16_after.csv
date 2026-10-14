@@ -1,0 +1,2 @@
+snapshot_at,server_version_num,datname,rolname,userid,dbid,toplevel,queryid,query,calls,total_exec_time,rows
+2026-10-14 10:10:00+00,160005,pagila,postgres,10,16387,t,1,SELECT 1,2,2.0,2

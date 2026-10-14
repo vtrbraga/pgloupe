@@ -1,0 +1,2 @@
+snapshot_at,server_version_num,userid,dbid,queryid,query,calls,total_time,rows
+2026-10-14 10:10:00+00,120010,10,16387,1,SELECT 1,2,2.0,2

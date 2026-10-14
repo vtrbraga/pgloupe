@@ -1,0 +1,5 @@
+snapshot_at,server_version_num,datname,rolname,userid,dbid,toplevel,queryid,query,calls,total_exec_time,rows
+2026-10-14 10:10:00+00,170011,pagila,postgres,10,16387,t,1,SELECT * FROM film WHERE film_id = $1,160,80.0,160
+2026-10-14 10:10:00+00,170011,pagila,postgres,10,16387,t,2,UPDATE film SET rental_rate = $1,14,600.0,14
+2026-10-14 10:10:00+00,170011,pagila,postgres,10,16387,t,4,SELECT 1,20,2.0,20
+2026-10-14 10:10:00+00,170011,pagila,postgres,10,16387,t,5,DELETE FROM rental WHERE rental_id = $1,2,70.0,2

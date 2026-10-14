@@ -1,22 +1,17 @@
-use clap::Parser;
+use std::process::ExitCode;
 
-/// A close look at your Postgres logs and query stats.
-#[derive(Debug, Parser)]
-#[command(version, about)]
-struct Cli;
+use clap::Parser as _;
+use pgloupe::cli::{Cli, run};
 
-fn main() {
-    Cli::parse();
-    println!("pgloupe {}", env!("CARGO_PKG_VERSION"));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::CommandFactory;
-
-    #[test]
-    fn cli_is_well_formed() {
-        Cli::command().debug_assert();
+fn main() -> ExitCode {
+    match run(&Cli::parse()) {
+        Ok(output) => {
+            print!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: {err:#}");
+            ExitCode::FAILURE
+        }
     }
 }

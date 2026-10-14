@@ -15,6 +15,19 @@ cargo run -p pgloupe -- --help
 
 Sanitized test fixtures live in `fixtures/`. Raw logs and stats exports are never committed.
 
+## Stats diff
+
+Compare two `pg_stat_statements` exports (see `docs/data-export.md` in the planning folder for the `psql` commands):
+
+```bash
+cargo run -p pgloupe -- stats diff before.csv after.csv
+cargo run -p pgloupe -- stats diff before.csv after.csv \
+    --before-info before_info.csv --after-info after_info.csv --by mean --min-calls 5
+cargo run -p pgloupe -- stats diff before.csv after.csv --format json
+```
+
+The header states the window and whether the counters were reset or entries evicted before any number. With the `pg_stat_statements_info` files (or PG17 `stats_since`) a reset is proven; without them it is only inferred. Across a reset the values are the activity since the reset (a lower bound), flagged `partial`. Snapshots from different Postgres major versions are refused.
+
 ## Synthetic corpus
 
 `synth` generates Postgres logs and `pg_stat_statements` snapshots from a seeded workload on the Pagila sample database. Requires Docker.

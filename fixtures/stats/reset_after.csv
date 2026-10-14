@@ -1,0 +1,3 @@
+snapshot_at,server_version_num,datname,rolname,userid,dbid,toplevel,queryid,query,calls,total_exec_time,rows
+2026-10-14 10:10:00+00,170011,pagila,postgres,10,16387,t,1,SELECT * FROM film WHERE film_id = $1,7,3.5,7
+2026-10-14 10:10:00+00,170011,pagila,postgres,10,16387,t,3,SELECT count(*) FROM actor,3,9.0,3
