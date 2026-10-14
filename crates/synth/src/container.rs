@@ -1,0 +1,335 @@
+//! Docker-managed Postgres container for one generator run.
+
+use std::{
+    ffi::OsStr,
+    path::Path,
+    process::Command,
+    thread,
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context as _, bail};
+
+/// Server settings passed as `-c name=value`.
+pub const SETTINGS: &[(&str, &str)] = &[
+    ("shared_preload_libraries", "pg_stat_statements"),
+    ("compute_query_id", "on"),
+    ("pg_stat_statements.track", "all"),
+    ("pg_stat_statements.track_utility", "on"),
+    ("pg_stat_statements.max", "500"),
+    ("track_io_timing", "on"),
+    ("logging_collector", "on"),
+    ("log_destination", "stderr,csvlog,jsonlog"),
+    ("log_directory", "/log"),
+    ("log_filename", "postgresql.log"),
+    ("log_rotation_age", "0"),
+    ("log_rotation_size", "0"),
+    ("log_file_mode", "0644"),
+    ("log_line_prefix", "%m [%p] %q%u@%d/%a %Q "),
+    ("log_min_duration_statement", "0"),
+    ("log_lock_waits", "on"),
+    ("deadlock_timeout", "200ms"),
+    ("log_temp_files", "0"),
+    ("log_checkpoints", "on"),
+    ("log_connections", "on"),
+    ("log_disconnections", "on"),
+    ("autovacuum", "off"),
+    ("checkpoint_timeout", "1d"),
+    ("max_wal_size", "4GB"),
+    ("jit", "off"),
+    ("lc_messages", "C"),
+    ("timezone", "UTC"),
+    ("log_timezone", "UTC"),
+];
+
+/// Label on generator containers, used to find stale ones.
+pub const LABEL: &str = "pgloupe.synth=1";
+
+/// How long to wait for Postgres to accept TCP connections.
+const READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Everything needed to build the `docker run` command line.
+#[derive(Debug)]
+pub struct RunSpec<'a> {
+    /// Container name.
+    pub name: &'a str,
+    /// Image tag, e.g. `postgres:17`.
+    pub image: &'a str,
+    /// `key=value` label for stale cleanup.
+    pub label: &'a str,
+    /// Host uid the server runs as.
+    pub uid: u32,
+    /// Host gid the server runs as.
+    pub gid: u32,
+    /// Absolute host path mounted at `/log`.
+    pub log_dir: &'a Path,
+    /// Absolute host path mounted read-only at `/dataset`.
+    pub dataset_dir: &'a Path,
+}
+
+/// Builds `docker run` arguments, without the leading `docker`.
+#[must_use]
+pub fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "run",
+        "-d",
+        "--name",
+        spec.name,
+        "--label",
+        spec.label,
+        "-v",
+        "/etc/passwd:/etc/passwd:ro",
+        "-e",
+        "PGDATA=/pgdata",
+        "-e",
+        "POSTGRES_HOST_AUTH_METHOD=trust",
+        "-p",
+        "127.0.0.1::5432",
+    ]
+    .map(String::from)
+    .to_vec();
+    args.extend([
+        "--user".to_owned(),
+        format!("{}:{}", spec.uid, spec.gid),
+        "--tmpfs".to_owned(),
+        format!("/pgdata:rw,uid={},gid={},mode=0700", spec.uid, spec.gid),
+        "-v".to_owned(),
+        format!("{}:/log", spec.log_dir.display()),
+        "-v".to_owned(),
+        format!("{}:/dataset:ro", spec.dataset_dir.display()),
+        spec.image.to_owned(),
+    ]);
+    for (name, value) in SETTINGS {
+        args.push("-c".to_owned());
+        args.push(format!("{name}={value}"));
+    }
+    args
+}
+
+/// Runs `docker <args>` and returns trimmed stdout.
+///
+/// # Errors
+///
+/// Fails if docker cannot be spawned or exits non-zero; the error names the command and its stderr.
+pub fn docker<S: AsRef<OsStr>>(args: &[S]) -> anyhow::Result<String> {
+    let shown = args
+        .iter()
+        .map(|a| a.as_ref().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let output = Command::new("docker")
+        .args(args)
+        .output()
+        .context("spawning docker; is Docker running and on PATH?")?;
+    if !output.status.success() {
+        bail!(
+            "`docker {shown}` failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Removes every container carrying `label` (left behind by interrupted runs).
+///
+/// # Errors
+///
+/// Fails if docker cannot list or remove containers.
+pub fn remove_stale(label: &str) -> anyhow::Result<()> {
+    let filter = format!("label={label}");
+    let ids = docker(&["ps", "-aq", "--filter", filter.as_str()])?;
+    for id in ids.lines() {
+        docker(&["rm", "-f", id])?;
+    }
+    Ok(())
+}
+
+/// Repo digest of a local image, e.g. `postgres@sha256:…`.
+///
+/// # Errors
+///
+/// Fails if the image is not present locally.
+pub fn image_digest(image: &str) -> anyhow::Result<String> {
+    docker(&[
+        "image",
+        "inspect",
+        "--format",
+        "{{index .RepoDigests 0}}",
+        image,
+    ])
+}
+
+/// Host port from `docker port` output such as `127.0.0.1:49153`.
+fn parse_port(output: &str) -> anyhow::Result<u16> {
+    let line = output
+        .lines()
+        .next()
+        .context("docker port printed nothing")?;
+    let (_, port) = line
+        .rsplit_once(':')
+        .with_context(|| format!("unexpected docker port output {line:?}"))?;
+    port.parse()
+        .with_context(|| format!("bad port in {line:?}"))
+}
+
+/// A running Postgres container, removed on drop.
+#[derive(Debug)]
+pub struct PgContainer {
+    name: String,
+    port: u16,
+}
+
+impl PgContainer {
+    /// Starts the container and waits until Postgres accepts TCP connections.
+    ///
+    /// # Errors
+    ///
+    /// Fails if docker fails or the server is not ready within 60 s; the container is removed.
+    pub fn start(spec: &RunSpec<'_>) -> anyhow::Result<Self> {
+        docker(&run_args(spec))?;
+        let mut container = Self {
+            name: spec.name.to_owned(),
+            port: 0,
+        };
+        container.wait_ready()?;
+        container.port = parse_port(&docker(&["port", container.name.as_str(), "5432"])?)?;
+        Ok(container)
+    }
+
+    /// Host port mapped to the server's 5432.
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Container name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Runs a command in the container with statement logging disabled for libpq clients.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the command exits non-zero.
+    pub fn exec_unlogged(&self, cmd: &[&str]) -> anyhow::Result<String> {
+        let mut args = vec![
+            "exec",
+            "-e",
+            "PGOPTIONS=-c log_min_duration_statement=-1",
+            self.name.as_str(),
+        ];
+        args.extend_from_slice(cmd);
+        docker(&args)
+    }
+
+    /// Stops the server cleanly so the logging collector flushes.
+    ///
+    /// # Errors
+    ///
+    /// Fails if `docker stop` fails.
+    pub fn stop(&self) -> anyhow::Result<()> {
+        docker(&["stop", "-t", "30", self.name.as_str()]).map(drop)
+    }
+
+    fn wait_ready(&self) -> anyhow::Result<()> {
+        let deadline = Instant::now() + READY_TIMEOUT;
+        while Instant::now() < deadline {
+            let ready = Command::new("docker")
+                .args([
+                    "exec",
+                    self.name.as_str(),
+                    "pg_isready",
+                    "-q",
+                    "-h",
+                    "127.0.0.1",
+                    "-U",
+                    "postgres",
+                ])
+                .status()
+                .is_ok_and(|status| status.success());
+            if ready {
+                return Ok(());
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+        bail!(
+            "postgres in {} not ready after {READY_TIMEOUT:?}",
+            self.name
+        )
+    }
+}
+
+impl Drop for PgContainer {
+    fn drop(&mut self) {
+        if let Err(e) = docker(&["rm", "-f", self.name.as_str()]) {
+            eprintln!("warning: could not remove container {}: {e:#}", self.name);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spec() -> RunSpec<'static> {
+        RunSpec {
+            name: "pgloupe-synth-test",
+            image: "postgres:17",
+            label: LABEL,
+            uid: 1000,
+            gid: 1001,
+            log_dir: Path::new("/abs/log"),
+            dataset_dir: Path::new("/abs/dataset"),
+        }
+    }
+
+    fn has_pair(args: &[String], flag: &str, value: &str) -> bool {
+        args.windows(2).any(|w| w[0] == flag && w[1] == value)
+    }
+
+    #[test]
+    fn runs_as_host_user_with_tmpfs_pgdata() {
+        let args = run_args(&spec());
+        assert!(has_pair(&args, "--user", "1000:1001"));
+        assert!(has_pair(
+            &args,
+            "--tmpfs",
+            "/pgdata:rw,uid=1000,gid=1001,mode=0700"
+        ));
+        assert!(has_pair(&args, "-e", "PGDATA=/pgdata"));
+        assert!(has_pair(&args, "-v", "/etc/passwd:/etc/passwd:ro"));
+    }
+
+    #[test]
+    fn mounts_log_and_dataset_dirs() {
+        let args = run_args(&spec());
+        assert!(has_pair(&args, "-v", "/abs/log:/log"));
+        assert!(has_pair(&args, "-v", "/abs/dataset:/dataset:ro"));
+        assert!(has_pair(&args, "--label", LABEL));
+        assert!(has_pair(&args, "-p", "127.0.0.1::5432"));
+    }
+
+    #[test]
+    fn every_setting_follows_the_image_as_dash_c() {
+        let args = run_args(&spec());
+        let image_at = args.iter().position(|a| a == "postgres:17").unwrap();
+        for (name, value) in SETTINGS {
+            let pos = args
+                .windows(2)
+                .position(|w| w[0] == "-c" && w[1] == format!("{name}={value}"))
+                .unwrap_or_else(|| panic!("missing -c {name}={value}"));
+            assert!(pos > image_at, "{name} must come after the image");
+        }
+    }
+
+    #[test]
+    fn parses_docker_port_output() {
+        assert_eq!(parse_port("127.0.0.1:49153\n").unwrap(), 49153);
+        assert_eq!(parse_port("127.0.0.1:5\n[::1]:6\n").unwrap(), 5);
+        parse_port("").unwrap_err();
+        parse_port("127.0.0.1:notaport").unwrap_err();
+    }
+}
