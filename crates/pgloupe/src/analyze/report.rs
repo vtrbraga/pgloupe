@@ -41,6 +41,8 @@ pub struct Report {
     pub window: Window,
     pub diagnostics: Diagnostics,
     pub overview: Overview,
+    /// What ranks `statements`: `total`, `calls`, `p95` or `max`.
+    pub statements_by: &'static str,
     pub statements: Vec<StatementRow>,
     pub errors: Vec<ErrorRow>,
     pub locks: LocksReport,
@@ -235,6 +237,12 @@ impl Report {
                 records: totals.records,
                 events: totals.events.clone(),
                 levels: totals.levels.clone(),
+            },
+            statements_by: match options.by {
+                SortBy::Total => "total",
+                SortBy::Calls => "calls",
+                SortBy::P95 => "p95",
+                SortBy::Max => "max",
             },
             statements: statements(acc, options),
             errors: errors(acc),

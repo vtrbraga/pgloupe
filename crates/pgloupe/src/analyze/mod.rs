@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod event;
 pub mod fingerprint;
 pub mod pipeline;
+pub mod render;
 pub mod report;
 pub mod sketch;
 
