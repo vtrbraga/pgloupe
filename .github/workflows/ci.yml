@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install libclang (needed by pg_query's bindgen)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -27,6 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install libclang (needed by pg_query's bindgen)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: docker pull postgres:17

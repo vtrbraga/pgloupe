@@ -13,6 +13,8 @@ cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
 cargo run -p pgloupe -- --help
 ```
 
+Building needs a C compiler and `libclang` (the `pg_query` crate compiles Postgres's parser and generates its bindings): on Debian/Ubuntu `sudo apt install build-essential libclang-dev`.
+
 Sanitized test fixtures live in `fixtures/`. Raw logs and stats exports are never committed.
 
 ## Stats diff
@@ -39,6 +41,18 @@ cargo run -p pgloupe -- logs dump postgresql.log --prefix '%m [%p] ' --log-tz -0
 ```
 
 The format is detected from the first line; stderr logs need `--prefix` with the server's `log_line_prefix`. A summary (`decoded N records from M lines; K skipped (first at line L: reason)`) goes to stderr, and the exit code is 1 when a non-empty input yields no records. Timezone abbreviations other than `UTC`/`GMT` (for example `BRT`) are ambiguous; pass `--log-tz` with a numeric offset.
+
+## Logs analyze
+
+Summarize one or more logs (csvlog, jsonlog or stderr; plain or gzip): statements grouped by fingerprint with p50/p95/p99, errors, locks and deadlocks, temp files, connections, checkpoints, autovacuum and a timeline.
+
+```bash
+cargo run -p pgloupe -- logs analyze postgresql.log.gz
+cargo run -p pgloupe -- logs analyze a.csv b.csv --by p95 --top 30 --output json > report.json
+cargo run -p pgloupe -- logs analyze server.log --prefix '%t:%r:%u@%d:[%p]:' --threads 4
+```
+
+A stderr log without `--prefix` is decoded with an inferred one (printed in the header); if none fits, the command says why and exits 1. The diagnostics block lists skipped line shapes and likely missing server settings (`log_min_duration_statement`, `log_checkpoints`, `lc_messages`, …). Statement durations are exact to the microsecond; percentiles come from a mergeable sketch with 1% relative error.
 
 ## Synthetic corpus
 
