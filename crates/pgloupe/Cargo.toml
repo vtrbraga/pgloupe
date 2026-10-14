@@ -9,10 +9,12 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+bzip2.workspace = true
 clap.workspace = true
 csv.workspace = true
 flate2.workspace = true
 jiff.workspace = true
+lz4_flex.workspace = true
 minijinja.workspace = true
 pg_query.workspace = true
 rayon.workspace = true
@@ -22,6 +24,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 xxhash-rust.workspace = true
+xz2.workspace = true
+zstd.workspace = true
 
 [lints]
 workspace = true

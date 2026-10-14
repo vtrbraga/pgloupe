@@ -405,6 +405,26 @@ mod tests {
     }
 
     #[test]
+    fn the_same_log_in_another_compression_is_unchanged() {
+        let d = dir("formats");
+        let text = log_of(0..30);
+        let plain = d.join("a.json");
+        fs::write(&plain, &text).unwrap();
+        let zst = d.join("a.json.zst");
+        fs::write(&zst, zstd::encode_all(text.as_bytes(), 3).unwrap()).unwrap();
+        let mut store = store_in(&d, "s.db");
+        assert_eq!(
+            statuses(&run(&mut store, &[&plain], false)),
+            [&Status::Ingested]
+        );
+        assert_eq!(
+            statuses(&run(&mut store, &[&zst], false)),
+            [&Status::Unchanged]
+        );
+        assert_eq!(inputs(&store).len(), 1);
+    }
+
+    #[test]
     fn an_empty_file_is_stored_and_called_empty() {
         let d = dir("empty");
         let a = d.join("a.json");
