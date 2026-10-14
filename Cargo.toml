@@ -13,12 +13,14 @@ publish = false
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 csv = "1"
+jiff = "0.2"
 postgres = "0.19"
 rand = "0.10"
 rand_chacha = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+thiserror = "2"
 ureq = "3"
 
 # Based on Microsoft Pragmatic Rust Guidelines (M-STATIC-VERIFICATION), 2026.6.

@@ -1,0 +1,3 @@
+//! `pg_stat_statements` snapshots and the deltas between them.
+
+pub mod snapshot;
