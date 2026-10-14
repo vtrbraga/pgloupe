@@ -356,6 +356,29 @@ impl Timeline {
     }
 }
 
+impl Timeline {
+    /// The same counts in buckets of `bucket_secs` (a multiple of the current width).
+    #[must_use]
+    pub fn rebucket(self, bucket_secs: i64) -> Timeline {
+        let width = bucket_secs.max(1);
+        let mut wider = Timeline {
+            bucket_secs: width,
+            buckets: BTreeMap::new(),
+        };
+        for (start, bucket) in self.buckets {
+            let into = wider
+                .buckets
+                .entry(start.div_euclid(width) * width)
+                .or_default();
+            into.statements += bucket.statements;
+            into.errors += bucket.errors;
+            into.connections += bucket.connections;
+            into.lock_waits += bucket.lock_waits;
+        }
+        wider
+    }
+}
+
 impl Merge for Timeline {
     fn merge(&mut self, other: Self) {
         for (start, bucket) in other.buckets {
@@ -678,6 +701,36 @@ mod tests {
 
     fn acc() -> Accumulators {
         Accumulators::new(1_000, 60)
+    }
+
+    #[test]
+    fn rebucket_sums_minutes_into_the_wider_bucket() {
+        let bucket = |statements| Bucket {
+            statements,
+            errors: 1,
+            connections: 0,
+            lock_waits: 0,
+        };
+        let minutes = Timeline {
+            bucket_secs: 60,
+            buckets: BTreeMap::from([(0, bucket(1)), (60, bucket(2)), (3_600, bucket(4))]),
+        };
+        let hours = minutes.clone().rebucket(3_600);
+        assert_eq!(hours.bucket_secs, 3_600);
+        assert_eq!(
+            hours.buckets,
+            BTreeMap::from([
+                (
+                    0,
+                    Bucket {
+                        errors: 2,
+                        ..bucket(3)
+                    }
+                ),
+                (3_600, bucket(4))
+            ])
+        );
+        assert_eq!(minutes.clone().rebucket(60), minutes);
     }
 
     #[test]

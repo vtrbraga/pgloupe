@@ -51,6 +51,20 @@ pub struct Report {
     pub checkpoints: Vec<CheckpointRow>,
     pub autovacuum: Vec<TableRow>,
     pub timeline: TimelineReport,
+    /// Present when the report was built from a store.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<StoreInfo>,
+}
+
+/// Where a report came from, when it came from a store.
+#[derive(Debug, Clone, Serialize)]
+pub struct StoreInfo {
+    pub path: String,
+    /// The requested lower bound, snapped down to the hour; `None` when unbounded.
+    pub since: Option<String>,
+    /// The requested upper bound, snapped up to the hour; `None` when unbounded.
+    pub until: Option<String>,
+    pub inputs: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -270,6 +284,7 @@ impl Report {
             checkpoints: checkpoints(acc),
             autovacuum: autovacuum(acc),
             timeline: timeline(acc),
+            store: None,
         }
     }
 

@@ -97,18 +97,30 @@ pub fn top_unmatched_shapes(files: &[FileSummary]) -> Vec<ShapeRow> {
 }
 
 fn unmatched_shapes(files: &[FileSummary]) -> Vec<ShapeRow> {
+    merge_shapes(files.iter().flat_map(|file| {
+        file.stats
+            .top_shapes(usize::MAX)
+            .into_iter()
+            .map(|shape| ShapeRow {
+                shape: shape.text,
+                count: shape.count,
+                first_line: shape.first_line,
+            })
+    }))
+}
+
+/// Adds up rows with the same shape and keeps the most frequent few.
+#[must_use]
+pub fn merge_shapes(rows: impl IntoIterator<Item = ShapeRow>) -> Vec<ShapeRow> {
     let mut merged: std::collections::BTreeMap<String, ShapeRow> =
         std::collections::BTreeMap::new();
-    for file in files {
-        for shape in file.stats.top_shapes(usize::MAX) {
-            let row = merged.entry(shape.text.clone()).or_insert(ShapeRow {
-                shape: shape.text,
-                count: 0,
-                first_line: shape.first_line,
-            });
-            row.count += shape.count;
-            row.first_line = row.first_line.min(shape.first_line);
-        }
+    for shape in rows {
+        let row = merged.entry(shape.shape.clone()).or_insert(ShapeRow {
+            count: 0,
+            ..shape.clone()
+        });
+        row.count += shape.count;
+        row.first_line = row.first_line.min(shape.first_line);
     }
     let mut rows: Vec<ShapeRow> = merged.into_values().collect();
     rows.sort_by(|a, b| {

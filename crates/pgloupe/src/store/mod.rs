@@ -2,6 +2,7 @@
 
 mod ingest;
 mod manifest;
+pub mod report;
 mod schema;
 
 use std::path::Path;

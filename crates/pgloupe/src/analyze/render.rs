@@ -56,10 +56,22 @@ fn section(lines: &mut Vec<String>, title: &str, body: Vec<String>) {
 }
 
 fn header(report: &Report, elapsed: Option<Duration>) -> Vec<String> {
-    let mut lines = vec![
-        "pgloupe logs analyze".to_owned(),
-        format!("files:      {}", report.files.len()),
-    ];
+    let mut lines = match &report.store {
+        Some(store) => vec![
+            "pgloupe logs report".to_owned(),
+            format!("store:      {}", store.path),
+            format!(
+                "range:      {} -> {}",
+                store.since.as_deref().unwrap_or("all"),
+                store.until.as_deref().unwrap_or("all")
+            ),
+            format!("inputs:     {}", report.files.len()),
+        ],
+        None => vec![
+            "pgloupe logs analyze".to_owned(),
+            format!("files:      {}", report.files.len()),
+        ],
+    };
     for file in &report.files {
         let prefix = match (&file.prefix, file.prefix_source.as_str(), file.prefix_match) {
             (Some(prefix), "inferred", Some(percent)) => {
@@ -399,6 +411,26 @@ mod tests {
 
     fn has(lines: &[String], expected: &str) -> bool {
         lines.iter().any(|l| l == expected)
+    }
+
+    #[test]
+    fn store_header_names_store_range_and_inputs() {
+        let mut report = report(10);
+        report.store = Some(crate::analyze::report::StoreInfo {
+            path: "logs.db".to_owned(),
+            since: Some("2026-10-14T11:00:00Z".to_owned()),
+            until: None,
+            inputs: 1,
+        });
+        let lines = squash(&text(&report, None));
+        assert_eq!(lines[0], "pgloupe logs report");
+        assert_eq!(lines[1], "store: logs.db");
+        assert_eq!(lines[2], "range: 2026-10-14T11:00:00Z -> all");
+        assert_eq!(lines[3], "inputs: 1");
+        assert!(
+            has(&lines, "a.log stderr 321 B prefix %m [%p] (inferred 99.0%)"),
+            "{lines:#?}"
+        );
     }
 
     #[test]
