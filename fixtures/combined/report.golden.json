@@ -1,0 +1,406 @@
+{
+  "findings": [
+    {
+      "code": "stats_blind_spot",
+      "message": "no pg_stat_statements_info files were given, so a reset between the snapshots would go unnoticed; export the info row with each snapshot",
+      "severity": "info"
+    },
+    {
+      "code": "stats_only_heavy",
+      "message": "1 statements carry 14% of the execution time in pg_stat_statements but never appear in the logs: they run faster than log_min_duration_statement, or the logs miss that period",
+      "severity": "warn",
+      "statements": [
+        "60acb72b3d6477d8"
+      ]
+    },
+    {
+      "code": "log_only_present",
+      "message": "some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, or the counters were reset",
+      "severity": "info"
+    }
+  ],
+  "generator": "pgloupe",
+  "inputs": {
+    "logs": {
+      "inputs": 1,
+      "source": "files"
+    },
+    "stats": {
+      "after_at": "2026-10-14T10:10:00Z",
+      "before_at": "2026-10-14T10:00:00Z",
+      "blind_spot": true,
+      "counts": {
+        "entries": 4,
+        "gone": 1,
+        "new": 1,
+        "restarted": 0,
+        "skipped_no_queryid": 0,
+        "unchanged": 1
+      },
+      "evictions": null,
+      "reset": "none",
+      "reset_at": null,
+      "server_version_num": 170011
+    }
+  },
+  "kind": "pgloupe.report",
+  "logs": {
+    "autovacuum": [],
+    "checkpoints": [],
+    "connections": {
+      "authenticated": 0,
+      "authorized": 0,
+      "disconnections": 0,
+      "received": 0,
+      "session_ms": {
+        "count": 0,
+        "max": null,
+        "p50": null,
+        "p95": null
+      }
+    },
+    "diagnostics": {
+      "lines": 9,
+      "overflow_calls": 0,
+      "records": 9,
+      "skipped": 0,
+      "unmatched_shapes": [],
+      "unparsed_statements": 0,
+      "warnings": [
+        "not seen: connections (log_connections / log_disconnections), checkpoints (log_checkpoints), temp files (log_temp_files), lock waits (log_lock_waits) — the setting may be off, or none happened"
+      ]
+    },
+    "errors": [
+      {
+        "count": 1,
+        "first_message": "relation \"nope\" does not exist",
+        "first_seen": "2026-10-14T10:09:00.1Z",
+        "last_seen": "2026-10-14T10:09:00.1Z",
+        "level": "ERROR",
+        "sqlstate": "42P01"
+      }
+    ],
+    "files": [
+      {
+        "bytes": 2756,
+        "format": "json",
+        "lines": 9,
+        "path": "logs.json",
+        "prefix": null,
+        "prefix_match": null,
+        "prefix_source": "n/a",
+        "records": 9,
+        "skipped": 0
+      }
+    ],
+    "locks": {
+      "acquired": 0,
+      "deadlocks": 0,
+      "max_wait_ms": 0.0,
+      "total_wait_ms": 0.0,
+      "waits": 0
+    },
+    "overview": {
+      "events": {
+        "error": 1,
+        "statement": 8
+      },
+      "levels": {
+        "ERROR": 1,
+        "LOG": 8
+      },
+      "records": 9
+    },
+    "schema_version": 1,
+    "statements": [],
+    "statements_by": "total",
+    "temp_files": {
+      "bytes": 0,
+      "files": 0,
+      "max_bytes": 0
+    },
+    "timeline": {
+      "bucket_secs": 60,
+      "buckets": [
+        {
+          "connections": 0,
+          "errors": 0,
+          "lock_waits": 0,
+          "start": "2026-10-14T10:01:00Z",
+          "statements": 1
+        },
+        {
+          "connections": 0,
+          "errors": 0,
+          "lock_waits": 0,
+          "start": "2026-10-14T10:02:00Z",
+          "statements": 1
+        },
+        {
+          "connections": 0,
+          "errors": 0,
+          "lock_waits": 0,
+          "start": "2026-10-14T10:03:00Z",
+          "statements": 1
+        },
+        {
+          "connections": 0,
+          "errors": 0,
+          "lock_waits": 0,
+          "start": "2026-10-14T10:04:00Z",
+          "statements": 1
+        },
+        {
+          "connections": 0,
+          "errors": 0,
+          "lock_waits": 0,
+          "start": "2026-10-14T10:05:00Z",
+          "statements": 1
+        },
+        {
+          "connections": 0,
+          "errors": 0,
+          "lock_waits": 0,
+          "start": "2026-10-14T10:06:00Z",
+          "statements": 1
+        },
+        {
+          "connections": 0,
+          "errors": 0,
+          "lock_waits": 0,
+          "start": "2026-10-14T10:07:00Z",
+          "statements": 1
+        },
+        {
+          "connections": 0,
+          "errors": 0,
+          "lock_waits": 0,
+          "start": "2026-10-14T10:08:00Z",
+          "statements": 1
+        },
+        {
+          "connections": 0,
+          "errors": 1,
+          "lock_waits": 0,
+          "start": "2026-10-14T10:09:00Z",
+          "statements": 0
+        }
+      ]
+    },
+    "window": {
+      "first": "2026-10-14T10:01:00.1Z",
+      "last": "2026-10-14T10:09:00.1Z"
+    }
+  },
+  "schema_version": 1,
+  "statements": [
+    {
+      "coverage": 0.5,
+      "fingerprint": "f0e619a53604ffb7",
+      "link": "both",
+      "log": {
+        "calls": 2,
+        "errors": 0,
+        "execute_calls": 0,
+        "fingerprint": "f0e619a53604ffb7",
+        "first_seen": "2026-10-14T10:05:00.1Z",
+        "last_seen": "2026-10-14T10:06:00.1Z",
+        "lock_wait_ms": 0.0,
+        "lock_waits": 0,
+        "max_ms": 120.0,
+        "mean_ms": 110.0,
+        "min_ms": 100.0,
+        "p50_ms": 100.49456770856496,
+        "p95_ms": 100.49456770856496,
+        "p99_ms": 100.49456770856496,
+        "parsed": true,
+        "query_id": null,
+        "share_pct": 95.94417793283908,
+        "statement_calls": 2,
+        "temp_bytes": 0,
+        "temp_files": 0,
+        "text": "UPDATE film SET rental_rate = $1",
+        "timed_calls": 2,
+        "total_ms": 220.0
+      },
+      "query_id_matches": null,
+      "stats": {
+        "calls": 4,
+        "entries": 1,
+        "flags": [],
+        "mean_ms": 100.0,
+        "plans": 0,
+        "queryid_count": 1,
+        "queryids": [
+          "2"
+        ],
+        "rows": 4,
+        "share_pct": 80.0,
+        "shared_blks_hit": 0,
+        "shared_blks_read": 0,
+        "temp_blks_read": 0,
+        "temp_blks_written": 0,
+        "total_exec_ms": 400.0,
+        "wal_bytes": 0
+      },
+      "text": "UPDATE film SET rental_rate = $1"
+    },
+    {
+      "coverage": null,
+      "fingerprint": "60acb72b3d6477d8",
+      "link": "stats",
+      "log": null,
+      "query_id_matches": null,
+      "stats": {
+        "calls": 2,
+        "entries": 1,
+        "flags": [
+          "new"
+        ],
+        "mean_ms": 35.0,
+        "plans": 0,
+        "queryid_count": 1,
+        "queryids": [
+          "5"
+        ],
+        "rows": 2,
+        "share_pct": 14.0,
+        "shared_blks_hit": 0,
+        "shared_blks_read": 0,
+        "temp_blks_read": 0,
+        "temp_blks_written": 0,
+        "total_exec_ms": 70.0,
+        "wal_bytes": 0
+      },
+      "text": "DELETE FROM rental WHERE rental_id = $1"
+    },
+    {
+      "coverage": 0.06666666666666667,
+      "fingerprint": "9703bd645db62a78",
+      "link": "both",
+      "log": {
+        "calls": 4,
+        "errors": 0,
+        "execute_calls": 0,
+        "fingerprint": "9703bd645db62a78",
+        "first_seen": "2026-10-14T10:01:00.1Z",
+        "last_seen": "2026-10-14T10:04:00.4Z",
+        "lock_wait_ms": 0.0,
+        "lock_waits": 0,
+        "max_ms": 0.6,
+        "mean_ms": 0.5,
+        "min_ms": 0.4,
+        "p50_ms": 0.5015394534033261,
+        "p95_ms": 0.5015394534033261,
+        "p99_ms": 0.5015394534033261,
+        "parsed": true,
+        "query_id": null,
+        "share_pct": 0.8722197993894462,
+        "statement_calls": 4,
+        "temp_bytes": 0,
+        "temp_files": 0,
+        "text": "SELECT * FROM film WHERE film_id = $1",
+        "timed_calls": 4,
+        "total_ms": 2.0
+      },
+      "query_id_matches": null,
+      "stats": {
+        "calls": 60,
+        "entries": 1,
+        "flags": [],
+        "mean_ms": 0.5,
+        "plans": 0,
+        "queryid_count": 1,
+        "queryids": [
+          "1"
+        ],
+        "rows": 60,
+        "share_pct": 6.0,
+        "shared_blks_hit": 0,
+        "shared_blks_read": 0,
+        "temp_blks_read": 0,
+        "temp_blks_written": 0,
+        "total_exec_ms": 30.0,
+        "wal_bytes": 0
+      },
+      "text": "SELECT * FROM film WHERE film_id = $1"
+    },
+    {
+      "coverage": null,
+      "fingerprint": "a8fbe6a1633776f6",
+      "link": "log",
+      "log": {
+        "calls": 2,
+        "errors": 0,
+        "execute_calls": 0,
+        "fingerprint": "a8fbe6a1633776f6",
+        "first_seen": "2026-10-14T10:07:00.1Z",
+        "last_seen": "2026-10-14T10:08:00.1Z",
+        "lock_wait_ms": 0.0,
+        "lock_waits": 0,
+        "max_ms": 4.1,
+        "mean_ms": 3.65,
+        "min_ms": 3.2,
+        "p50_ms": 3.221957196288878,
+        "p95_ms": 3.221957196288878,
+        "p99_ms": 3.221957196288878,
+        "parsed": true,
+        "query_id": null,
+        "share_pct": 3.1836022677714784,
+        "statement_calls": 2,
+        "temp_bytes": 0,
+        "temp_files": 0,
+        "text": "SELECT * FROM actor",
+        "timed_calls": 2,
+        "total_ms": 7.3
+      },
+      "query_id_matches": null,
+      "stats": null,
+      "text": "SELECT * FROM actor"
+    },
+    {
+      "coverage": null,
+      "fingerprint": "b84a3d2aac05c480",
+      "link": "log",
+      "log": {
+        "calls": 0,
+        "errors": 1,
+        "execute_calls": 0,
+        "fingerprint": "b84a3d2aac05c480",
+        "first_seen": "2026-10-14T10:09:00.1Z",
+        "last_seen": "2026-10-14T10:09:00.1Z",
+        "lock_wait_ms": 0.0,
+        "lock_waits": 0,
+        "max_ms": null,
+        "mean_ms": null,
+        "min_ms": null,
+        "p50_ms": null,
+        "p95_ms": null,
+        "p99_ms": null,
+        "parsed": true,
+        "query_id": null,
+        "share_pct": 0.0,
+        "statement_calls": 0,
+        "temp_bytes": 0,
+        "temp_files": 0,
+        "text": "SELECT * FROM nope",
+        "timed_calls": 0,
+        "total_ms": 0.0
+      },
+      "query_id_matches": null,
+      "stats": null,
+      "text": "SELECT * FROM nope"
+    }
+  ],
+  "windows": {
+    "logs": {
+      "from": "2026-10-14T10:01:00.1Z",
+      "to": "2026-10-14T10:09:00.1Z"
+    },
+    "overlap_pct": 100.0,
+    "stats": {
+      "from": "2026-10-14T10:00:00Z",
+      "to": "2026-10-14T10:10:00Z"
+    }
+  }
+}
