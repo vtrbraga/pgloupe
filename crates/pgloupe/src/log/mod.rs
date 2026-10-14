@@ -6,6 +6,7 @@ use jiff::tz::Offset;
 use thiserror::Error;
 
 pub mod csvlog;
+pub mod infer;
 pub mod jsonlog;
 pub mod prefix;
 pub mod record;

@@ -329,6 +329,21 @@ fn remote(text: &str) -> Result<(Option<String>, Option<u16>), String> {
     }
 }
 
+/// The timestamp escape a line starts with: `m` (with milliseconds), `t` (seconds) or `n` (epoch).
+#[must_use]
+pub fn leading_timestamp_escape(line: &str) -> Option<char> {
+    if timestamp_len(line, true).is_some() {
+        return Some(if line.as_bytes().get(19) == Some(&b'.') {
+            'm'
+        } else {
+            't'
+        });
+    }
+    epoch_len(line)
+        .filter(|len| line[..*len].contains('.'))
+        .map(|_| 'n')
+}
+
 #[cfg(test)]
 mod tests {
     use jiff::Timestamp;
