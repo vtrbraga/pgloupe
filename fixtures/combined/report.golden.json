@@ -7,7 +7,7 @@
     },
     {
       "code": "stats_only_heavy",
-      "message": "1 statements carry 14% of the execution time in pg_stat_statements but never appear in the logs: they run faster than log_min_duration_statement, or the logs miss that period",
+      "message": "1 statement carries 14% of the execution time in pg_stat_statements but never appear in the logs: they run faster than log_min_duration_statement, or the logs miss that period",
       "severity": "warn",
       "statements": [
         "60acb72b3d6477d8"
@@ -392,6 +392,7 @@
       "text": "SELECT * FROM nope"
     }
   ],
+  "statements_by": "total",
   "windows": {
     "logs": {
       "from": "2026-10-14T10:01:00.1Z",

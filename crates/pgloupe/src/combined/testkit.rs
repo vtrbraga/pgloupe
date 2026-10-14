@@ -80,3 +80,35 @@ pub(super) fn user_key(queryid: i64, userid: u32) -> Key {
         ..key(queryid)
     }
 }
+
+/// The report built from `fixtures/combined/logs.json` and `fixtures/stats/basic_*.csv`.
+pub(super) fn fixture_report(
+    by: crate::analyze::report::SortBy,
+    top: usize,
+    with_logs: bool,
+    with_stats: bool,
+) -> super::CombinedReport {
+    use crate::analyze::{
+        pipeline::{self, Options},
+        report::{Report, ReportOptions},
+    };
+    let fixtures = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let options = ReportOptions { by, top };
+    let logs = with_logs.then(|| {
+        let output =
+            pipeline::run(&[fixtures.join("combined/logs.json")], &Options::new()).unwrap();
+        super::LogData {
+            report: Report::build(&output, &options),
+            rows: all_statements(&output.acc),
+            source: "files",
+            inputs: 1,
+            store: None,
+        }
+    });
+    let delta = with_stats.then(|| {
+        let before = Snapshot::from_path(&fixtures.join("stats/basic_before.csv")).unwrap();
+        let after = Snapshot::from_path(&fixtures.join("stats/basic_after.csv")).unwrap();
+        diff(&before, &after).unwrap()
+    });
+    super::build(logs, delta.as_ref(), &options)
+}

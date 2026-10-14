@@ -4,15 +4,17 @@ mod findings;
 mod join;
 #[cfg(test)]
 mod testkit;
+mod text;
 
 pub use findings::{Context, findings};
 pub use join::{Joined, join, rank};
+pub use text::text;
 
 use jiff::Timestamp;
 use serde::Serialize;
 
 use crate::{
-    analyze::report::{Report, ReportOptions, StatementRow},
+    analyze::report::{Report, ReportOptions, SortBy, StatementRow},
     stats::delta::{Counts, Delta, Reset},
 };
 
@@ -83,6 +85,8 @@ pub struct CombinedReport {
     pub inputs: Inputs,
     pub windows: Windows,
     pub findings: Vec<Finding>,
+    /// What ranks `statements`: `total`, `calls`, `p95` or `max`.
+    pub statements_by: &'static str,
     /// The ranked top statements, joined across logs and statistics.
     pub statements: Vec<JoinedRow>,
     /// The log analysis; its own `statements` are empty because they are above.
@@ -207,6 +211,12 @@ pub fn build(
             overlap_pct: overlap,
         },
         findings: found,
+        statements_by: match options.by {
+            SortBy::Total => "total",
+            SortBy::Calls => "calls",
+            SortBy::P95 => "p95",
+            SortBy::Max => "max",
+        },
         statements: joined.rows,
         logs: log_report.map(|mut report| {
             report.statements.clear();
@@ -268,7 +278,7 @@ mod tests {
     use crate::{
         analyze::{
             pipeline::{self, Options},
-            report::{SortBy, all_statements},
+            report::all_statements,
         },
         stats::{delta::diff, snapshot::Snapshot},
         testutil::ts,

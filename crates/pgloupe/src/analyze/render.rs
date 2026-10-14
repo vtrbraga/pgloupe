@@ -19,13 +19,29 @@ const STATEMENT_RIGHT: [bool; 9] = [true, true, true, true, true, true, true, tr
 #[must_use]
 pub fn text(report: &Report, elapsed: Option<Duration>) -> String {
     let mut lines = header(report, elapsed);
+    lines.extend(sections(report, true));
+    let mut out = lines.join("\n");
+    out.push('\n');
+    out
+}
+
+/// The sections of the text report after its header.
+///
+/// Each is preceded by a blank line: diagnostics, overview, the statement table (when
+/// `statements_table`), errors, locks, temp files, connections, checkpoints, autovacuum and the
+/// timeline.
+#[must_use]
+pub fn sections(report: &Report, statements_table: bool) -> Vec<String> {
+    let mut lines = Vec::new();
     section(&mut lines, "diagnostics", diagnostics(report));
     section(&mut lines, "overview", overview(report));
-    section(
-        &mut lines,
-        &format!("top statements (by {})", report.statements_by),
-        statements(&report.statements),
-    );
+    if statements_table {
+        section(
+            &mut lines,
+            &format!("top statements (by {})", report.statements_by),
+            statements(&report.statements),
+        );
+    }
     section(&mut lines, "errors", errors(&report.errors));
     section(&mut lines, "locks", locks(report));
     section(&mut lines, "temp files", temp_files(report));
@@ -40,9 +56,7 @@ pub fn text(report: &Report, elapsed: Option<Duration>) -> String {
         ),
         timeline(&report.timeline.buckets),
     );
-    let mut out = lines.join("\n");
-    out.push('\n');
-    out
+    lines
 }
 
 fn section(lines: &mut Vec<String>, title: &str, body: Vec<String>) {
@@ -134,15 +148,15 @@ fn overview(report: &Report) -> Vec<String> {
     ]
 }
 
-fn num(value: f64) -> String {
+pub(crate) fn num(value: f64) -> String {
     format!("{value:.2}")
 }
 
-fn opt(value: Option<f64>) -> String {
+pub(crate) fn opt(value: Option<f64>) -> String {
     value.map_or_else(|| "-".to_owned(), num)
 }
 
-fn cut(text: &str) -> String {
+pub(crate) fn cut(text: &str) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= MAX_TEXT_CHARS {
         collapsed
@@ -176,7 +190,7 @@ fn statements(rows: &[StatementRow]) -> Vec<String> {
 }
 
 /// Pads columns to their widest cell; numeric columns are right-aligned, lines are trimmed.
-fn align(rows: &[Vec<String>], right: &[bool]) -> Vec<String> {
+pub(crate) fn align(rows: &[Vec<String>], right: &[bool]) -> Vec<String> {
     let mut widths = vec![0_usize; right.len()];
     for row in rows {
         for (width, cell) in widths.iter_mut().zip(row) {

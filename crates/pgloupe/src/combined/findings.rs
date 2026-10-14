@@ -27,6 +27,11 @@ pub struct Context<'a> {
     pub has_logs: bool,
 }
 
+/// `1 statement` or `3 statements`.
+fn statements_of(n: usize) -> String {
+    format!("{n} statement{}", if n == 1 { "" } else { "s" })
+}
+
 fn finding(code: &'static str, severity: &'static str, message: String) -> Finding {
     Finding {
         code,
@@ -81,8 +86,8 @@ pub fn findings(ctx: &Context<'_>) -> Vec<Finding> {
             "partition_rollup",
             "info",
             format!(
-                "{} statements matched several pg_stat_statements entries with different queryids; partitions and per-tenant variants are rolled up by fingerprint, so their deltas are sums",
-                ctx.joined.rollups
+                "{} matched several pg_stat_statements entries with different queryids; partitions and per-tenant variants are rolled up by fingerprint, so their deltas are sums",
+                statements_of(ctx.joined.rollups)
             ),
         ));
     }
@@ -145,8 +150,9 @@ fn heavy_stats_only(ctx: &Context<'_>, found: &mut Vec<Finding>) {
             "stats_only_heavy",
             "warn",
             format!(
-                "{} statements carry {:.0}% of the execution time in pg_stat_statements but never appear in the logs: they run faster than log_min_duration_statement, or the logs miss that period",
-                only.len(),
+                "{} {} {:.0}% of the execution time in pg_stat_statements but never appear in the logs: they run faster than log_min_duration_statement, or the logs miss that period",
+                statements_of(only.len()),
+                if only.len() == 1 { "carries" } else { "carry" },
                 share * 100.0 / total
             ),
         );
@@ -176,8 +182,8 @@ fn low_coverage(ctx: &Context<'_>, found: &mut Vec<Finding>) {
             "low_coverage",
             "info",
             format!(
-                "for {} statements the log recorded under {:.0}% of the calls pg_stat_statements counted: log_min_duration_statement hides the fast ones, so their log percentiles describe only the slow calls",
-                low.len(),
+                "for {} the log recorded under {:.0}% of the calls pg_stat_statements counted: log_min_duration_statement hides the fast ones, so their log percentiles describe only the slow calls",
+                statements_of(low.len()),
                 LOW_COVERAGE * 100.0
             ),
         );

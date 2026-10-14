@@ -1,0 +1,49 @@
+pgloupe report
+generator: pgloupe
+logs:      files (1 input) 2026-10-14T10:01:00.1Z -> 2026-10-14T10:09:00.1Z
+stats:     2026-10-14T10:00:00Z -> 2026-10-14T10:10:00Z (server 170011), reset none, evictions unknown
+overlap:   100%
+
+findings
+  [info] stats_blind_spot: no pg_stat_statements_info files were given, so a reset between the snapshots would go unnoticed; export the info row with each snapshot
+  [warn] stats_only_heavy: 1 statement carries 14% of the execution time in pg_stat_statements but never appear in the logs: they run faster than log_min_duration_statement, or the logs miss that period
+  [info] log_only_present: some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, or the counters were reset
+
+statements (by total)
+  link   log  stats  cover  total_ms  mean_ms  p95_ms  share%  errors  query
+  both     2      4    50%    400.00   100.00  100.49    80.0       0  UPDATE film SET rental_rate = $1
+  stats    -      2      -     70.00    35.00       -    14.0       -  DELETE FROM rental WHERE rental_id = $1
+  both     4     60     7%     30.00     0.50    0.50     6.0       0  SELECT * FROM film WHERE film_id = $1
+  log      2      -      -      7.30     3.65    3.22     3.2       0  SELECT * FROM actor
+  log      0      -      -      0.00        -       -     0.0       1  SELECT * FROM nope
+
+diagnostics
+  lines 9, records 9, skipped 0, unparsed statements 0
+  warning: not seen: connections (log_connections / log_disconnections), checkpoints (log_checkpoints), temp files (log_temp_files), lock waits (log_lock_waits) — the setting may be off, or none happened
+
+overview
+  records 9
+  events: error=1 statement=8
+  levels: ERROR=1 LOG=8
+
+errors
+  1x  ERROR 42P01 first 2026-10-14T10:09:00.1Z  relation "nope" does not exist
+
+locks
+  waits 0, acquired 0, total wait 0.00 ms, longest 0.00 ms, deadlocks 0
+
+temp files
+  files 0, bytes 0, largest 0
+
+connections
+  received 0, authenticated 0, authorized 0, disconnections 0
+
+checkpoints
+  none
+
+autovacuum
+  none
+
+timeline (bucket 1m)
+  busiest statements: 2026-10-14T10:01:00Z (1)
+  busiest errors: 2026-10-14T10:09:00Z (1)
