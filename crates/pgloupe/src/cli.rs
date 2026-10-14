@@ -10,6 +10,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use jiff::tz::Offset;
 
 use crate::{
+    analyze::{
+        pipeline::{self, AnalyzeError},
+        render as analyze_render,
+        report::{Report, ReportOptions, SortBy as ReportSortBy},
+    },
     log::{self, Format, Options, source, time::parse_offset_arg},
     stats::{
         delta::{self, SortBy},
@@ -50,6 +55,9 @@ enum StatsCommand {
 enum LogsCommand {
     /// Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON.
     Dump(DumpArgs),
+    /// Summarize one or more logs: statements with percentiles, errors, locks, temp files,
+    /// connections, checkpoints and autovacuum.
+    Analyze(AnalyzeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -79,6 +87,81 @@ struct DiffArgs {
     /// Output format.
     #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
     format: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+struct AnalyzeArgs {
+    /// Log files (csvlog, jsonlog or stderr; gzip is detected automatically).
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
+    /// Log format; `auto` looks at each file's first line.
+    #[arg(long, value_enum, default_value_t = LogFormat::Auto)]
+    format: LogFormat,
+    /// The server's `log_line_prefix`; inferred when omitted.
+    #[arg(long)]
+    prefix: Option<String>,
+    /// Offset for timezone abbreviations the log does not spell out, e.g. `-03` or `+05:30`.
+    #[arg(long, value_parser = parse_offset_arg, allow_hyphen_values = true)]
+    log_tz: Option<Offset>,
+    /// Metric that orders the statement table.
+    #[arg(long, value_enum, default_value_t = AnalyzeBy::Total)]
+    by: AnalyzeBy,
+    /// Statements to list.
+    #[arg(long, default_value_t = 20)]
+    top: usize,
+    /// Timeline resolution: `30s`, `1m`, `1h`.
+    #[arg(long, default_value = "1m", value_parser = parse_bucket)]
+    bucket: i64,
+    /// Distinct statements kept before the rest fold into one overflow row.
+    #[arg(long, default_value_t = 50_000)]
+    max_fingerprints: usize,
+    /// Worker threads (default: all cores).
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    threads: Option<u64>,
+    /// Report format.
+    #[arg(long = "output", value_enum, default_value_t = OutputFormat::Text)]
+    output: OutputFormat,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AnalyzeBy {
+    /// Total execution time.
+    Total,
+    /// Number of calls.
+    Calls,
+    /// 95th percentile of the duration.
+    P95,
+    /// Slowest single call.
+    Max,
+}
+
+impl From<AnalyzeBy> for ReportSortBy {
+    fn from(by: AnalyzeBy) -> Self {
+        match by {
+            AnalyzeBy::Total => ReportSortBy::Total,
+            AnalyzeBy::Calls => ReportSortBy::Calls,
+            AnalyzeBy::P95 => ReportSortBy::P95,
+            AnalyzeBy::Max => ReportSortBy::Max,
+        }
+    }
+}
+
+/// `30s`, `5m` or `2h` as seconds (at least one second).
+fn parse_bucket(text: &str) -> Result<i64, String> {
+    let bad = || format!("{text:?} is not a duration like 30s, 1m or 1h");
+    let unit = text.chars().last().ok_or_else(bad)?;
+    let number = &text[..text.len() - unit.len_utf8()];
+    let n: i64 = number.parse().map_err(|_err| bad())?;
+    let secs = match unit {
+        's' => n,
+        'm' => n.saturating_mul(60),
+        'h' => n.saturating_mul(3_600),
+        _ => return Err(bad()),
+    };
+    if secs < 1 {
+        return Err("the bucket must be at least one second".to_owned());
+    }
+    Ok(secs)
 }
 
 #[derive(Debug, Args)]
@@ -154,6 +237,9 @@ pub fn run(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Resul
         Command::Logs {
             command: LogsCommand::Dump(args),
         } => logs_dump(args, out, err),
+        Command::Logs {
+            command: LogsCommand::Analyze(args),
+        } => logs_analyze(args, out, err),
     }
 }
 
@@ -249,6 +335,65 @@ fn logs_dump(args: &DumpArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyho
     })
 }
 
+fn logs_analyze(
+    args: &AnalyzeArgs,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> anyhow::Result<Exit> {
+    let started = std::time::Instant::now();
+    let options = pipeline::Options {
+        format: match args.format {
+            LogFormat::Auto => None,
+            LogFormat::Csv => Some(Format::Csv),
+            LogFormat::Json => Some(Format::Json),
+            LogFormat::Stderr => Some(Format::Stderr),
+        },
+        prefix: args.prefix.clone(),
+        log_tz: args.log_tz,
+        max_fingerprints: args.max_fingerprints,
+        bucket_secs: args.bucket,
+        threads: args.threads.map(usize::try_from).transpose()?,
+        batch_size: pipeline::Options::new().batch_size,
+    };
+    let output = match pipeline::run(&args.files, &options) {
+        Ok(output) => output,
+        Err(error) => {
+            if let AnalyzeError::PrefixNotInferred { inference, .. } = &error {
+                if let Some((candidate, matched)) = &inference.best {
+                    let _ = writeln!(
+                        err,
+                        "closest candidate: {candidate} ({matched} of {} sample lines)",
+                        inference.sampled
+                    );
+                }
+                let _ = writeln!(err, "unmatched lines start with:");
+                for example in &inference.unmatched {
+                    let _ = writeln!(err, "  {example}");
+                }
+            }
+            return Err(error.into());
+        }
+    };
+    let report = Report::build(
+        &output,
+        &ReportOptions {
+            by: args.by.into(),
+            top: args.top,
+        },
+    );
+    let rendered = match args.output {
+        OutputFormat::Text => analyze_render::text(&report, Some(started.elapsed())),
+        OutputFormat::Json => {
+            let mut json = report.to_json()?;
+            json.push('\n');
+            json
+        }
+    };
+    out.write_all(rendered.as_bytes())
+        .context("writing output")?;
+    Ok(Exit::Ok)
+}
+
 #[cfg(test)]
 mod tests {
     use clap::CommandFactory;
@@ -298,5 +443,31 @@ mod tests {
     #[test]
     fn bad_log_tz_is_rejected_at_parse_time() {
         Cli::try_parse_from(["pgloupe", "logs", "dump", "x.log", "--log-tz", "BRT"]).unwrap_err();
+    }
+
+    #[test]
+    fn buckets_parse() {
+        assert_eq!(parse_bucket("30s"), Ok(30));
+        assert_eq!(parse_bucket("1m"), Ok(60));
+        assert_eq!(parse_bucket("2h"), Ok(7_200));
+        for bad in ["0s", "5", "m", "", "1d", "-1m"] {
+            parse_bucket(bad).unwrap_err();
+        }
+    }
+
+    #[test]
+    fn analyze_arguments_parse_with_defaults() {
+        let cli = Cli::try_parse_from(["pgloupe", "logs", "analyze", "a.log", "b.log"]).unwrap();
+        let Command::Logs {
+            command: LogsCommand::Analyze(args),
+        } = cli.command
+        else {
+            panic!("expected logs analyze");
+        };
+        assert_eq!(args.files.len(), 2);
+        assert_eq!(args.top, 20);
+        assert_eq!(args.bucket, 60);
+        assert_eq!(args.max_fingerprints, 50_000);
+        assert!(args.threads.is_none());
     }
 }
