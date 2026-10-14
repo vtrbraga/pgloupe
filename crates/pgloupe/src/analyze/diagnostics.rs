@@ -164,8 +164,28 @@ fn label_warning(files: &[FileSummary], warnings: &mut Vec<String>) {
 
 fn absence_warnings(output: &Output, warnings: &mut Vec<String>) {
     let totals = &output.acc.totals;
+    let skipped: u64 = output.files.iter().map(|f| f.stats.skipped).sum();
     if totals.records == 0 {
+        if skipped > 0 {
+            warnings.push(format!(
+                "nothing could be decoded: all {skipped} non-blank lines were skipped — check --format and --prefix (and lc_messages for non-English servers)"
+            ));
+        }
         return;
+    }
+    let (calls, timed) = output
+        .acc
+        .queries
+        .values()
+        .chain(std::iter::once(&output.acc.overflow))
+        .fold((0, 0), |(calls, timed), q| {
+            (calls + q.calls, timed + q.timed)
+        });
+    if timed < calls {
+        warnings.push(format!(
+            "{} of {calls} statements have no duration — log_min_duration_statement is needed for timings (log_statement alone logs statements without them)",
+            calls - timed
+        ));
     }
     let seen = |kind: &str| totals.events.get(kind).copied().unwrap_or(0) > 0;
     if !(seen("statement") || seen("execute") || seen("duration")) {
@@ -470,5 +490,34 @@ mod tests {
             "{:?}",
             none.warnings
         );
+    }
+
+    #[test]
+    fn nothing_decoded_from_a_non_empty_input_is_called_out() {
+        let mut stats = DecodeStats {
+            lines: 50,
+            records: 0,
+            ..DecodeStats::default()
+        };
+        for line in 1..=50 {
+            stats.skip_with(line, "no match", Some("junk"));
+        }
+        let d = build(&output(
+            &[],
+            vec![summary(Format::Stderr, Some("%t [%p]: "), stats)],
+        ));
+        assert!(has(&d, "nothing could be decoded"), "{:?}", d.warnings);
+        assert!(has(&d, "--prefix"), "{:?}", d.warnings);
+    }
+
+    #[test]
+    fn statements_without_durations_are_called_out() {
+        let d = build(&output(
+            &["statement: SELECT 1", "statement: SELECT 2"],
+            vec![],
+        ));
+        assert!(has(&d, "have no duration"), "{:?}", d.warnings);
+        let timed = build(&output(&["duration: 1 ms  statement: SELECT 1"], vec![]));
+        assert!(!has(&timed, "have no duration"), "{:?}", timed.warnings);
     }
 }

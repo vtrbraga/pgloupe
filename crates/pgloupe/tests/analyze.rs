@@ -358,3 +358,16 @@ fn text_report_matches_the_golden_file() -> io::Result<()> {
     assert_eq!(kept.concat(), golden);
     Ok(())
 }
+
+#[test]
+fn zero_records_from_a_non_empty_file_exit_one_with_a_report() -> io::Result<()> {
+    let out = analyze(
+        &["--prefix", "%t [%p]: "],
+        &[fixtures().join("logs/sample.log")],
+    )?;
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("records 0"), "{text}");
+    assert!(text.contains("nothing could be decoded"), "{text}");
+    Ok(())
+}

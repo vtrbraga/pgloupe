@@ -91,6 +91,8 @@ pub struct StatementRow {
     pub text: String,
     pub parsed: bool,
     pub calls: u64,
+    pub statement_calls: u64,
+    pub execute_calls: u64,
     pub timed_calls: u64,
     pub total_ms: f64,
     pub mean_ms: Option<f64>,
@@ -345,6 +347,8 @@ fn statement_row(query: &QueryStats, total_us: u64) -> StatementRow {
         text: query.text.clone(),
         parsed: query.parsed,
         calls: query.calls,
+        statement_calls: query.statement_calls,
+        execute_calls: query.execute_calls,
         timed_calls: query.timed,
         total_ms: ms(query.total_us),
         mean_ms: query.mean_ms(),
@@ -656,5 +660,32 @@ mod tests {
         assert_eq!(report.statements.len(), 0);
         assert_eq!(report.window.first, None);
         report.to_json().unwrap();
+    }
+
+    #[test]
+    fn statement_rows_split_calls_by_protocol() {
+        let mut acc = Accumulators::new(100, 60);
+        acc.add_record(&LogRecord::new(
+            at(0),
+            Severity::Log,
+            "duration: 1 ms  statement: SELECT 1",
+        ));
+        acc.add_record(&LogRecord::new(
+            at(1),
+            Severity::Log,
+            "duration: 1 ms  execute S_1: SELECT 1",
+        ));
+        let report = Report::build(
+            &Output { acc, files: vec![] },
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 5,
+            },
+        );
+        let row = &report.statements[0];
+        assert_eq!(
+            (row.calls, row.statement_calls, row.execute_calls),
+            (2, 1, 1)
+        );
     }
 }

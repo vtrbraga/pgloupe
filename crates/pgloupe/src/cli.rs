@@ -391,7 +391,13 @@ fn logs_analyze(
     };
     out.write_all(rendered.as_bytes())
         .context("writing output")?;
-    Ok(Exit::Ok)
+    // Non-empty input that decoded to nothing: the report above says why, but it is a failure.
+    let skipped: u64 = output.files.iter().map(|file| file.stats.skipped).sum();
+    Ok(if output.acc.totals.records == 0 && skipped > 0 {
+        Exit::Failed
+    } else {
+        Exit::Ok
+    })
 }
 
 #[cfg(test)]

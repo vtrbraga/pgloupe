@@ -61,11 +61,15 @@ pub struct QueryStats {
     pub text: String,
     /// The `query_id` of the representative sample.
     pub query_id: Option<i64>,
-    /// `(timestamp, hash of the raw text)` of the earliest sample seen; it decides `text` and
+    /// `(timestamp, hash of the raw text, query_id)` of the earliest sample seen; it decides `text` and
     /// `query_id`, which makes both independent of arrival order and of how records are split.
-    sample: Option<(Timestamp, u64)>,
+    sample: Option<(Timestamp, u64, Option<i64>)>,
     /// `Statement` and `Execute` events.
     pub calls: u64,
+    /// `calls` made with the simple protocol (`statement:`).
+    pub statement_calls: u64,
+    /// `calls` made with the extended protocol (`execute`).
+    pub execute_calls: u64,
     /// Calls that carried a duration.
     pub timed: u64,
     pub total_us: u64,
@@ -90,6 +94,8 @@ impl QueryStats {
             query_id: None,
             sample: None,
             calls: 0,
+            statement_calls: 0,
+            execute_calls: 0,
             timed: 0,
             total_us: 0,
             min_us: None,
@@ -108,7 +114,7 @@ impl QueryStats {
     /// Offers a spelling of this statement as the representative sample: the one with the smallest
     /// `(timestamp, hash)` wins, wherever and whenever it is seen.
     fn offer(&mut self, ts: Timestamp, sql: &str, query_id: Option<i64>) {
-        let key = (ts, sql_hash(sql));
+        let key = (ts, sql_hash(sql), query_id);
         if self.sample.is_none_or(|current| key < current) {
             self.sample = Some(key);
             self.text = display_text(sql, self.parsed);
@@ -131,8 +137,12 @@ impl QueryStats {
         self.last_seen = latest(self.last_seen, Some(ts));
     }
 
-    fn call(&mut self, duration_ms: Option<f64>, ts: Timestamp) {
+    fn call(&mut self, duration_ms: Option<f64>, ts: Timestamp, kind: StatementKind) {
         self.calls += 1;
+        match kind {
+            StatementKind::Execute => self.execute_calls += 1,
+            _ => self.statement_calls += 1,
+        }
         self.seen(ts);
         if let Some(ms) = duration_ms {
             let us = to_micros(ms);
@@ -157,6 +167,8 @@ impl Merge for QueryStats {
         }
         self.parsed &= other.parsed;
         self.calls += other.calls;
+        self.statement_calls += other.statement_calls;
+        self.execute_calls += other.execute_calls;
         self.timed += other.timed;
         self.total_us += other.total_us;
         self.min_us = match (self.min_us, other.min_us) {
@@ -531,9 +543,8 @@ impl Accumulators {
                 text,
                 ..
             } => {
-                let _ = kind;
                 let query = self.query_for(text, ts, record.query_id);
-                query.call(*duration_ms, ts);
+                query.call(*duration_ms, ts, *kind);
             }
             Event::LockWait { .. } => {
                 if let Some(sql) = record.statement.as_deref() {
@@ -992,5 +1003,28 @@ mod tests {
         assert_eq!(a.overflow.query_id, None);
         assert!(a.overflow.parsed);
         assert_eq!(a.overflow.calls, 1);
+    }
+
+    #[test]
+    fn the_query_id_of_a_timestamp_and_text_tie_does_not_depend_on_arrival_order() {
+        let a = spelled(0, "SELECT 1", 111);
+        let b = spelled(0, "SELECT 1", 222);
+        let ab = accumulate(&[a.clone(), b.clone()]);
+        let ba = accumulate(&[b.clone(), a.clone()]);
+        let mut merged = accumulate(&[b]);
+        merged.merge(accumulate(&[a]));
+        assert_eq!(ab, ba);
+        assert_eq!(ab, merged);
+        assert_eq!(ab.queries.values().next().unwrap().query_id, Some(111));
+    }
+
+    #[test]
+    fn statement_and_execute_calls_are_counted_separately() {
+        let mut a = acc();
+        a.add_record(&log(0, "duration: 1 ms  statement: SELECT 1"));
+        a.add_record(&log(1, "duration: 1 ms  execute S_1: SELECT 1"));
+        a.add_record(&log(2, "duration: 1 ms  execute S_1: SELECT 2"));
+        let q = a.queries.values().next().unwrap();
+        assert_eq!((q.calls, q.statement_calls, q.execute_calls), (3, 1, 2));
     }
 }
