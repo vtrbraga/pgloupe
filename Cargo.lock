@@ -648,6 +648,7 @@ dependencies = [
  "anyhow",
  "clap",
  "csv",
+ "flate2",
  "jiff",
  "serde",
  "serde_json",

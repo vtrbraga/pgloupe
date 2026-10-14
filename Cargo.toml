@@ -13,7 +13,8 @@ publish = false
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 csv = "1"
-jiff = "0.2"
+flate2 = "1"
+jiff = { version = "0.2", features = ["serde"] }
 postgres = "0.19"
 rand = "0.10"
 rand_chacha = "0.10"

@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod error;
+pub mod log;
 pub mod stats;
 
 #[cfg(test)]
