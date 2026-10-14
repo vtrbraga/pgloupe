@@ -1,8 +1,7 @@
 #![expect(
     clippy::unwrap_used,
     clippy::panic,
-    dead_code,
-    reason = "test helpers panic on setup failure; some helpers are used only by scenario tests added later"
+    reason = "test helpers panic on setup failure"
 )]
 
 mod common;
@@ -279,4 +278,28 @@ fn lock_wait_matches_manifest() {
 #[ignore = "needs docker"]
 fn deadlock_matches_manifest() {
     assert_log_matches_manifest(&generate_corpus(&["deadlock"]));
+}
+
+#[test]
+#[ignore = "needs docker"]
+fn functions_hide_inner_statements_from_logs_but_not_pgss() {
+    let dir = generate_corpus(&["functions"]);
+    assert_log_matches_manifest(&dir);
+    let (headers, rows) = read_csv_with_headers(&dir.join("pgss_1.csv"));
+    let (query, toplevel, calls) = (
+        column(&headers, "query"),
+        column(&headers, "toplevel"),
+        column(&headers, "calls"),
+    );
+    let inner_insert = rows
+        .iter()
+        .find(|r| r[query].starts_with("INSERT INTO rental") && &r[toplevel] == "f")
+        .expect("nested INSERT tracked with toplevel=false");
+    assert_eq!(&inner_insert[calls], "100");
+}
+
+#[test]
+#[ignore = "needs docker"]
+fn connections_matches_manifest() {
+    assert_log_matches_manifest(&generate_corpus(&["connections"]));
 }

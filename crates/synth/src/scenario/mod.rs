@@ -1,9 +1,11 @@
 //! Scenario framework: named workloads and the log events they must produce.
 
 pub mod baseline;
+pub mod connections;
 pub mod ddl;
 pub mod errors;
 pub mod extended;
+pub mod functions;
 pub mod locks;
 pub mod multiline;
 pub mod temp_files;
@@ -194,6 +196,8 @@ pub const ALL: &[Scenario] = &[
     locks::DEADLOCK,
     temp_files::SCENARIO,
     errors::SCENARIO,
+    functions::SCENARIO,
+    connections::SCENARIO,
     multiline::SCENARIO,
     extended::SCENARIO,
 ];
