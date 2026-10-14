@@ -214,3 +214,15 @@ fn failed_scenario_keeps_tmp_and_leaves_existing_corpus_untouched() {
 fn baseline_matches_manifest() {
     assert_log_matches_manifest(&generate_corpus(&["baseline"]));
 }
+
+#[test]
+#[ignore = "needs docker"]
+fn ddl_matches_manifest() {
+    assert_log_matches_manifest(&generate_corpus(&["ddl"]));
+}
+
+#[test]
+#[ignore = "needs docker"]
+fn temp_files_matches_manifest() {
+    assert_log_matches_manifest(&generate_corpus(&["temp_files"]));
+}

@@ -1,6 +1,8 @@
 //! Scenario framework: named workloads and the log events they must produce.
 
 pub mod baseline;
+pub mod ddl;
+pub mod temp_files;
 
 use anyhow::bail;
 use postgres::Client;
@@ -181,7 +183,7 @@ fn scenario_seed(seed: u64, name: &str) -> u64 {
 }
 
 /// Every scenario, in run order.
-pub const ALL: &[Scenario] = &[baseline::SCENARIO];
+pub const ALL: &[Scenario] = &[baseline::SCENARIO, ddl::SCENARIO, temp_files::SCENARIO];
 
 /// Scenarios to run: all when `only` is empty, else the named ones in canonical order.
 ///
