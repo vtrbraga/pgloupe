@@ -1,0 +1,49 @@
+pgloupe logs analyze
+files:      1
+  analyze/events.json json 6011 B
+window:     2026-10-14T10:00:00Z -> 2026-10-14T10:02:30Z
+
+diagnostics
+  lines 23, records 23, skipped 0, unparsed statements 1
+  warning: 1 statements could not be parsed and were grouped by their text
+
+overview
+  records 23
+  events: autovacuum=2 bind=1 checkpoint_done=1 checkpoint_start=1 connection_authenticated=1 connection_authorized=1 connection_received=1 deadlock=1 disconnection=1 error=2 execute=1 lock_acquired=1 lock_wait=1 other=1 parse=1 statement=4 temp_file=2
+  levels: ERROR=3 LOG=20
+
+top statements (by total)
+  calls  total_ms  mean_ms  p50_ms  p95_ms  p99_ms  max_ms  share%  query
+      1    500.00   500.00  500.00  500.00  500.00  500.00    92.1  SELECT count(*) FROM orders o JOIN items i ON i.order_id = o.id
+      2     40.00    20.00   10.07   10.07   10.07   30.00     7.4  SELECT * FROM orders WHERE id = $1
+      1      2.00     2.00    2.00    2.00    2.00    2.00     0.4  SELECT * FROM users WHERE id = $1
+      1      1.00     1.00    1.00    1.00    1.00    1.00     0.2  SELEC 1
+      0      0.00        -       -       -       -       -     0.0  INSERT INTO orders (id) VALUES ($1)
+      0      0.00        -       -       -       -       -     0.0  UPDATE orders SET paid = $1 WHERE id = $2
+      0      0.00        -       -       -       -       -     0.0  SELECT * FROM big ORDER BY x
+
+errors
+  2x  ERROR 23505 first 2026-10-14T10:00:07Z  duplicate key value violates unique constraint "orders_pkey"
+  1x  ERROR 40P01 first 2026-10-14T10:00:11Z  deadlock detected
+
+locks
+  waits 1, acquired 1, total wait 1200.30 ms, longest 1200.30 ms, deadlocks 1
+
+temp files
+  files 2, bytes 12288, largest 8192
+
+connections
+  received 1, authenticated 1, authorized 1, disconnections 1
+  session time p50 149000.00 ms, p95 149000.00 ms, max 149000.00 ms
+
+checkpoints
+  checkpoint: started 1, completed 1, buffers 100; total p50 4700.00 ms, p95 4700.00 ms; reasons: time=1
+
+autovacuum
+  shop.public.orders  vacuums 1, analyzes 1, total 600.00 ms, longest 500.00 ms
+
+timeline (bucket 1m)
+  busiest statements: 2026-10-14T10:00:00Z (5)
+  busiest errors: 2026-10-14T10:00:00Z (3)
+  busiest connections: 2026-10-14T10:00:00Z (1)
+  busiest lock waits: 2026-10-14T10:00:00Z (1)
