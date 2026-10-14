@@ -5,6 +5,7 @@ use std::fmt;
 use jiff::tz::Offset;
 use thiserror::Error;
 
+pub mod csvlog;
 pub mod record;
 pub mod source;
 pub mod time;
