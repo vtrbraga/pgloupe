@@ -140,6 +140,20 @@ fn setup_sessions_are_not_tracked_by_pgss() {
 
 #[test]
 #[ignore = "needs docker"]
+fn scenario_sessions_have_a_lock_timeout_backstop() {
+    let label = format!("pgloupe.synth.test={}", common::unique("locktimeout"));
+    let pg = start("locktimeout", &label);
+    let mut db = Target { port: pg.port() }
+        .connect("postgres", "postgres", "synth:test")
+        .unwrap();
+    assert_eq!(
+        session::query_scalar(&mut db, "SHOW lock_timeout").unwrap(),
+        "30s"
+    );
+}
+
+#[test]
+#[ignore = "needs docker"]
 fn failed_startup_reports_container_logs_quickly() {
     let dir = common::scratch_dir("failstart");
     let log = dir.join("log");

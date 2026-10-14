@@ -5,7 +5,8 @@ use anyhow::Context as _;
 use super::{Ctx, ExpectSpec, Phase, Scenario};
 use crate::manifest::EventKind;
 
-const QUERIES: &[&str] = &[
+/// Queries run under a tiny `work_mem`; each must spill to disk.
+pub const QUERIES: &[&str] = &[
     "SELECT count(*) FROM (SELECT g FROM generate_series(1, 300000) g ORDER BY g DESC OFFSET 0) s",
     "SELECT count(DISTINCT g) FROM generate_series(1, 300000) g",
     "SELECT count(*) FROM (SELECT r.customer_id, count(*) FROM rental r \

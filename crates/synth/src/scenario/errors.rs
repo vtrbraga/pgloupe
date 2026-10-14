@@ -37,8 +37,10 @@ pub const SCENARIO: Scenario = Scenario {
 
 fn run(ctx: &mut Ctx) -> anyhow::Result<()> {
     let mut db = ctx.session("pagila")?;
-    db.batch_execute("SET statement_timeout = '100ms'")?;
     for (sql, code) in CASES {
+        if *code == "57014" {
+            db.batch_execute("SET statement_timeout = '100ms'")?;
+        }
         let err = db
             .batch_execute(sql)
             .err()

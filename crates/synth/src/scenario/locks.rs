@@ -113,3 +113,22 @@ fn run_deadlock(ctx: &mut Ctx) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::container::SETTINGS;
+
+    #[test]
+    fn hold_covers_at_least_two_deadlock_timeouts() {
+        let (_, value) = SETTINGS
+            .iter()
+            .find(|(name, _)| *name == "deadlock_timeout")
+            .unwrap();
+        let timeout = Duration::from_millis(value.trim_end_matches("ms").parse().unwrap());
+        assert!(
+            HOLD_AFTER_WAIT >= timeout * 2,
+            "{HOLD_AFTER_WAIT:?} vs {timeout:?}"
+        );
+    }
+}

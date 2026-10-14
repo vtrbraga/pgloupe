@@ -23,6 +23,8 @@ use synth::{
 const SEVERITY: usize = 11;
 const SQLSTATE: usize = 12;
 const MESSAGE: usize = 13;
+const DETAIL: usize = 14;
+const QUERY: usize = 19;
 const APP: usize = 22;
 
 /// Args writing into a fresh temp dir, sharing the repo's download cache.
@@ -77,11 +79,12 @@ fn matches(row: &StringRecord, expect: &Expect) -> bool {
     let app_matches = row[APP] == expect.app;
     let duration_line =
         |kind: &str| app_matches && message.starts_with("duration: ") && message.contains(kind);
+    let bound_parameters = || row[DETAIL].starts_with("Parameters: ");
     match expect.event {
         EventKind::Statement => duration_line(" statement: "),
         EventKind::Parse => duration_line("  parse "),
-        EventKind::Bind => duration_line("  bind "),
-        EventKind::Execute => duration_line("  execute "),
+        EventKind::Bind => duration_line("  bind ") && bound_parameters(),
+        EventKind::Execute => duration_line("  execute ") && bound_parameters(),
         EventKind::LockWait => app_matches && message.contains(" still waiting for "),
         EventKind::LockAcquired => {
             app_matches && message.contains(" acquired ") && message.contains(" after ")
@@ -100,6 +103,7 @@ fn matches(row: &StringRecord, expect: &Expect) -> bool {
             app_matches
                 && &row[SEVERITY] == "ERROR"
                 && Some(&row[SQLSTATE]) == expect.sqlstate.as_deref()
+                && !row[QUERY].is_empty()
         }
     }
 }
@@ -223,8 +227,17 @@ fn ddl_matches_manifest() {
 
 #[test]
 #[ignore = "needs docker"]
-fn temp_files_matches_manifest() {
-    assert_log_matches_manifest(&generate_corpus(&["temp_files"]));
+fn temp_files_matches_manifest_and_every_query_spills() {
+    let dir = generate_corpus(&["temp_files"]);
+    assert_log_matches_manifest(&dir);
+    let rows = read_csv(&dir.join("log/postgresql.csv"));
+    for query in scenario::temp_files::QUERIES {
+        let spills = rows
+            .iter()
+            .filter(|r| r[MESSAGE].starts_with("temporary file: ") && r[QUERY] == **query)
+            .count();
+        assert!(spills >= 1, "no temp file logged for {query}");
+    }
 }
 
 #[test]

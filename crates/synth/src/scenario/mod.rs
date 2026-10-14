@@ -190,12 +190,12 @@ fn scenario_seed(seed: u64, name: &str) -> u64 {
 pub const ALL: &[Scenario] = &[
     baseline::SCENARIO,
     ddl::SCENARIO,
+    locks::LOCK_WAIT,
+    locks::DEADLOCK,
     temp_files::SCENARIO,
     errors::SCENARIO,
     multiline::SCENARIO,
     extended::SCENARIO,
-    locks::LOCK_WAIT,
-    locks::DEADLOCK,
 ];
 
 /// Scenarios to run: all when `only` is empty, else the named ones in canonical order.
@@ -238,6 +238,31 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), ALL.len());
+    }
+
+    #[test]
+    fn scenarios_run_in_spec_order() {
+        const SPEC_ORDER: [&str; 11] = [
+            "baseline",
+            "ddl",
+            "lock_wait",
+            "deadlock",
+            "temp_files",
+            "errors",
+            "functions",
+            "connections",
+            "multiline",
+            "extended",
+            "pgss_churn",
+        ];
+        let positions: Vec<_> = ALL
+            .iter()
+            .map(|s| SPEC_ORDER.iter().position(|n| *n == s.name).unwrap())
+            .collect();
+        assert!(
+            positions.is_sorted_by(|a, b| a < b),
+            "ALL out of spec order: {positions:?}"
+        );
     }
 
     #[test]

@@ -6,10 +6,13 @@ use std::{
 };
 
 use anyhow::{Context as _, bail};
-use postgres::{Client, NoTls, SimpleQueryMessage};
+use postgres::{Client, Config, NoTls, SimpleQueryMessage};
 
 /// `application_name` of setup and polling sessions.
 pub const CONTROL_APP: &str = "synth:control";
+
+/// Backstop so a bug in a scenario fails with a lock timeout instead of hanging forever.
+const SESSION_OPTIONS: &str = "-c lock_timeout=30s";
 
 /// Where the container's server listens on the host.
 #[derive(Debug, Clone, Copy)]
@@ -25,11 +28,15 @@ impl Target {
     ///
     /// Fails if the connection is refused.
     pub fn connect(self, db: &str, user: &str, app: &str) -> anyhow::Result<Client> {
-        let params = format!(
-            "host=127.0.0.1 port={} dbname={db} user={user} application_name={app}",
-            self.port
-        );
-        Client::connect(&params, NoTls).with_context(|| format!("connecting to {db} as {user}"))
+        Config::new()
+            .host("127.0.0.1")
+            .port(self.port)
+            .dbname(db)
+            .user(user)
+            .application_name(app)
+            .options(SESSION_OPTIONS)
+            .connect(NoTls)
+            .with_context(|| format!("connecting to {db} as {user}"))
     }
 
     /// Connects as superuser with statement logging off, for setup and polling.
@@ -85,12 +92,14 @@ pub fn backend_pid(client: &mut Client) -> anyhow::Result<i32> {
 pub fn wait_for_lock_wait(control: &mut Client, pid: i32, timeout: Duration) -> anyhow::Result<()> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        let waiting: i64 = control
-            .query_one(
-                "SELECT count(*) FROM pg_locks WHERE pid = $1 AND NOT granted",
-                &[&pid],
-            )?
-            .get(0);
+        // Simple protocol on purpose: prepared statements would consume numbered
+        // statement names and make the logged names depend on polling timing.
+        let waiting: i64 = query_scalar(
+            control,
+            &format!("SELECT count(*) FROM pg_locks WHERE pid = {pid} AND NOT granted"),
+        )?
+        .parse()
+        .context("count(*) is not an integer")?;
         if waiting > 0 {
             return Ok(());
         }
