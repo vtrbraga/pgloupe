@@ -1,5 +1,7 @@
 //! Scenario framework: named workloads and the log events they must produce.
 
+pub mod baseline;
+
 use anyhow::bail;
 use postgres::Client;
 use rand::SeedableRng as _;
@@ -179,7 +181,7 @@ fn scenario_seed(seed: u64, name: &str) -> u64 {
 }
 
 /// Every scenario, in run order.
-pub const ALL: &[Scenario] = &[];
+pub const ALL: &[Scenario] = &[baseline::SCENARIO];
 
 /// Scenarios to run: all when `only` is empty, else the named ones in canonical order.
 ///

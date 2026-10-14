@@ -208,3 +208,9 @@ fn failed_scenario_keeps_tmp_and_leaves_existing_corpus_untouched() {
         "partial output stays for inspection"
     );
 }
+
+#[test]
+#[ignore = "needs docker"]
+fn baseline_matches_manifest() {
+    assert_log_matches_manifest(&generate_corpus(&["baseline"]));
+}
