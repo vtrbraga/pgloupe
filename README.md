@@ -67,6 +67,8 @@ cargo run -p pgloupe -- logs report --store logs.db --since 2026-10-14 --until 2
 - A grown file is read in full again; resuming from a byte offset is not implemented.
 - Statistics are stored per UTC hour, so `--since` rounds down and `--until` rounds up to whole hours (the report prints the range it used). `--bucket` must be a multiple of `1m`.
 - `--force` re-ingests files already in the store, for example after fixing `--prefix`. A file that decodes to nothing is reported as `failed` and not stored.
+- One ingest runs at a time per store (a second one waits 5 s, then reports the store as locked). If a file's time range largely overlaps an earlier input that it does not extend, ingest prints a warning: an older partial copy of a stored log is counted twice.
+- Keep the store on the Linux filesystem; SQLite's WAL mode is unreliable on `/mnt/c`.
 - With `--max-fingerprints` below the number of distinct statements in an hour, that hour folds the rest into the overflow row, so `report` can differ from `logs analyze` for that run.
 
 ## Synthetic corpus
