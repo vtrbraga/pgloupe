@@ -394,6 +394,7 @@
   ],
   "statements_by": "total",
   "windows": {
+    "length_ratio": 0.8,
     "logs": {
       "from": "2026-10-14T10:01:00.1Z",
       "to": "2026-10-14T10:09:00.1Z"

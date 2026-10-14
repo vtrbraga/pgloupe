@@ -11,6 +11,11 @@ const COVERAGE_MIN_CALLS: u64 = 100;
 const LOW_COVERAGE: f64 = 0.2;
 /// Windows overlapping less than this (percent of the shorter one) are not comparable.
 const MIN_OVERLAP_PCT: f64 = 50.0;
+/// The log window may be this many times longer, or shorter, than the snapshot window before the
+/// two sources stop being comparable.
+const MAX_WINDOW_RATIO: f64 = 3.0;
+/// Coverage is only judged when the log window is at least this share of the snapshot window.
+const LOG_COVERS_STATS: f64 = 0.8;
 /// Fingerprints listed in a finding.
 const LISTED: usize = 5;
 
@@ -22,6 +27,8 @@ pub struct Context<'a> {
     pub joined: &'a Joined,
     /// How much the log and snapshot windows overlap, in percent; `None` without both.
     pub overlap_pct: Option<f64>,
+    /// Length of the log window ÷ length of the snapshot window; `None` without both.
+    pub window_ratio: Option<f64>,
     /// The rows that will be shown.
     pub top: &'a [JoinedRow],
     pub has_logs: bool,
@@ -59,6 +66,21 @@ pub fn findings(ctx: &Context<'_>) -> Vec<Finding> {
             ),
         ));
     }
+    if let (Some(ratio), Some(overlap)) = (ctx.window_ratio, ctx.overlap_pct)
+        && overlap >= MIN_OVERLAP_PCT
+        && (ratio >= MAX_WINDOW_RATIO || ratio <= 1.0 / MAX_WINDOW_RATIO)
+    {
+        let how = if ratio >= MAX_WINDOW_RATIO {
+            format!(
+                "the log window is {ratio:.1}× the snapshot window, so the log's counts and totals cover a longer period than the statistics' deltas; pass --since and --until (or trim the logs) to match the snapshot interval"
+            )
+        } else {
+            format!(
+                "the log window is only {ratio:.2}× the snapshot window: the logs cover just part of the period the statistics describe"
+            )
+        };
+        found.push(finding("windows_mismatch", "warn", how));
+    }
     if ctx.joined.unusable_entries > 0 {
         found.push(finding(
             "no_query_text",
@@ -95,6 +117,13 @@ pub fn findings(ctx: &Context<'_>) -> Vec<Finding> {
 }
 
 fn stats_rules(delta: &Delta, found: &mut Vec<Finding>) {
+    if delta.reset == Reset::Unknown {
+        found.push(finding(
+            "stats_reset_unknown",
+            "warn",
+            "no info files were given and no entry appears in both snapshots, so a reset cannot be ruled out; every delta is the entry's whole history, not the window's".to_owned(),
+        ));
+    }
     if let Reset::Proven | Reset::Inferred = delta.reset {
         let how = if delta.reset == Reset::Proven {
             "proven by the info files"
@@ -133,11 +162,12 @@ fn stats_rules(delta: &Delta, found: &mut Vec<Finding>) {
 fn heavy_stats_only(ctx: &Context<'_>, found: &mut Vec<Finding>) {
     let exec = |row: &JoinedRow| row.stats.as_ref().map_or(0.0, |stats| stats.total_exec_ms);
     let total: f64 = ctx.joined.rows.iter().map(exec).sum();
+    // Unreadable entries (`q…`) may well be in the logs; they only cannot be matched.
     let mut only: Vec<&JoinedRow> = ctx
         .joined
         .rows
         .iter()
-        .filter(|r| r.link == "stats")
+        .filter(|r| r.link == "stats" && !r.fingerprint.starts_with('q'))
         .collect();
     only.sort_by(|a, b| {
         exec(b)
@@ -166,6 +196,14 @@ fn heavy_stats_only(ctx: &Context<'_>, found: &mut Vec<Finding>) {
 }
 
 fn low_coverage(ctx: &Context<'_>, found: &mut Vec<Finding>) {
+    // With a log window much shorter than the statistics', low coverage says nothing about
+    // log_min_duration_statement.
+    if ctx
+        .window_ratio
+        .is_some_and(|ratio| ratio < LOG_COVERS_STATS)
+    {
+        return;
+    }
     let low: Vec<&JoinedRow> = ctx
         .joined
         .rows
@@ -218,6 +256,15 @@ mod tests {
         log: Vec<crate::analyze::report::StatementRow>,
         overlap: Option<f64>,
     ) -> Vec<Finding> {
+        run_with_ratio(delta, log, overlap, overlap.map(|_| 1.0))
+    }
+
+    fn run_with_ratio(
+        delta: Option<&Delta>,
+        log: Vec<crate::analyze::report::StatementRow>,
+        overlap: Option<f64>,
+        ratio: Option<f64>,
+    ) -> Vec<Finding> {
         let joined = join(log, delta);
         let mut top = joined.rows.clone();
         rank(&mut top, crate::analyze::report::SortBy::Total);
@@ -225,6 +272,7 @@ mod tests {
             delta,
             joined: &joined,
             overlap_pct: overlap,
+            window_ratio: ratio,
             top: &top,
             has_logs: true,
         })
@@ -373,5 +421,67 @@ mod tests {
         let found = run(Some(&d), Vec::new(), None);
         let f = found.iter().find(|f| f.code == "partition_rollup").unwrap();
         assert!(f.message.contains("partition"));
+    }
+
+    #[test]
+    fn windows_of_very_different_length_are_flagged() {
+        let (d, log) = healthy_inputs();
+        for ratio in [24.0, 4.0, 0.2] {
+            let found = run_with_ratio(Some(&d), log.clone(), Some(100.0), Some(ratio));
+            let f = found.iter().find(|f| f.code == "windows_mismatch").unwrap();
+            assert_eq!(f.severity, "warn");
+            assert!(f.message.contains('×'), "{}", f.message);
+        }
+        for ratio in [1.0, 0.8, 2.5] {
+            let found = run_with_ratio(Some(&d), log.clone(), Some(100.0), Some(ratio));
+            assert!(!codes(&found).contains(&"windows_mismatch"), "{ratio}");
+        }
+    }
+
+    #[test]
+    fn a_short_log_window_does_not_blame_the_log_threshold() {
+        let d = delta_with_info(&[(key(1), Some(FILM), 200, 2_000.0)], Some(quiet_infos()));
+        let log = log_rows(&[("SELECT * FROM film WHERE film_id = 5", 10, 50.0)]);
+        let short = run_with_ratio(Some(&d), log.clone(), Some(100.0), Some(0.1));
+        assert!(!codes(&short).contains(&"low_coverage"), "{short:?}");
+        assert!(codes(&short).contains(&"windows_mismatch"));
+        let same = run_with_ratio(Some(&d), log, Some(100.0), Some(1.0));
+        assert!(codes(&same).contains(&"low_coverage"));
+    }
+
+    #[test]
+    fn unreadable_entries_are_not_called_absent_from_the_logs() {
+        let d = delta_with_info(
+            &[
+                (key(1), Some("<insufficient privilege>"), 10, 900.0),
+                (key(2), Some("SELECT * FROM actor"), 10, 100.0),
+            ],
+            Some(quiet_infos()),
+        );
+        let log = log_rows(&[("SELECT * FROM actor", 9, 10.0)]);
+        let found = run(Some(&d), log, Some(100.0));
+        assert!(codes(&found).contains(&"no_query_text"));
+        assert!(!codes(&found).contains(&"stats_only_heavy"), "{found:?}");
+    }
+
+    #[test]
+    fn an_unknown_reset_is_reported() {
+        // No info files and no entry in both snapshots: nothing can show a reset.
+        let before = snapshot(
+            "2026-10-14T10:00:00Z",
+            vec![(key(1), with_text(Some(FILM), 5, 5.0))],
+        );
+        let after = snapshot(
+            "2026-10-14T11:00:00Z",
+            vec![(key(2), with_text(Some("SELECT * FROM actor"), 50, 50.0))],
+        );
+        let d = crate::stats::delta::diff(&before, &after).unwrap();
+        let found = run(Some(&d), Vec::new(), None);
+        let f = found
+            .iter()
+            .find(|f| f.code == "stats_reset_unknown")
+            .unwrap();
+        assert_eq!(f.severity, "warn");
+        assert!(f.message.contains("whole history"), "{}", f.message);
     }
 }

@@ -131,6 +131,8 @@ pub struct Windows {
     pub stats: Option<Span>,
     /// How much of the shorter window the other one covers, in percent.
     pub overlap_pct: Option<f64>,
+    /// Length of the log window ÷ length of the statistics window.
+    pub length_ratio: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -181,12 +183,18 @@ pub fn build(
         from: delta.before_at.to_string(),
         to: delta.after_at.to_string(),
     });
-    let overlap = match (&log_span, delta) {
+    let (overlap, ratio) = match (&log_span, delta) {
         (Some(log), Some(delta)) => match (log.from.parse(), log.to.parse()) {
-            (Ok(from), Ok(to)) => Some(overlap_pct((from, to), (delta.before_at, delta.after_at))),
-            _ => None,
+            (Ok(from), Ok(to)) => {
+                let stats = (delta.before_at, delta.after_at);
+                (
+                    Some(overlap_pct((from, to), stats)),
+                    length_ratio((from, to), stats),
+                )
+            }
+            _ => (None, None),
         },
-        _ => None,
+        _ => (None, None),
     };
     let mut joined = join(log_rows, delta);
     rank(&mut joined.rows, options.by);
@@ -195,6 +203,7 @@ pub fn build(
         delta,
         joined: &joined,
         overlap_pct: overlap,
+        window_ratio: ratio,
         top: &joined.rows[..shown],
         has_logs: log_input.is_some(),
     });
@@ -211,6 +220,7 @@ pub fn build(
             logs: log_span,
             stats: stats_span,
             overlap_pct: overlap,
+            length_ratio: ratio,
         },
         findings: found,
         statements_by: match options.by {
@@ -257,6 +267,18 @@ pub fn overlap_pct(logs: (Timestamp, Timestamp), stats: (Timestamp, Timestamp)) 
         return if inside { 100.0 } else { 0.0 };
     }
     (shared as f64 * 100.0 / shorter as f64).clamp(0.0, 100.0)
+}
+
+/// Length of the log window ÷ length of the statistics window; `None` when either is empty.
+#[must_use]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "millisecond spans stay far below 2^53"
+)]
+pub fn length_ratio(logs: (Timestamp, Timestamp), stats: (Timestamp, Timestamp)) -> Option<f64> {
+    let millis = |(a, b): (Timestamp, Timestamp)| b.as_millisecond() - a.as_millisecond();
+    let (log_len, stats_len) = (millis(logs), millis(stats));
+    (log_len > 0 && stats_len > 0).then(|| log_len as f64 / stats_len as f64)
 }
 
 impl CombinedReport {
