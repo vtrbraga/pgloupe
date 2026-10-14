@@ -1,6 +1,6 @@
-//! The store's tables. Version 1 is the first and only schema so far.
+//! The store's tables.
 
-pub(super) const V1: &str = "
+pub(super) const SCHEMA: &str = "
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE inputs (
   id INTEGER PRIMARY KEY,

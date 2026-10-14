@@ -2,15 +2,17 @@
 
 use std::{
     error::Error,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
+
+use thiserror::Error;
 
 use super::{Input, Store, StoreError, StoredDiag};
 use crate::{
     analyze::{
         diagnostics::{file_warnings, top_unmatched_shapes},
-        pipeline::{self, FileSummary, SlicedOutput},
+        pipeline::{self, AnalyzeError, FileSummary, SlicedOutput},
         report::file_report,
         slice::Slices,
     },
@@ -43,6 +45,23 @@ pub struct FileOutcome {
     pub diag: Option<StoredDiag>,
 }
 
+/// Why one file could not be ingested.
+#[derive(Debug, Error)]
+enum IngestError {
+    #[error("could not read: {0}")]
+    Unreadable(#[source] io::Error),
+    #[error(transparent)]
+    Store(#[from] StoreError),
+    #[error(transparent)]
+    Analyze(#[from] AnalyzeError),
+    #[error(
+        "nothing could be decoded: all {skipped} non-blank lines were skipped — check --format and --prefix (and lc_messages for non-English servers)"
+    )]
+    NothingDecoded { skipped: u64 },
+    #[error("internal error: no content hash")]
+    NoContentHash,
+}
+
 /// `error` and its causes, joined with `: `.
 fn chain(error: &dyn Error) -> String {
     let mut text = error.to_string();
@@ -69,9 +88,9 @@ pub fn ingest(
     paths
         .iter()
         .map(|path| {
-            ingest_one(store, path, options, force).unwrap_or_else(|reason| FileOutcome {
+            ingest_one(store, path, options, force).unwrap_or_else(|error| FileOutcome {
                 path: path.clone(),
-                status: Status::Failed(reason),
+                status: Status::Failed(chain(&error)),
                 records: 0,
                 skipped: 0,
                 diag: None,
@@ -88,8 +107,8 @@ struct Stat {
     mtime: i64,
 }
 
-fn stat_of(path: &Path) -> Result<Stat, String> {
-    let meta = fs::metadata(path).map_err(|e| format!("could not read: {e}"))?;
+fn stat_of(path: &Path) -> Result<Stat, IngestError> {
+    let meta = fs::metadata(path).map_err(IngestError::Unreadable)?;
     let mtime = meta
         .modified()
         .ok()
@@ -149,11 +168,11 @@ fn ingest_one(
     path: &Path,
     options: &pipeline::Options,
     force: bool,
-) -> Result<FileOutcome, String> {
+) -> Result<FileOutcome, IngestError> {
     // One writer at a time: what is looked up below must still hold when the file is committed.
-    store.begin_ingest().map_err(|e| chain(&e))?;
+    store.begin_ingest()?;
     let outcome = ingest_locked(store, path, options, force);
-    let released = store.end_ingest().map_err(|e| chain(&e));
+    let released = store.end_ingest();
     let outcome = outcome?;
     released?;
     Ok(outcome)
@@ -164,7 +183,7 @@ fn ingest_locked(
     path: &Path,
     options: &pipeline::Options,
     force: bool,
-) -> Result<FileOutcome, String> {
+) -> Result<FileOutcome, IngestError> {
     let stat = stat_of(path)?;
     let unchanged = |known: &Input| FileOutcome {
         path: path.to_path_buf(),
@@ -173,43 +192,30 @@ fn ingest_locked(
         skipped: known.skipped,
         diag: settings_hint(known, options),
     };
-    if !force
-        && let Some(known) = store
-            .input_by_stat(&stat.key, stat.disk_size, stat.mtime)
-            .map_err(|e| chain(&e))?
-    {
+    if !force && let Some(known) = store.input_by_stat(&stat.key, stat.disk_size, stat.mtime)? {
         return Ok(unchanged(&known));
     }
     let run_options = pipeline::Options {
-        hash_marks: Some(store.input_sizes().map_err(|e| chain(&e))?),
+        hash_marks: Some(store.input_sizes()?),
         ..options.clone()
     };
-    let SlicedOutput { slices, file } =
-        pipeline::run_sliced(path, &run_options).map_err(|e| chain(&e))?;
-    let content = file
-        .content
-        .clone()
-        .ok_or_else(|| "internal error: no content hash".to_owned())?;
+    let SlicedOutput { slices, file } = pipeline::run_sliced(path, &run_options)?;
+    let content = file.content.clone().ok_or(IngestError::NoContentHash)?;
     if file.stats.records == 0 && file.stats.skipped > 0 {
-        return Err(format!(
-            "nothing could be decoded: all {} non-blank lines were skipped — check --format and --prefix (and lc_messages for non-English servers)",
-            file.stats.skipped
-        ));
+        return Err(IngestError::NothingDecoded {
+            skipped: file.stats.skipped,
+        });
     }
-    let replace = match decide(store, &content, &stat, force).map_err(|e| chain(&e))? {
+    let replace = match decide(store, &content, &stat, force)? {
         Decision::Known { input } => return Ok(unchanged(&input)),
         Decision::Store { replace } => replace,
     };
     let (mut input, mut diag) = make_input(&file, &slices, &content, stat);
-    if let Some(warning) =
-        overlap_warning(store, &input, &content.prefixes).map_err(|e| chain(&e))?
-    {
+    if let Some(warning) = overlap_warning(store, &input, &content.prefixes)? {
         input.diag.warnings.push(warning.clone());
         diag.warnings.push(warning);
     }
-    store
-        .commit(&input, &slices.by_hour, &replace)
-        .map_err(|e| chain(&e))?;
+    store.commit(&input, &slices.by_hour, &replace)?;
     Ok(FileOutcome {
         path: path.to_path_buf(),
         status: if replace.is_empty() {
@@ -280,8 +286,9 @@ fn overlap_warning(
         let overlap = last.min(other_last) - first.max(other_first);
         if shorter > 0 && overlap * 2 >= shorter {
             return Ok(Some(format!(
-                "its time range overlaps {} — if one is a partial copy of the other, their events are counted twice; keep only the complete file or recreate the store",
-                other.path
+                "its time range overlaps {} by {}% of the shorter one — if one is a partial copy of the other, their events are counted twice; keep only the complete file or recreate the store",
+                other.path,
+                overlap * 100 / shorter
             )));
         }
     }
@@ -307,9 +314,13 @@ fn make_input(
         .max()
         .map(jiff::Timestamp::as_second);
     let one = std::slice::from_ref(file);
+    let mut warnings = file_warnings(one);
+    if content.size == 0 {
+        warnings.push("file is empty".to_owned());
+    }
     let diag = StoredDiag {
         lines: file.stats.lines,
-        warnings: file_warnings(one),
+        warnings,
         shapes: top_unmatched_shapes(one),
     };
     let mut summary = file_report(file);
@@ -391,6 +402,22 @@ mod tests {
 
     fn inputs(store: &Store) -> Vec<Input> {
         store.inputs_in(i64::MIN, i64::MAX).unwrap()
+    }
+
+    #[test]
+    fn an_empty_file_is_stored_and_called_empty() {
+        let d = dir("empty");
+        let a = d.join("a.json");
+        fs::write(&a, "").unwrap();
+        let mut store = store_in(&d, "s.db");
+        let out = run(&mut store, &[&a], false);
+        assert_eq!(statuses(&out), [&Status::Ingested], "{out:?}");
+        let warnings = out[0].diag.as_ref().unwrap().warnings.join("\n");
+        assert!(warnings.contains("file is empty"), "{warnings}");
+        assert_eq!(
+            statuses(&run(&mut store, &[&a], false)),
+            [&Status::Unchanged]
+        );
     }
 
     #[test]
@@ -597,6 +624,7 @@ mod tests {
             .map(|d| d.warnings.join("\n"))
             .unwrap_or_default();
         assert!(warnings.contains("overlaps"), "{warnings}");
+        assert!(warnings.contains("% of the shorter"), "{warnings}");
         assert!(warnings.contains("current.json"), "{warnings}");
     }
 

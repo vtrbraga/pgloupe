@@ -250,7 +250,8 @@ impl Store {
     ) -> Result<(), StoreError> {
         self.conn
             .execute(
-                "UPDATE inputs SET path = ?2, disk_size = ?3, mtime = ?4 WHERE id = ?1",
+                "UPDATE inputs SET path = ?2, disk_size = ?3, mtime = ?4, \
+                 summary = json_set(summary, '$.path', ?2) WHERE id = ?1",
                 params![id, path, to_i64(disk_size), mtime],
             )
             .map(|_rows| ())
@@ -390,9 +391,12 @@ impl Store {
     ///
     /// Fails on database errors.
     pub fn end_ingest(&mut self) -> Result<(), StoreError> {
-        self.conn
-            .execute_batch("COMMIT")
-            .map_err(|e| sql_error(e, &self.path))
+        let committed = self.conn.execute_batch("COMMIT");
+        if committed.is_err() {
+            // A failed COMMIT leaves the transaction open; the next file needs a fresh one.
+            drop(self.conn.execute_batch("ROLLBACK"));
+        }
+        committed.map_err(|e| sql_error(e, &self.path))
     }
 }
 
@@ -577,6 +581,35 @@ mod tests {
                 .is_some()
         );
         assert!(store.input_by_stat("a.log", 10, 1_000).unwrap().is_none());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn touch_also_moves_the_path_shown_in_reports() {
+        let (mut store, path) = temp_store("touch-summary");
+        let mut stored = input(1, 10, "a.log");
+        stored.summary.path = "a.log".to_owned();
+        let id = store.commit(&stored, &slices(&[0]), &[]).unwrap();
+        store.touch(id, "moved.log", 10, 1_000).unwrap();
+        let found = store.input_by_hash(1).unwrap().unwrap();
+        assert_eq!(found.summary.path, "moved.log");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_failed_commit_ends_the_ingest_transaction() {
+        let (mut store, path) = temp_store("failed-end");
+        store.begin_ingest().unwrap();
+        store
+            .conn
+            .execute_batch(
+                "PRAGMA defer_foreign_keys = ON; \
+                 INSERT INTO slices (input_id, hour, data) VALUES (999, 0, x'00');",
+            )
+            .unwrap();
+        store.end_ingest().unwrap_err();
+        store.begin_ingest().unwrap();
+        store.end_ingest().unwrap();
         std::fs::remove_file(path).unwrap();
     }
 

@@ -113,6 +113,11 @@ pub fn build_parts(
     if bucket_secs < 60 || bucket_secs % 60 != 0 {
         return Err(ReportError::Bucket);
     }
+    if let (Some(since), Some(until)) = (since, until)
+        && since >= until
+    {
+        return Err(ReportError::EmptyWindow);
+    }
     let lo = since.map_or(i64::MIN, floor_hour);
     let hi = until.map_or(i64::MAX, ceil_hour);
     if lo >= hi {
@@ -248,6 +253,22 @@ mod tests {
             map.remove(key);
         }
         value
+    }
+
+    #[test]
+    fn since_after_until_is_empty_even_inside_one_hour() {
+        let d = dir("backwards");
+        let store = ingest_text(&d, &three_hours());
+        let err = build_parts(
+            &store,
+            &d.join("s.db"),
+            Some(at("2026-10-14T10:40:00Z")),
+            Some(at("2026-10-14T10:20:00Z")),
+            &OPTIONS,
+            60,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ReportError::EmptyWindow), "{err}");
     }
 
     #[test]
