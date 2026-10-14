@@ -109,14 +109,116 @@ impl Event {
 pub fn classify(record: &LogRecord) -> Event {
     match record.level {
         Severity::Log => classify_log(&record.message),
+        level if level.is_error() => classify_error(record),
         _ => Event::Other,
+    }
+}
+
+fn classify_error(record: &LogRecord) -> Event {
+    if record.sqlstate.as_deref() == Some("40P01") || record.message == "deadlock detected" {
+        Event::Deadlock
+    } else {
+        Event::Error {
+            level: record.level,
+            sqlstate: record.sqlstate.clone(),
+        }
     }
 }
 
 fn classify_log(message: &str) -> Event {
     statement_event(message)
         .or_else(|| connection_event(message))
+        .or_else(|| lock_event(message))
+        .or_else(|| temp_file_event(message))
+        .or_else(|| checkpoint_event(message))
+        .or_else(|| autovacuum_event(message))
         .unwrap_or(Event::Other)
+}
+
+/// `process N still waiting for LOCK on TARGET after X ms` and `process N acquired LOCK on
+/// TARGET after X ms`.
+fn lock_event(message: &str) -> Option<Event> {
+    let rest = message.strip_prefix("process ")?;
+    let (pid, rest) = rest.split_once(' ')?;
+    let pid: u32 = pid.parse().ok()?;
+    let (acquired, rest) = if let Some(rest) = rest.strip_prefix("still waiting for ") {
+        (false, rest)
+    } else {
+        (true, rest.strip_prefix("acquired ")?)
+    };
+    let (lock, rest) = rest.split_once(" on ")?;
+    let (target, waited) = rest.rsplit_once(" after ")?;
+    let waited_ms: f64 = waited.strip_suffix(" ms")?.parse().ok()?;
+    let (lock, target) = (lock.to_owned(), target.to_owned());
+    Some(if acquired {
+        Event::LockAcquired {
+            pid,
+            lock,
+            target,
+            waited_ms,
+        }
+    } else {
+        Event::LockWait {
+            pid,
+            lock,
+            target,
+            waited_ms,
+        }
+    })
+}
+
+fn temp_file_event(message: &str) -> Option<Event> {
+    let rest = message.strip_prefix("temporary file: path \"")?;
+    let (path, size) = rest.split_once("\", size ")?;
+    Some(Event::TempFile {
+        path: path.to_owned(),
+        bytes: size.trim().parse().ok()?,
+    })
+}
+
+fn checkpoint_event(message: &str) -> Option<Event> {
+    for (word, restart) in [("checkpoint", false), ("restartpoint", true)] {
+        if let Some(reason) = message.strip_prefix(&format!("{word} starting: ")) {
+            return Some(Event::CheckpointStart {
+                restart,
+                reason: reason.to_owned(),
+            });
+        }
+        if let Some(rest) = message.strip_prefix(&format!("{word} complete: ")) {
+            let after_wrote = rest.strip_prefix("wrote ")?;
+            let buffers: u64 = after_wrote.split(' ').next()?.parse().ok()?;
+            return Some(Event::CheckpointDone {
+                restart,
+                buffers,
+                write_ms: seconds_ms(rest, "write=")?,
+                sync_ms: seconds_ms(rest, "sync=")?,
+                total_ms: seconds_ms(rest, "total=")?,
+            });
+        }
+    }
+    None
+}
+
+fn autovacuum_event(message: &str) -> Option<Event> {
+    let rest = message.strip_prefix("automatic ")?;
+    let analyze = rest.starts_with("analyze ");
+    let (_, after) = rest.split_once(" of table \"")?;
+    let (table, _) = after.split_once('"')?;
+    Some(Event::Autovacuum {
+        analyze,
+        table: table.to_owned(),
+        elapsed_ms: seconds_ms(message, "elapsed: "),
+    })
+}
+
+/// The seconds value after `key` (`write=0.003 s`), in milliseconds.
+fn seconds_ms(text: &str, key: &str) -> Option<f64> {
+    let start = text.find(key)? + key.len();
+    let number: String = text[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    number.parse::<f64>().ok().map(|seconds| seconds * 1000.0)
 }
 
 fn statement_event(message: &str) -> Option<Event> {
@@ -366,5 +468,197 @@ mod tests {
         assert_eq!(log("execute x: SELECT 1").kind(), "execute");
         assert_eq!(log("duration: 1 ms").kind(), "duration");
         assert_eq!(log("whatever").kind(), "other");
+    }
+
+    fn error(sqlstate: Option<&str>, level: Severity, message: &str) -> Event {
+        let mut r = record(level, message);
+        r.sqlstate = sqlstate.map(str::to_owned);
+        classify(&r)
+    }
+
+    #[test]
+    fn lock_waits_and_acquisitions() {
+        assert_eq!(
+            log("process 96 still waiting for ShareLock on transaction 1098 after 200.124 ms"),
+            Event::LockWait {
+                pid: 96,
+                lock: "ShareLock".to_owned(),
+                target: "transaction 1098".to_owned(),
+                waited_ms: 200.124
+            }
+        );
+        assert_eq!(
+            log("process 96 acquired ShareLock on transaction 1098 after 411.197 ms"),
+            Event::LockAcquired {
+                pid: 96,
+                lock: "ShareLock".to_owned(),
+                target: "transaction 1098".to_owned(),
+                waited_ms: 411.197
+            }
+        );
+        assert_eq!(
+            log("process 7 still waiting for AccessExclusiveLock on relation 16384 of database 16387 after 1000.5 ms")
+                .kind(),
+            "lock_wait"
+        );
+        assert_eq!(
+            log("process x still waiting for ShareLock on y after 1 ms"),
+            Event::Other
+        );
+    }
+
+    #[test]
+    fn deadlock_by_sqlstate_or_message() {
+        assert_eq!(
+            error(Some("40P01"), Severity::Error, "deadlock detected"),
+            Event::Deadlock
+        );
+        assert_eq!(
+            error(None, Severity::Error, "deadlock detected"),
+            Event::Deadlock
+        );
+    }
+
+    #[test]
+    fn deadlock_with_several_processes_is_one_event() {
+        let mut r = record(Severity::Error, "deadlock detected");
+        r.detail = Some(
+            "Process 103 waits for ShareLock on transaction 1104; blocked by process 102.\nProcess 102 waits for ShareLock on transaction 1105; blocked by process 104.\nProcess 104 waits for ShareLock on transaction 1106; blocked by process 103."
+                .to_owned(),
+        );
+        assert_eq!(classify(&r), Event::Deadlock);
+    }
+
+    #[test]
+    fn errors_by_level_with_sqlstate() {
+        assert_eq!(
+            error(Some("23505"), Severity::Error, "duplicate key"),
+            Event::Error {
+                level: Severity::Error,
+                sqlstate: Some("23505".to_owned())
+            }
+        );
+        assert_eq!(
+            error(None, Severity::Fatal, "terminating connection"),
+            Event::Error {
+                level: Severity::Fatal,
+                sqlstate: None
+            }
+        );
+        assert_eq!(error(None, Severity::Panic, "boom").kind(), "error");
+        assert_eq!(
+            error(Some("01000"), Severity::Warning, "careful"),
+            Event::Other
+        );
+    }
+
+    #[test]
+    fn temp_files() {
+        assert_eq!(
+            log("temporary file: path \"base/pgsql_tmp/pgsql_tmp96.0\", size 1000000"),
+            Event::TempFile {
+                path: "base/pgsql_tmp/pgsql_tmp96.0".to_owned(),
+                bytes: 1_000_000
+            }
+        );
+        assert_eq!(log("temporary file: path \"x\", size big"), Event::Other);
+    }
+
+    #[test]
+    fn checkpoints_and_restartpoints() {
+        assert_eq!(
+            log("checkpoint starting: immediate force wait"),
+            Event::CheckpointStart {
+                restart: false,
+                reason: "immediate force wait".to_owned()
+            }
+        );
+        assert_eq!(
+            log("restartpoint starting: wal"),
+            Event::CheckpointStart {
+                restart: true,
+                reason: "wal".to_owned()
+            }
+        );
+        // PG15+ format
+        assert_eq!(
+            log(
+                "checkpoint complete: wrote 3 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.003 s, sync=0.001 s, total=0.012 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB; lsn=0/1A2B3C4D, redo lsn=0/1A2B3C00"
+            ),
+            Event::CheckpointDone {
+                restart: false,
+                buffers: 3,
+                write_ms: 3.0,
+                sync_ms: 1.0,
+                total_ms: 12.0
+            }
+        );
+        // PG13 format (no lsn)
+        assert_eq!(
+            log(
+                "checkpoint complete: wrote 10 buffers (0.1%); 0 WAL file(s) added, 0 removed, 1 recycled; write=1.500 s, sync=0.010 s, total=1.520 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB"
+            ),
+            Event::CheckpointDone {
+                restart: false,
+                buffers: 10,
+                write_ms: 1_500.0,
+                sync_ms: 10.0,
+                total_ms: 1_520.0
+            }
+        );
+        assert_eq!(
+            log("restartpoint complete: wrote 5 buffers (0.0%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.500 s, sync=0.000 s, total=0.600 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=0 kB").kind(),
+            "checkpoint_done"
+        );
+        // PG18 adds a SLRU clause after the buffers
+        assert_eq!(
+            log(
+                "checkpoint complete: wrote 3 buffers (0.0%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.003 s, sync=0.001 s, total=0.012 s; sync files=2, longest=0.001 s, average=0.001 s; distance=0 kB, estimate=0 kB"
+            ),
+            Event::CheckpointDone {
+                restart: false,
+                buffers: 3,
+                write_ms: 3.0,
+                sync_ms: 1.0,
+                total_ms: 12.0
+            }
+        );
+        assert_eq!(log("checkpoint complete: nothing useful"), Event::Other);
+    }
+
+    #[test]
+    fn autovacuum_and_autoanalyze() {
+        let vacuum = "automatic vacuum of table \"pagila.public.film\": index scans: 1\npages: 0 removed, 100 remain, 100 scanned (100.00% of total)\ntuples: 5 removed, 1000 remain, 0 are dead but not yet removable\nbuffer usage: 50 hits, 0 misses, 0 dirtied\nsystem usage: CPU: user: 0.01 s, system: 0.00 s, elapsed: 0.05 s";
+        assert_eq!(
+            log(vacuum),
+            Event::Autovacuum {
+                analyze: false,
+                table: "pagila.public.film".to_owned(),
+                elapsed_ms: Some(50.0)
+            }
+        );
+        let analyze = "automatic analyze of table \"pagila.public.film\"\navg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.01 s";
+        assert_eq!(
+            log(analyze),
+            Event::Autovacuum {
+                analyze: true,
+                table: "pagila.public.film".to_owned(),
+                elapsed_ms: Some(10.0)
+            }
+        );
+        assert_eq!(
+            log(
+                "automatic aggressive vacuum to prevent wraparound of table \"d.s.t\": index scans: 0"
+            ),
+            Event::Autovacuum {
+                analyze: false,
+                table: "d.s.t".to_owned(),
+                elapsed_ms: None
+            }
+        );
+        assert_eq!(
+            log("automatic vacuum of table without quotes"),
+            Event::Other
+        );
     }
 }
