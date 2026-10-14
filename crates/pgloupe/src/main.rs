@@ -7,7 +7,7 @@ use clap::Parser as _;
 use pgloupe::cli::{Cli, Exit, run};
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::parse().validate().unwrap_or_else(|error| error.exit());
     let mut out = BufWriter::new(io::stdout().lock());
     let result = run(&cli, &mut out, &mut io::stderr().lock());
     let flushed = out.flush();

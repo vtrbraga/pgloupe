@@ -1,7 +1,7 @@
 //! Command-line interface.
 
 use std::{
-    io::{BufRead, Write},
+    io::{BufRead, IsTerminal as _, Write},
     path::PathBuf,
 };
 
@@ -13,8 +13,9 @@ use crate::{
     analyze::{
         pipeline::{self, AnalyzeError},
         render as analyze_render,
-        report::{Report, ReportOptions, SortBy as ReportSortBy},
+        report::{Report, ReportOptions, SortBy as ReportSortBy, all_statements},
     },
+    combined::{self, LogData},
     log::{self, Format, Options, source, time::parse_offset_arg},
     stats::{
         delta::{self, SortBy},
@@ -32,6 +33,27 @@ pub struct Cli {
     command: Command,
 }
 
+impl Cli {
+    /// Checks the combinations clap's declarative rules cannot express.
+    ///
+    /// # Errors
+    ///
+    /// Returns a usage error (exit code 2 when printed with `exit`).
+    pub fn validate(self) -> Result<Self, clap::Error> {
+        use clap::CommandFactory as _;
+        if let Command::Report(args) = &self.command
+            && args.store.is_none()
+            && (args.since.is_some() || args.until.is_some())
+        {
+            return Err(Cli::command().error(
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "--since and --until need --store",
+            ));
+        }
+        Ok(self)
+    }
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Work with `pg_stat_statements` snapshots.
@@ -44,6 +66,9 @@ enum Command {
         #[command(subcommand)]
         command: LogsCommand,
     },
+    /// One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or
+    /// text, with the two joined per statement.
+    Report(CombinedArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -182,6 +207,73 @@ struct StoreReportArgs {
     output: OutputFormat,
 }
 
+#[derive(Debug, Args)]
+struct CombinedArgs {
+    /// Log files (csvlog, jsonlog or stderr; gzip is detected automatically), analyzed on the fly.
+    #[arg(conflicts_with = "store", required_unless_present_any = ["store", "before"])]
+    files: Vec<PathBuf>,
+    /// A store written by `logs ingest`, instead of log files.
+    #[arg(long)]
+    store: Option<PathBuf>,
+    /// With `--store`: start of the log window (RFC 3339 or `YYYY-MM-DD`, UTC). Defaults to the
+    /// snapshot interval; rounded down to the hour.
+    #[arg(long, value_parser = store_report::parse_time, requires = "store")]
+    since: Option<Timestamp>,
+    /// With `--store`: end of the log window; rounded up to the hour.
+    #[arg(long, value_parser = store_report::parse_time, requires = "store")]
+    until: Option<Timestamp>,
+    /// Older `pg_stat_statements` snapshot (CSV export).
+    #[arg(long, requires = "after")]
+    before: Option<PathBuf>,
+    /// Newer snapshot.
+    #[arg(long, requires = "before")]
+    after: Option<PathBuf>,
+    /// `pg_stat_statements_info` CSV taken with the older snapshot.
+    #[arg(long, requires = "before")]
+    before_info: Option<PathBuf>,
+    /// `pg_stat_statements_info` CSV taken with the newer snapshot.
+    #[arg(long, requires = "before")]
+    after_info: Option<PathBuf>,
+    /// Log format of `FILES`; `auto` looks at each file's first line.
+    #[arg(long, value_enum, default_value_t = LogFormat::Auto, conflicts_with = "store")]
+    format: LogFormat,
+    /// The server's `log_line_prefix` for `FILES`; inferred when omitted.
+    #[arg(long, conflicts_with = "store")]
+    prefix: Option<String>,
+    /// Offset for timezone abbreviations the log does not spell out, e.g. `-03` or `+05:30`.
+    #[arg(long, value_parser = parse_offset_arg, allow_hyphen_values = true, conflicts_with = "store")]
+    log_tz: Option<Offset>,
+    /// Distinct statements kept before the rest fold into one overflow row (`FILES`).
+    #[arg(long, default_value_t = 50_000, conflicts_with = "store")]
+    max_fingerprints: usize,
+    /// Worker threads for `FILES` (default: all cores).
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..), conflicts_with = "store")]
+    threads: Option<u64>,
+    /// Metric that orders the statement table.
+    #[arg(long, value_enum, default_value_t = AnalyzeBy::Total)]
+    by: AnalyzeBy,
+    /// Statements to list.
+    #[arg(long, default_value_t = 20)]
+    top: usize,
+    /// Timeline resolution: `30s`, `1m`, `1h` (a multiple of one minute with `--store`).
+    #[arg(long, default_value = "1m", value_parser = parse_bucket)]
+    bucket: i64,
+    /// Report format.
+    #[arg(long = "output", value_enum, default_value_t = ReportFormat::Text)]
+    output: ReportFormat,
+    /// Write the report here instead of to standard output.
+    #[arg(long)]
+    out: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ReportFormat {
+    Text,
+    Json,
+    /// One self-contained HTML file.
+    Html,
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum AnalyzeBy {
     /// Total execution time.
@@ -305,6 +397,7 @@ pub fn run(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Resul
         Command::Logs {
             command: LogsCommand::Report(args),
         } => logs_report(args, out),
+        Command::Report(args) => report(args, out, err),
     }
 }
 
@@ -466,6 +559,112 @@ fn logs_ingest(
     Ok(if failed { Exit::Failed } else { Exit::Ok })
 }
 
+/// Prints what `AnalyzeError::PrefixNotInferred` knows: the closest candidate and unmatched lines.
+fn explain_prefix_failure(error: &AnalyzeError, err: &mut dyn Write) {
+    if let AnalyzeError::PrefixNotInferred { inference, .. } = error {
+        if let Some((candidate, matched)) = &inference.best {
+            let _ = writeln!(
+                err,
+                "closest candidate: {candidate} ({matched} of {} sample lines)",
+                inference.sampled
+            );
+        }
+        let _ = writeln!(err, "unmatched lines start with:");
+        for example in &inference.unmatched {
+            let _ = writeln!(err, "  {example}");
+        }
+    }
+}
+
+fn load_delta(args: &CombinedArgs) -> anyhow::Result<Option<delta::Delta>> {
+    let (Some(before), Some(after)) = (&args.before, &args.after) else {
+        return Ok(None);
+    };
+    if args.before_info.is_some() != args.after_info.is_some() {
+        bail!("--before-info and --after-info must be given together");
+    }
+    let mut before = Snapshot::from_path(before)?;
+    let mut after = Snapshot::from_path(after)?;
+    if let (Some(before_info), Some(after_info)) = (&args.before_info, &args.after_info) {
+        before = before.with_info(Info::from_path(before_info)?);
+        after = after.with_info(Info::from_path(after_info)?);
+    }
+    Ok(Some(delta::diff(&before, &after)?))
+}
+
+fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Result<Exit> {
+    let delta = load_delta(args)?;
+    let options = ReportOptions {
+        by: args.by.into(),
+        top: args.top,
+    };
+    let mut failed = false;
+    let logs = if let Some(store_path) = &args.store {
+        let store = Store::open_existing(store_path)?;
+        let since = args.since.or(delta.as_ref().map(|d| d.before_at));
+        let until = args.until.or(delta.as_ref().map(|d| d.after_at));
+        let (report, acc) =
+            store_report::build_parts(&store, store_path, since, until, &options, args.bucket)?;
+        Some(LogData {
+            rows: all_statements(&acc),
+            inputs: report.files.len(),
+            report,
+            source: "store",
+            store: Some(store_path.display().to_string()),
+        })
+    } else if args.files.is_empty() {
+        None
+    } else {
+        let pipeline_options = pipeline::Options {
+            format: match args.format {
+                LogFormat::Auto => None,
+                LogFormat::Csv => Some(Format::Csv),
+                LogFormat::Json => Some(Format::Json),
+                LogFormat::Stderr => Some(Format::Stderr),
+            },
+            prefix: args.prefix.clone(),
+            log_tz: args.log_tz,
+            max_fingerprints: args.max_fingerprints,
+            bucket_secs: args.bucket,
+            threads: args.threads.map(usize::try_from).transpose()?,
+            batch_size: pipeline::Options::new().batch_size,
+            hash_marks: None,
+        };
+        let output = pipeline::run(&args.files, &pipeline_options).inspect_err(|error| {
+            explain_prefix_failure(error, err);
+        })?;
+        let skipped: u64 = output.files.iter().map(|file| file.stats.skipped).sum();
+        failed = output.acc.totals.records == 0 && skipped > 0;
+        Some(LogData {
+            report: Report::build(&output, &options),
+            rows: all_statements(&output.acc),
+            source: "files",
+            inputs: args.files.len(),
+            store: None,
+        })
+    };
+    let combined = combined::build(logs, delta.as_ref(), &options);
+    let rendered = match args.output {
+        ReportFormat::Text => combined::text(&combined),
+        ReportFormat::Json => {
+            let mut json = combined.to_json()?;
+            json.push('\n');
+            json
+        }
+        ReportFormat::Html => combined::html(&combined)?,
+    };
+    if let Some(path) = &args.out {
+        std::fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
+    } else {
+        if matches!(args.output, ReportFormat::Html) && std::io::stdout().is_terminal() {
+            let _ = writeln!(err, "note: HTML on a terminal; use --out report.html");
+        }
+        out.write_all(rendered.as_bytes())
+            .context("writing output")?;
+    }
+    Ok(if failed { Exit::Failed } else { Exit::Ok })
+}
+
 /// `, N skipped` when some lines could not be decoded.
 fn skipped_note(skipped: u64) -> String {
     if skipped == 0 {
@@ -519,19 +718,7 @@ fn logs_analyze(
     let output = match pipeline::run(&args.files, &options) {
         Ok(output) => output,
         Err(error) => {
-            if let AnalyzeError::PrefixNotInferred { inference, .. } = &error {
-                if let Some((candidate, matched)) = &inference.best {
-                    let _ = writeln!(
-                        err,
-                        "closest candidate: {candidate} ({matched} of {} sample lines)",
-                        inference.sampled
-                    );
-                }
-                let _ = writeln!(err, "unmatched lines start with:");
-                for example in &inference.unmatched {
-                    let _ = writeln!(err, "  {example}");
-                }
-            }
+            explain_prefix_failure(&error, err);
             return Err(error.into());
         }
     };
@@ -680,5 +867,38 @@ mod tests {
             "pgloupe", "logs", "report", "--store", "s", "--since", "never",
         ])
         .unwrap_err();
+    }
+
+    #[test]
+    fn report_needs_a_source_and_valid_pairs() {
+        Cli::try_parse_from(["pgloupe", "report"]).unwrap_err();
+        Cli::try_parse_from(["pgloupe", "report", "a.log", "--store", "s.db"]).unwrap_err();
+        Cli::try_parse_from(["pgloupe", "report", "--before", "b.csv"]).unwrap_err();
+        Cli::try_parse_from(["pgloupe", "report", "a.log", "--since", "2026-10-14"])
+            .and_then(Cli::validate)
+            .unwrap_err();
+        Cli::try_parse_from([
+            "pgloupe",
+            "report",
+            "--store",
+            "s.db",
+            "--since",
+            "2026-10-14",
+        ])
+        .unwrap();
+        Cli::try_parse_from(["pgloupe", "report", "--before", "b.csv", "--after", "a.csv"])
+            .unwrap();
+    }
+
+    #[test]
+    fn combined_report_defaults() {
+        let cli = Cli::try_parse_from(["pgloupe", "report", "a.log"]).unwrap();
+        let Command::Report(args) = cli.command else {
+            panic!("expected report");
+        };
+        assert_eq!(args.top, 20);
+        assert_eq!(args.bucket, 60);
+        assert!(matches!(args.output, ReportFormat::Text));
+        assert!(args.out.is_none());
     }
 }
