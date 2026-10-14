@@ -6,13 +6,13 @@ use thiserror::Error;
 /// A `pg_stat_statements` or `pg_stat_statements_info` CSV could not be read.
 #[derive(Debug, Error)]
 pub enum SnapshotError {
-    #[error("{file}: {source}")]
+    #[error("{file}: invalid CSV")]
     Csv {
         file: String,
         #[source]
         source: csv::Error,
     },
-    #[error("{file}: {source}")]
+    #[error("{file}: could not read")]
     Io {
         file: String,
         #[source]

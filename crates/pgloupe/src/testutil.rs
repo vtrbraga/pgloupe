@@ -56,6 +56,6 @@ pub(crate) fn entry_since(calls: u64, total: f64, since: &str) -> Entry {
 pub(crate) fn info(dealloc: u64, reset: &str) -> Info {
     Info {
         dealloc,
-        stats_reset: Some(ts(reset)),
+        stats_reset: ts(reset),
     }
 }

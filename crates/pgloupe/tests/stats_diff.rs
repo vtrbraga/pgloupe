@@ -204,3 +204,13 @@ fn usage_errors_exit_two() -> io::Result<()> {
     assert_eq!(out.status.code(), Some(2));
     Ok(())
 }
+
+#[test]
+fn input_errors_print_their_cause_once() -> io::Result<()> {
+    let out = pgloupe(&["stats", "diff"], &["bad_number.csv", "basic_after.csv"])?;
+    assert_eq!(out.status.code(), Some(1));
+    let message = stderr(&out);
+    assert!(message.contains("bad_number.csv"), "{message}");
+    assert_eq!(message.matches("invalid digit").count(), 1, "{message}");
+    Ok(())
+}

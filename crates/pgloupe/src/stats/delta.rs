@@ -114,7 +114,7 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Result<Delta, DeltaError> {
     let pairs = pair(before, after);
     let reset = judge_reset(infos, &pairs);
     let reset_at = match (reset, infos) {
-        (Reset::Proven, Some((_, after_info))) => after_info.stats_reset,
+        (Reset::Proven, Some((_, after_info))) => Some(after_info.stats_reset),
         _ => None,
     };
     let evictions = count_evictions(infos, reset);
@@ -217,33 +217,34 @@ fn check_infos(
     after: Info,
 ) -> Result<(), DeltaError> {
     let refuse = |reason: String| Err(DeltaError::InconsistentInfo { reason });
-    if let Some(reset) = before.stats_reset.filter(|reset| *reset > before_at) {
+    if before.stats_reset > before_at {
         return refuse(format!(
-            "before info says stats_reset {reset}, later than the before snapshot ({before_at})"
+            "before info says stats_reset {}, later than the before snapshot ({before_at})",
+            before.stats_reset
         ));
     }
-    if let Some(reset) = after.stats_reset.filter(|reset| *reset > after_at) {
+    if after.stats_reset > after_at {
         return refuse(format!(
-            "after info says stats_reset {reset}, later than the after snapshot ({after_at})"
+            "after info says stats_reset {}, later than the after snapshot ({after_at})",
+            after.stats_reset
         ));
     }
-    if let (Some(b), Some(a)) = (before.stats_reset, after.stats_reset) {
-        if a < b {
-            return refuse(format!(
-                "stats_reset moved backwards ({b} then {a}); are the info files swapped?"
-            ));
-        }
-        if a != b && a <= before_at {
-            return refuse(format!(
-                "after info shows a reset at {a}, which is not inside the window (it starts at {before_at})"
-            ));
-        }
-        if a == b && after.dealloc < before.dealloc {
-            return refuse(format!(
-                "dealloc went from {} to {} without a reset",
-                before.dealloc, after.dealloc
-            ));
-        }
+    let (b, a) = (before.stats_reset, after.stats_reset);
+    if a < b {
+        return refuse(format!(
+            "stats_reset moved backwards ({b} then {a}); are the info files swapped?"
+        ));
+    }
+    if a != b && a <= before_at {
+        return refuse(format!(
+            "after info shows a reset at {a}, which is not inside the window (it starts at {before_at})"
+        ));
+    }
+    if a == b && after.dealloc < before.dealloc {
+        return refuse(format!(
+            "dealloc went from {} to {} without a reset",
+            before.dealloc, after.dealloc
+        ));
     }
     Ok(())
 }
@@ -274,9 +275,7 @@ fn entry_restarted(before: &Entry, after: &Entry) -> bool {
 }
 
 fn judge_reset(infos: Option<(Info, Info)>, pairs: &[Paired<'_>]) -> Reset {
-    let proven = infos.is_some_and(|(before, after)| {
-        after.stats_reset.is_some() && before.stats_reset != after.stats_reset
-    });
+    let proven = infos.is_some_and(|(before, after)| before.stats_reset != after.stats_reset);
     if proven {
         return Reset::Proven;
     }

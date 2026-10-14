@@ -115,7 +115,8 @@ pub struct Entry {
 pub struct Info {
     /// Entries evicted since `stats_reset`.
     pub dealloc: u64,
-    pub stats_reset: Option<Timestamp>,
+    /// When the counters were last reset; never null on PG14+.
+    pub stats_reset: Timestamp,
 }
 
 /// A point-in-time copy of `pg_stat_statements`.
@@ -272,14 +273,15 @@ impl Info {
     ///
     /// # Errors
     ///
-    /// Fails if the `dealloc` column is missing, the file has no rows, or a value does not parse.
+    /// Fails if the `dealloc` or `stats_reset` column is missing, the file has no rows, or a
+    /// value is empty or does not parse.
     pub fn from_reader(reader: impl Read, file: &str) -> Result<Self, SnapshotError> {
         let mut rdr = csv::Reader::from_reader(reader);
         let headers = rdr
             .headers()
             .map_err(|source| csv_error(file, source))?
             .clone();
-        check_columns(&headers, file, &["dealloc"])?;
+        check_columns(&headers, file, &["dealloc", "stats_reset"])?;
         let mut record = csv::StringRecord::new();
         if !rdr
             .read_record(&mut record)
@@ -295,9 +297,10 @@ impl Info {
         let stats_reset = raw
             .stats_reset
             .as_deref()
-            .map(parse_timestamp)
-            .transpose()
-            .map_err(|message| bad_value(file, 2, "stats_reset", &message))?;
+            .ok_or_else(|| bad_value(file, 2, "stats_reset", "is empty"))
+            .and_then(|text| {
+                parse_timestamp(text).map_err(|message| bad_value(file, 2, "stats_reset", &message))
+            })?;
         Ok(Info {
             dealloc: raw.dealloc,
             stats_reset,
@@ -445,6 +448,18 @@ mod tests {
 
     fn read(rows: &[&str]) -> Result<Snapshot, SnapshotError> {
         read_with(HEADER, rows)
+    }
+
+    /// The error and its causes, as the CLI prints them.
+    fn with_causes(err: &SnapshotError) -> String {
+        let mut message = err.to_string();
+        let mut source = std::error::Error::source(err);
+        while let Some(cause) = source {
+            message.push_str(": ");
+            message.push_str(&cause.to_string());
+            source = cause.source();
+        }
+        message
     }
 
     fn key(queryid: i64) -> Key {
@@ -636,7 +651,7 @@ mod tests {
     fn bad_number_reports_file_and_line() {
         let row = "2026-10-14 10:00:00+00,170011,pagila,postgres,10,16387,t,1,SELECT 1,abc,0.1,1";
         let err = read(&[row]).unwrap_err();
-        let message = err.to_string();
+        let message = with_causes(&err);
         assert!(message.contains("test.csv"), "{message}");
         assert!(message.contains("line: 2"), "{message}");
     }
@@ -729,14 +744,34 @@ mod tests {
         assert_eq!(info.dealloc, 5);
         assert_eq!(
             info.stats_reset,
-            Some("2026-10-14T10:20:13.382713Z".parse().unwrap())
+            "2026-10-14T10:20:13.382713Z".parse().unwrap()
         );
     }
 
     #[test]
-    fn info_without_stats_reset_is_none() {
-        let info = read_info(&["2026-10-14 10:20:13+00,0,"]).unwrap();
-        assert_eq!(info.stats_reset, None);
+    fn info_without_a_stats_reset_value_is_refused() {
+        let err = read_info(&["2026-10-14 10:20:13+00,0,"]).unwrap_err();
+        assert!(matches!(err, SnapshotError::BadValue { .. }), "{err}");
+        assert!(err.to_string().contains("stats_reset"), "{err}");
+    }
+
+    #[test]
+    fn info_without_a_stats_reset_column_is_refused() {
+        let err = Info::from_reader(
+            "snapshot_at,dealloc\n2026-10-14 10:20:13+00,0\n".as_bytes(),
+            "i.csv",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SnapshotError::MissingColumn {
+                    column: "stats_reset",
+                    ..
+                }
+            ),
+            "{err}"
+        );
     }
 
     #[test]
@@ -761,7 +796,7 @@ mod tests {
     fn with_info_attaches_the_info() {
         let info = Info {
             dealloc: 3,
-            stats_reset: None,
+            stats_reset: "2026-10-14T10:00:00Z".parse().unwrap(),
         };
         let snap = read(&[ROW]).unwrap().with_info(info);
         assert_eq!(snap.info, Some(info));
