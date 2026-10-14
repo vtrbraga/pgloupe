@@ -106,6 +106,9 @@ pub struct Attributes<'a> {
 }
 
 /// Per-value statistics for each dimension.
+///
+/// Merging adds every value; only [`Dimensions::recap`], called once at the end of a run, applies
+/// the cap, so the result does not depend on how records were split.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Dimensions {
     pub databases: BTreeMap<String, DimStats>,
@@ -171,10 +174,15 @@ impl Dimensions {
             if map.len() <= kept {
                 continue;
             }
-            let mut ranked: Vec<(String, u64)> = map
+            let mut ranked: Vec<(String, (u64, u64))> = map
                 .iter()
                 .filter(|(name, _)| name.as_str() != OTHER)
-                .map(|(name, stats)| (name.clone(), stats.statements + stats.connections))
+                .map(|(name, stats)| {
+                    (
+                        name.clone(),
+                        (stats.total_us, stats.statements + stats.connections),
+                    )
+                })
                 .collect();
             ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
             for (name, _) in ranked.split_off(kept - 1) {
@@ -202,7 +210,6 @@ impl Merge for Dimensions {
                     .merge(stats.clone());
             }
         }
-        self.recap(LIMIT);
     }
 }
 
@@ -285,13 +292,49 @@ mod tests {
         let mut left = many(1_200, |i| if i % 2 == 0 { 1 + (i % 7) as u64 } else { 0 });
         let right = many(1_200, |i| if i % 2 == 1 { 1 + (i % 7) as u64 } else { 0 });
         left.merge(right);
+        left.recap(LIMIT);
         let mut other_way = many(1_200, |i| if i % 2 == 1 { 1 + (i % 7) as u64 } else { 0 });
         other_way.merge(many(
             1_200,
             |i| if i % 2 == 0 { 1 + (i % 7) as u64 } else { 0 },
         ));
+        other_way.recap(LIMIT);
         assert_eq!(left.users, whole.users);
         assert_eq!(other_way.users, whole.users);
         assert_eq!(whole.users.len(), LIMIT);
+    }
+
+    #[test]
+    fn many_shards_merge_to_the_same_breakdown_in_any_order() {
+        // 2,500 users, each busier in some shards: folding early would lose them.
+        let shard = |k: usize| many(2_500, move |i| ((i * 7 + k * 13) % 11) as u64);
+        let mut whole = Dimensions::default();
+        for k in 0..6 {
+            for (name, stats) in shard(k).users {
+                whole.users.entry(name).or_default().merge(stats);
+            }
+        }
+        whole.recap(LIMIT);
+        let fold = |order: &[usize]| {
+            let mut acc = Dimensions::default();
+            for k in order {
+                acc.merge(shard(*k));
+            }
+            acc.recap(LIMIT);
+            acc
+        };
+        assert_eq!(fold(&[0, 1, 2, 3, 4, 5]).users, whole.users);
+        assert_eq!(fold(&[5, 3, 1, 0, 2, 4]).users, whole.users);
+        // A tree: ((0+1)+(2+3)) + (4+5), each pair recapped as a worker would not.
+        let mut left = shard(0);
+        left.merge(shard(1));
+        let mut mid = shard(2);
+        mid.merge(shard(3));
+        left.merge(mid);
+        let mut right = shard(4);
+        right.merge(shard(5));
+        left.merge(right);
+        left.recap(LIMIT);
+        assert_eq!(left.users, whole.users);
     }
 }

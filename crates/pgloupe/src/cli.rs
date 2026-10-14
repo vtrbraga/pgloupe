@@ -70,17 +70,17 @@ impl Cli {
                         ErrorKind::MissingRequiredArgument,
                         "--since and --until need --store",
                     )
-                } else if args.store.is_some() && !args.filters.filter().is_empty() {
+                } else if args.files.is_empty() && !args.filters.filter().is_empty() {
                     fail(
                         ErrorKind::ArgumentConflict,
-                        "filters apply while reading log files; a store's slices are already aggregated",
+                        "filters apply while reading log FILES; a store's slices are already aggregated and snapshots have no log records",
                     )
-                } else if args.store.is_some()
+                } else if args.files.is_empty()
                     && (args.capture.params || args.capture.slowest.is_some())
                 {
                     fail(
                         ErrorKind::ArgumentConflict,
-                        "--params and --slowest apply while reading log files; a store keeps what its ingest captured",
+                        "--params and --slowest apply while reading log FILES; a store keeps what its ingest captured",
                     )
                 } else if info_pair(&args.before_info, &args.after_info) {
                     fail(

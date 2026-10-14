@@ -33,14 +33,14 @@ cancelled
   none
 
 slowest executions
-  120.00 ms  2026-10-14T10:06:00.1Z  f0e619a5  pagila/postgres/synth:demo/-  UPDATE film SET rental_rate = 3.99
-  100.00 ms  2026-10-14T10:05:00.1Z  f0e619a5  pagila/postgres/synth:demo/-  UPDATE film SET rental_rate = 2.99
+  120.00 ms  2026-10-14T10:06:00.1Z  f0e619a5  pagila/postgres/synth:demo/-  UPDATE film SET rental_rate = $1
+  100.00 ms  2026-10-14T10:05:00.1Z  f0e619a5  pagila/postgres/synth:demo/-  UPDATE film SET rental_rate = $1
   4.10 ms  2026-10-14T10:08:00.1Z  a8fbe6a1  pagila/postgres/synth:demo/-  SELECT * FROM actor
   3.20 ms  2026-10-14T10:07:00.1Z  a8fbe6a1  pagila/postgres/synth:demo/-  SELECT * FROM actor
-  0.60 ms  2026-10-14T10:02:00.2Z  9703bd64  pagila/postgres/synth:demo/-  SELECT * FROM film WHERE film_id = 11
-  0.50 ms  2026-10-14T10:01:00.1Z  9703bd64  pagila/postgres/synth:demo/-  SELECT * FROM film WHERE film_id = 10
-  0.50 ms  2026-10-14T10:04:00.4Z  9703bd64  pagila/postgres/synth:demo/-  SELECT * FROM film WHERE film_id = 13
-  0.40 ms  2026-10-14T10:03:00.3Z  9703bd64  pagila/postgres/synth:demo/-  SELECT * FROM film WHERE film_id = 12
+  0.60 ms  2026-10-14T10:02:00.2Z  9703bd64  pagila/postgres/synth:demo/-  SELECT * FROM film WHERE film_id = $1
+  0.50 ms  2026-10-14T10:01:00.1Z  9703bd64  pagila/postgres/synth:demo/-  SELECT * FROM film WHERE film_id = $1
+  0.50 ms  2026-10-14T10:04:00.4Z  9703bd64  pagila/postgres/synth:demo/-  SELECT * FROM film WHERE film_id = $1
+  0.40 ms  2026-10-14T10:03:00.3Z  9703bd64  pagila/postgres/synth:demo/-  SELECT * FROM film WHERE film_id = $1
   (bind parameters were not kept; pass --params to keep them)
 
 locks

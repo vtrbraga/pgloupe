@@ -101,7 +101,7 @@ pub fn findings(ctx: &Context<'_>) -> Vec<Finding> {
             ),
         ));
     }
-    if ctx.has_logs && !ctx.joined.rows.iter().any(|row| row.log.is_some()) {
+    if ctx.has_logs && ctx.delta.is_some() && !ctx.joined.rows.iter().any(|row| row.log.is_some()) {
         found.push(finding(
             "no_log_records",
             "warn",

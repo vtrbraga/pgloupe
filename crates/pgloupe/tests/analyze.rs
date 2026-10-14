@@ -494,3 +494,23 @@ fn bad_filters_are_usage_errors() -> io::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn literals_stay_out_of_the_slowest_list_unless_parameters_are_asked_for() -> io::Result<()> {
+    let line = r#"{"timestamp":"2026-10-14 10:00:01.000 UTC","pid":1,"session_id":"a.1","line_num":1,"error_severity":"LOG","message":"duration: 50 ms  statement: SELECT * FROM customer WHERE email = 'alice@example.com'","backend_type":"client backend"}"#;
+    let log = scratch("literals.json", format!("{line}\n").as_bytes())?;
+    let files = std::slice::from_ref(&log);
+    let plain = analyze(&[], files)?;
+    assert!(
+        !stdout(&plain).contains("alice@example.com"),
+        "{}",
+        stdout(&plain)
+    );
+    let with = analyze(&["--params"], files)?;
+    assert!(
+        stdout(&with).contains("alice@example.com"),
+        "{}",
+        stdout(&with)
+    );
+    Ok(())
+}

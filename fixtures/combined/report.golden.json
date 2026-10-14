@@ -298,7 +298,7 @@
           "fingerprint": "f0e619a53604ffb7",
           "host": null,
           "params": null,
-          "text": "UPDATE film SET rental_rate = 3.99",
+          "text": "UPDATE film SET rental_rate = $1",
           "timestamp": "2026-10-14T10:06:00.1Z",
           "user": "postgres"
         },
@@ -309,7 +309,7 @@
           "fingerprint": "f0e619a53604ffb7",
           "host": null,
           "params": null,
-          "text": "UPDATE film SET rental_rate = 2.99",
+          "text": "UPDATE film SET rental_rate = $1",
           "timestamp": "2026-10-14T10:05:00.1Z",
           "user": "postgres"
         },
@@ -342,7 +342,7 @@
           "fingerprint": "9703bd645db62a78",
           "host": null,
           "params": null,
-          "text": "SELECT * FROM film WHERE film_id = 11",
+          "text": "SELECT * FROM film WHERE film_id = $1",
           "timestamp": "2026-10-14T10:02:00.2Z",
           "user": "postgres"
         },
@@ -353,7 +353,7 @@
           "fingerprint": "9703bd645db62a78",
           "host": null,
           "params": null,
-          "text": "SELECT * FROM film WHERE film_id = 10",
+          "text": "SELECT * FROM film WHERE film_id = $1",
           "timestamp": "2026-10-14T10:01:00.1Z",
           "user": "postgres"
         },
@@ -364,7 +364,7 @@
           "fingerprint": "9703bd645db62a78",
           "host": null,
           "params": null,
-          "text": "SELECT * FROM film WHERE film_id = 13",
+          "text": "SELECT * FROM film WHERE film_id = $1",
           "timestamp": "2026-10-14T10:04:00.4Z",
           "user": "postgres"
         },
@@ -375,7 +375,7 @@
           "fingerprint": "9703bd645db62a78",
           "host": null,
           "params": null,
-          "text": "SELECT * FROM film WHERE film_id = 12",
+          "text": "SELECT * FROM film WHERE film_id = $1",
           "timestamp": "2026-10-14T10:03:00.3Z",
           "user": "postgres"
         }

@@ -201,7 +201,7 @@ impl Merge for QueryStats {
             self.query_id = other.query_id;
         }
         self.parsed &= other.parsed;
-        if self.kind == QueryKind::Other {
+        if self.kind == QueryKind::Other && self.id != 0 {
             self.kind = other.kind;
         }
         self.calls += other.calls;
@@ -651,9 +651,9 @@ impl Accumulators {
             } => {
                 let query = self.query_for(text, ts, record.query_id);
                 query.call(*duration_ms, ts, *kind);
-                let fingerprint = query.id;
+                let (fingerprint, parsed) = (query.id, query.parsed);
                 if let Some(ms) = duration_ms {
-                    self.offer_slow(record, fingerprint, text, to_micros(*ms));
+                    self.offer_slow(record, (fingerprint, parsed), text, to_micros(*ms));
                 }
             }
             Event::LockWait { .. } => {
@@ -691,16 +691,29 @@ impl Accumulators {
         }
     }
 
-    fn offer_slow(&mut self, record: &LogRecord, fingerprint: u64, text: &str, duration_us: u64) {
+    /// Offers one execution to the slowest list. The statement is kept as the log spelled it only
+    /// with parameters on; otherwise it is normalized, so literals do not reach the report.
+    fn offer_slow(
+        &mut self,
+        record: &LogRecord,
+        (fingerprint, parsed): (u64, bool),
+        text: &str,
+        duration_us: u64,
+    ) {
         if !self.slowest.wants(duration_us) {
             return;
         }
+        let shown = if self.capture_params {
+            slowest::cut(text)
+        } else {
+            display_text(text, parsed)
+        };
         let owned = |value: &Option<String>| value.clone();
         self.slowest.offer(Execution {
             ts: record.ts,
             duration_us,
             fingerprint,
-            text: slowest::cut(text),
+            text: shown,
             params: if self.capture_params {
                 parameters(record).map(slowest::cut)
             } else {
@@ -759,6 +772,11 @@ impl Accumulators {
     /// (ties: the larger id goes first), so the result does not depend on arrival order.
     pub fn recap(&mut self, limit: usize) {
         self.dims.recap(dimensions::LIMIT);
+        self.cap_queries(limit);
+    }
+
+    /// The fingerprint half of [`Accumulators::recap`], safe to repeat while merging.
+    fn cap_queries(&mut self, limit: usize) {
         self.limit = limit.max(1);
         if self.queries.len() <= self.limit {
             return;
@@ -787,7 +805,7 @@ impl Merge for Accumulators {
         self.dims.merge(other.dims);
         self.slowest.merge(other.slowest);
         let limit = self.limit.max(other.limit);
-        self.recap(limit);
+        self.cap_queries(limit);
     }
 }
 
