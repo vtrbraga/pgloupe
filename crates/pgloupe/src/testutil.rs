@@ -2,7 +2,7 @@
 
 use jiff::Timestamp;
 
-use crate::stats::snapshot::{Counters, Entry, Key, Snapshot};
+use crate::stats::snapshot::{Counters, Entry, Info, Key, Snapshot};
 
 /// True when `a` and `b` differ by less than 1e-9.
 pub(crate) fn approx_eq(a: f64, b: f64) -> bool {
@@ -42,5 +42,19 @@ pub(crate) fn snap(at: &str, version: u32, entries: Vec<(i64, Entry)>) -> Snapsh
         entries: entries.into_iter().map(|(id, e)| (key(id), e)).collect(),
         skipped_no_queryid: 0,
         info: None,
+    }
+}
+
+pub(crate) fn entry_since(calls: u64, total: f64, since: &str) -> Entry {
+    Entry {
+        stats_since: Some(ts(since)),
+        ..entry(calls, total)
+    }
+}
+
+pub(crate) fn info(dealloc: u64, reset: &str) -> Info {
+    Info {
+        dealloc,
+        stats_reset: Some(ts(reset)),
     }
 }

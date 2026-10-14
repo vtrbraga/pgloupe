@@ -296,7 +296,7 @@ pub(crate) fn to_f64(n: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{approx_eq, entry, snap};
+    use crate::testutil::{approx_eq, entry, entry_since, info, snap, ts};
 
     const T0: &str = "2026-10-14 10:00:00+00";
     const T1: &str = "2026-10-14 10:10:00+00";
@@ -451,5 +451,172 @@ mod tests {
         let delta = diff(&before, &after).unwrap();
         let ids: Vec<i64> = delta.rows.iter().map(|row| row.key.queryid).collect();
         assert_eq!(ids, [1, 5, 9]);
+    }
+
+    const SINCE_A: &str = "2026-10-14 09:00:00+00";
+    const SINCE_B: &str = "2026-10-14 10:05:00+00";
+
+    #[test]
+    fn proven_reset_reports_after_values_as_partial() {
+        let before = snap(T0, V17, vec![(1, entry(100, 50.0)), (2, entry(10, 200.0))])
+            .with_info(info(0, SINCE_A));
+        let after =
+            snap(T1, V17, vec![(1, entry(7, 3.5)), (3, entry(3, 9.0))]).with_info(info(2, SINCE_B));
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.reset, Reset::Proven);
+        assert_eq!(delta.reset_at, Some(ts(SINCE_B)));
+        assert_eq!(delta.evictions, Some(2));
+        assert!(!delta.blind_spot);
+        let kept = row_for(&delta, 1);
+        assert_eq!(kept.delta.calls, 7);
+        assert_eq!(kept.status, Status::Restarted);
+        assert!(kept.partial);
+        assert!(!kept.evicted_suspect);
+        let fresh = row_for(&delta, 3);
+        assert_eq!(fresh.status, Status::New);
+        assert!(fresh.partial);
+        assert!(fresh.evicted_suspect);
+        assert_eq!(delta.counts.gone, 1);
+        assert_eq!(delta.counts.restarted, 1);
+        assert_eq!(delta.counts.new, 1);
+    }
+
+    #[test]
+    fn proven_reset_wins_even_when_counters_kept_growing() {
+        // A reset followed by more calls than before: only the info files can tell.
+        let before = snap(T0, V17, vec![(1, entry(10, 5.0))]).with_info(info(0, SINCE_A));
+        let after = snap(T1, V17, vec![(1, entry(50, 25.0))]).with_info(info(0, SINCE_B));
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.reset, Reset::Proven);
+        assert_eq!(row_for(&delta, 1).delta.calls, 50);
+    }
+
+    #[test]
+    fn equal_stats_reset_means_restarted_entries_are_evictions() {
+        let before = snap(T0, V17, vec![(1, entry(100, 50.0)), (2, entry(10, 200.0))])
+            .with_info(info(0, SINCE_A));
+        let after = snap(
+            T1,
+            V17,
+            vec![
+                (1, entry(5, 2.5)),
+                (2, entry(14, 600.0)),
+                (3, entry(1, 1.0)),
+            ],
+        )
+        .with_info(info(3, SINCE_A));
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.reset, Reset::None);
+        assert_eq!(delta.reset_at, None);
+        assert_eq!(delta.evictions, Some(3));
+        assert!(!delta.blind_spot);
+        let restarted = row_for(&delta, 1);
+        assert_eq!(restarted.status, Status::Restarted);
+        assert!(!restarted.partial);
+        assert_eq!(restarted.delta.calls, 5);
+        assert_eq!(row_for(&delta, 2).status, Status::Ok);
+        assert_eq!(row_for(&delta, 2).delta.calls, 4);
+        assert!(row_for(&delta, 3).evicted_suspect);
+        assert!(!row_for(&delta, 2).evicted_suspect);
+    }
+
+    #[test]
+    fn no_evictions_means_new_entries_are_not_suspect() {
+        let before = snap(T0, V17, vec![(1, entry(1, 1.0))]).with_info(info(5, SINCE_A));
+        let after =
+            snap(T1, V17, vec![(1, entry(2, 2.0)), (2, entry(1, 1.0))]).with_info(info(5, SINCE_A));
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.evictions, Some(0));
+        assert!(!row_for(&delta, 2).evicted_suspect);
+    }
+
+    #[test]
+    fn every_shared_entry_restarting_without_info_is_an_inferred_reset() {
+        let before = snap(T0, V17, vec![(1, entry(100, 50.0)), (2, entry(10, 200.0))]);
+        let after = snap(T1, V17, vec![(1, entry(3, 1.5)), (2, entry(1, 2.0))]);
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.reset, Reset::Inferred);
+        assert_eq!(delta.reset_at, None);
+        assert_eq!(delta.evictions, None);
+        assert!(!delta.blind_spot);
+        assert!(delta.rows.iter().all(|row| row.partial));
+        assert_eq!(row_for(&delta, 1).delta.calls, 3);
+    }
+
+    #[test]
+    fn one_restarted_entry_among_healthy_ones_is_not_a_reset() {
+        let before = snap(T0, V17, vec![(1, entry(100, 50.0)), (2, entry(10, 20.0))]);
+        let after = snap(T1, V17, vec![(1, entry(3, 1.5)), (2, entry(14, 30.0))]);
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.reset, Reset::None);
+        assert_eq!(delta.counts.restarted, 1);
+        assert_eq!(row_for(&delta, 1).status, Status::Restarted);
+        assert!(!row_for(&delta, 1).partial);
+        assert_eq!(row_for(&delta, 2).delta.calls, 4);
+        assert!(delta.blind_spot);
+    }
+
+    #[test]
+    fn stats_since_moving_marks_the_entry_restarted_even_if_counters_grew() {
+        let before = snap(
+            T0,
+            V17,
+            vec![
+                (1, entry_since(10, 5.0, SINCE_A)),
+                (2, entry_since(10, 5.0, SINCE_A)),
+            ],
+        );
+        let after = snap(
+            T1,
+            V17,
+            vec![
+                (1, entry_since(50, 25.0, SINCE_B)),
+                (2, entry_since(20, 10.0, SINCE_A)),
+            ],
+        );
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.reset, Reset::None);
+        assert_eq!(row_for(&delta, 1).status, Status::Restarted);
+        assert_eq!(row_for(&delta, 1).delta.calls, 50);
+        assert_eq!(row_for(&delta, 2).status, Status::Ok);
+        assert_eq!(row_for(&delta, 2).delta.calls, 10);
+        assert!(!delta.blind_spot, "stats_since on every shared entry");
+    }
+
+    #[test]
+    fn stats_since_moving_on_every_shared_entry_is_an_inferred_reset() {
+        let before = snap(T0, V17, vec![(1, entry_since(10, 5.0, SINCE_A))]);
+        let after = snap(T1, V17, vec![(1, entry_since(12, 6.0, SINCE_B))]);
+        assert_eq!(diff(&before, &after).unwrap().reset, Reset::Inferred);
+    }
+
+    #[test]
+    fn no_shared_entries_is_not_a_reset_and_is_a_blind_spot() {
+        let before = snap(T0, V17, vec![(1, entry(1, 1.0))]);
+        let after = snap(T1, V17, vec![(2, entry(1, 1.0))]);
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.reset, Reset::None);
+        assert!(delta.blind_spot);
+        assert_eq!(delta.counts.gone, 1);
+        assert_eq!(delta.counts.new, 1);
+    }
+
+    #[test]
+    fn clean_growth_without_info_is_a_blind_spot() {
+        let before = snap(T0, V17, vec![(1, entry(10, 5.0))]);
+        let after = snap(T1, V17, vec![(1, entry(20, 10.0))]);
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.reset, Reset::None);
+        assert!(delta.blind_spot);
+    }
+
+    #[test]
+    fn evictions_are_unknown_without_info_and_new_rows_are_not_flagged() {
+        let before = snap(T0, V17, vec![(1, entry(1, 1.0))]);
+        let after = snap(T1, V17, vec![(1, entry(2, 2.0)), (2, entry(1, 1.0))]);
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.evictions, None);
+        assert!(!row_for(&delta, 2).evicted_suspect);
+        assert!(approx_eq(row_for(&delta, 2).delta.total_exec_time, 1.0));
     }
 }
