@@ -8,7 +8,7 @@ use thiserror::Error;
 use super::{Input, Store, StoreError};
 use crate::analyze::{
     Merge,
-    acc::Accumulators,
+    acc::{Accumulators, Timeline},
     diagnostics::merge_shapes,
     pipeline::Output,
     report::{Report, ReportOptions, StoreInfo},
@@ -64,13 +64,19 @@ fn ceil_hour(timestamp: Timestamp) -> i64 {
 
 /// Merges `slices` into one set of statistics capped at `limit` fingerprints. The merge itself
 /// is uncapped: a fingerprint that is small in every hour but large overall must survive.
+#[cfg(test)]
 fn merge_slices(slices: Vec<Accumulators>, limit: usize) -> Accumulators {
-    let mut merged = Accumulators::new(usize::MAX, 60);
+    let mut merged = merge_target();
     for slice in slices {
         merged.merge(slice);
     }
     merged.recap(limit);
     merged
+}
+
+/// Where slices are merged: uncapped, so the single recap at the end decides what overflows.
+fn merge_target() -> Accumulators {
+    Accumulators::new(usize::MAX, 60)
 }
 
 /// Builds the report for the hours from `since` (rounded down) to `until` (rounded up).
@@ -96,8 +102,17 @@ pub fn build(
     if lo >= hi {
         return Err(ReportError::EmptyWindow);
     }
-    let mut acc = merge_slices(store.slices(lo, hi)?, FINGERPRINT_LIMIT);
-    acc.totals.timeline = acc.totals.timeline.clone().rebucket(bucket_secs);
+    let mut acc = merge_target();
+    store.for_each_slice(lo, hi, |slice| acc.merge(slice))?;
+    acc.recap(FINGERPRINT_LIMIT);
+    acc.totals.timeline = std::mem::replace(
+        &mut acc.totals.timeline,
+        Timeline {
+            bucket_secs: 60,
+            buckets: std::collections::BTreeMap::default(),
+        },
+    )
+    .rebucket(bucket_secs);
     let inputs = store.inputs_in(lo, hi)?;
     let mut report = Report::build(
         &Output {

@@ -237,7 +237,7 @@ impl Store {
             .map(|(hour, acc)| Ok((*hour, serde_json::to_string(acc)?)))
             .collect::<Result<Vec<_>, serde_json::Error>>()?;
         let path = self.path.clone();
-        let tx = self.conn.transaction().map_err(|e| sql_error(e, &path))?;
+        let tx = self.conn.savepoint().map_err(|e| sql_error(e, &path))?;
         (|| {
             for id in replace {
                 tx.execute("DELETE FROM inputs WHERE id = ?1", [id])?;
@@ -288,24 +288,67 @@ impl Store {
         )
     }
 
+    /// Calls `visit` with each slice whose hour is in `[since, until)`, ordered by hour, then
+    /// input. Slices are read one at a time, so memory stays at one slice plus what `visit` keeps.
+    ///
+    /// # Errors
+    ///
+    /// Fails on database errors or unreadable stored data.
+    pub fn for_each_slice(
+        &self,
+        since: i64,
+        until: i64,
+        mut visit: impl FnMut(Accumulators),
+    ) -> Result<(), StoreError> {
+        let mut statement = self
+            .conn
+            .prepare(
+                "SELECT data FROM slices WHERE hour >= ?1 AND hour < ?2 ORDER BY hour, input_id",
+            )
+            .map_err(|e| sql_error(e, &self.path))?;
+        let mut rows = statement
+            .query([since, until])
+            .map_err(|e| sql_error(e, &self.path))?;
+        while let Some(row) = rows.next().map_err(|e| sql_error(e, &self.path))? {
+            let json: String = row.get(0).map_err(|e| sql_error(e, &self.path))?;
+            visit(serde_json::from_str(&json)?);
+        }
+        Ok(())
+    }
+
     /// The slices whose hour is in `[since, until)`, ordered by hour, then input.
     ///
     /// # Errors
     ///
     /// Fails on database errors or unreadable stored data.
     pub fn slices(&self, since: i64, until: i64) -> Result<Vec<Accumulators>, StoreError> {
-        let rows = (|| {
-            let mut statement = self.conn.prepare(
-                "SELECT data FROM slices WHERE hour >= ?1 AND hour < ?2 ORDER BY hour, input_id",
-            )?;
-            statement
-                .query_map([since, until], |row| row.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<String>>>()
-        })()
-        .map_err(|e| sql_error(e, &self.path))?;
-        rows.iter()
-            .map(|json| serde_json::from_str(json).map_err(StoreError::from))
-            .collect()
+        let mut all = Vec::new();
+        self.for_each_slice(since, until, |acc| all.push(acc))?;
+        Ok(all)
+    }
+
+    /// Takes the store's write lock until [`Store::end_ingest`], so that what an ingest looked up
+    /// (known hashes, earlier versions) cannot change before it writes. Another writer waits for
+    /// the busy timeout and then gets [`StoreError::Locked`].
+    ///
+    /// # Errors
+    ///
+    /// Fails with `Locked` when another process holds the lock.
+    pub fn begin_ingest(&mut self) -> Result<(), StoreError> {
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| sql_error(e, &self.path))
+    }
+
+    /// Releases the lock taken by [`Store::begin_ingest`], keeping what was committed meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// Fails on database errors.
+    pub fn end_ingest(&mut self) -> Result<(), StoreError> {
+        self.conn
+            .execute_batch("COMMIT")
+            .map_err(|e| sql_error(e, &self.path))
     }
 }
 
@@ -490,6 +533,24 @@ mod tests {
                 .is_some()
         );
         assert!(store.input_by_stat("a.log", 10, 1_000).unwrap().is_none());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn for_each_slice_visits_what_slices_returns() {
+        let (mut store, path) = temp_store("visit");
+        store
+            .commit(&input(1, 10, "a.log"), &slices(&[0, 3_600]), &[])
+            .unwrap();
+        store
+            .commit(&input(2, 20, "b.log"), &slices(&[3_600]), &[])
+            .unwrap();
+        let mut seen = Vec::new();
+        store
+            .for_each_slice(i64::MIN, i64::MAX, |acc| seen.push(acc))
+            .unwrap();
+        assert_eq!(seen, store.slices(i64::MIN, i64::MAX).unwrap());
+        assert_eq!(seen.len(), 3);
         std::fs::remove_file(path).unwrap();
     }
 }

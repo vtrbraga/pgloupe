@@ -54,6 +54,21 @@ cargo run -p pgloupe -- logs analyze server.log --prefix '%t:%r:%u@%d:[%p]:' --t
 
 A stderr log without `--prefix` is decoded with an inferred one (printed in the header); if none fits, the command says why and exits 1. The diagnostics block lists skipped line shapes and likely missing server settings (`log_min_duration_statement`, `log_checkpoints`, `lc_messages`, …). Statement durations are exact to the microsecond; percentiles come from a mergeable sketch with 1% relative error.
 
+## Store
+
+`logs ingest` puts logs into a SQLite file once; `logs report` answers any time window from it without reading the logs again.
+
+```bash
+cargo run -p pgloupe -- logs ingest --store logs.db postgresql.log.1.gz postgresql.log
+cargo run -p pgloupe -- logs report --store logs.db --since 2026-10-14 --until 2026-10-15
+```
+
+- Each file is identified by a hash of its decompressed bytes. The same file under another name, or compressed, prints `unchanged`; a log that grew since the last run prints `replaced` (the earlier version is dropped, nothing is counted twice).
+- A grown file is read in full again; resuming from a byte offset is not implemented.
+- Statistics are stored per UTC hour, so `--since` rounds down and `--until` rounds up to whole hours (the report prints the range it used). `--bucket` must be a multiple of `1m`.
+- `--force` re-ingests files already in the store, for example after fixing `--prefix`. A file that decodes to nothing is reported as `failed` and not stored.
+- With `--max-fingerprints` below the number of distinct statements in an hour, that hour folds the rest into the overflow row, so `report` can differ from `logs analyze` for that run.
+
 ## Synthetic corpus
 
 `synth` generates Postgres logs and `pg_stat_statements` snapshots from a seeded workload on the Pagila sample database. Requires Docker.

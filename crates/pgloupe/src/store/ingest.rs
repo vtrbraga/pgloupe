@@ -147,6 +147,21 @@ fn ingest_one(
     options: &pipeline::Options,
     force: bool,
 ) -> Result<FileOutcome, String> {
+    // One writer at a time: what is looked up below must still hold when the file is committed.
+    store.begin_ingest().map_err(|e| chain(&e))?;
+    let outcome = ingest_locked(store, path, options, force);
+    let released = store.end_ingest().map_err(|e| chain(&e));
+    let outcome = outcome?;
+    released?;
+    Ok(outcome)
+}
+
+fn ingest_locked(
+    store: &mut Store,
+    path: &Path,
+    options: &pipeline::Options,
+    force: bool,
+) -> Result<FileOutcome, String> {
     let stat = stat_of(path)?;
     let unchanged = |records| FileOutcome {
         path: path.to_path_buf(),
@@ -181,7 +196,13 @@ fn ingest_one(
         Decision::Known { records } => return Ok(unchanged(records)),
         Decision::Store { replace } => replace,
     };
-    let (input, diag) = make_input(&file, &slices, &content, stat);
+    let (mut input, mut diag) = make_input(&file, &slices, &content, stat);
+    if let Some(warning) =
+        overlap_warning(store, &input, &content.prefixes).map_err(|e| chain(&e))?
+    {
+        input.diag.warnings.push(warning.clone());
+        diag.warnings.push(warning);
+    }
     store
         .commit(&input, &slices.by_hour, &replace)
         .map_err(|e| chain(&e))?;
@@ -195,6 +216,39 @@ fn ingest_one(
         records: file.stats.records,
         diag: Some(diag),
     })
+}
+
+/// Notes an earlier input whose time range largely overlaps `input`'s. A file that extends an
+/// earlier one is recognised exactly and replaces it; a smaller copy of a stored file, or two
+/// different continuations of one, cannot be, and their events would be counted twice.
+fn overlap_warning(
+    store: &Store,
+    input: &Input,
+    prefixes: &[(u64, u128)],
+) -> Result<Option<String>, StoreError> {
+    let (Some(first), Some(last)) = (input.first_ts, input.last_ts) else {
+        return Ok(None);
+    };
+    for other in store.inputs_in(i64::MIN, i64::MAX)? {
+        let replaced = other.hash == input.hash
+            || prefixes
+                .iter()
+                .any(|(size, hash)| *size == other.size && *hash == other.hash);
+        let (false, Some(other_first), Some(other_last)) =
+            (replaced, other.first_ts, other.last_ts)
+        else {
+            continue;
+        };
+        let shorter = (last - first).min(other_last - other_first);
+        let overlap = last.min(other_last) - first.max(other_first);
+        if shorter > 0 && overlap * 2 >= shorter {
+            return Ok(Some(format!(
+                "its time range overlaps {} — if one is a partial copy of the other, their events are counted twice; keep only the complete file or recreate the store",
+                other.path
+            )));
+        }
+    }
+    Ok(None)
 }
 
 fn make_input(
@@ -488,5 +542,64 @@ mod tests {
             store.slices(i64::MIN, i64::MAX).unwrap()
         };
         assert_eq!(slices(1, "one.db"), slices(4, "four.db"));
+    }
+
+    #[test]
+    fn an_older_copy_of_a_stored_file_warns_about_double_counting() {
+        let d = dir("older-copy");
+        let current = d.join("current.json");
+        fs::write(&current, log_of(0..50)).unwrap();
+        let mut store = store_in(&d, "s.db");
+        run(&mut store, &[&current], false);
+        let snapshot = d.join("snapshot.json");
+        fs::write(&snapshot, log_of(0..30)).unwrap();
+        let out = run(&mut store, &[&snapshot], false);
+        assert_eq!(out[0].status, Status::Ingested);
+        let warnings = out[0]
+            .diag
+            .as_ref()
+            .map(|d| d.warnings.join("\n"))
+            .unwrap_or_default();
+        assert!(warnings.contains("overlaps"), "{warnings}");
+        assert!(warnings.contains("current.json"), "{warnings}");
+    }
+
+    #[test]
+    fn files_that_follow_each_other_do_not_warn() {
+        let d = dir("adjacent");
+        let early: String = (0..30).map(|m| line(10, m, 1.0, "SELECT 1")).collect();
+        let late: String = (0..30).map(|m| line(12, m, 1.0, "SELECT 1")).collect();
+        let (a, b) = (d.join("a.json"), d.join("b.json"));
+        fs::write(&a, early).unwrap();
+        fs::write(&b, late).unwrap();
+        let mut store = store_in(&d, "s.db");
+        let out = run(&mut store, &[&a, &b], false);
+        for outcome in &out {
+            assert_eq!(outcome.status, Status::Ingested);
+            let warnings = outcome
+                .diag
+                .as_ref()
+                .map(|d| d.warnings.join("\n"))
+                .unwrap_or_default();
+            assert!(!warnings.contains("overlaps"), "{warnings}");
+        }
+    }
+
+    #[test]
+    fn a_second_ingest_waits_then_reports_a_lock() {
+        let d = dir("lock");
+        let a = d.join("a.json");
+        fs::write(&a, log_of(0..30)).unwrap();
+        let mut first = store_in(&d, "s.db");
+        let mut second = Store::open_existing(&d.join("s.db")).unwrap();
+        second.conn.busy_timeout(Duration::from_millis(50)).unwrap();
+        first.begin_ingest().unwrap();
+        let out = run(&mut second, &[&a], false);
+        let Status::Failed(reason) = &out[0].status else {
+            panic!("{:?}", out[0].status);
+        };
+        assert!(reason.contains("locked"), "{reason}");
+        first.end_ingest().unwrap();
+        assert_eq!(run(&mut second, &[&a], false)[0].status, Status::Ingested);
     }
 }
