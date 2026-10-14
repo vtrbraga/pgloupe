@@ -37,6 +37,27 @@ impl Severity {
             _ => return None,
         })
     }
+
+    /// The label Postgres prints for this severity.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Severity::Debug => "DEBUG",
+            Severity::Info => "INFO",
+            Severity::Notice => "NOTICE",
+            Severity::Warning => "WARNING",
+            Severity::Error => "ERROR",
+            Severity::Log => "LOG",
+            Severity::Fatal => "FATAL",
+            Severity::Panic => "PANIC",
+        }
+    }
+
+    /// True for `ERROR`, `FATAL` and `PANIC`.
+    #[must_use]
+    pub fn is_error(self) -> bool {
+        matches!(self, Severity::Error | Severity::Fatal | Severity::Panic)
+    }
 }
 
 /// One log entry. Optional fields are `None` when the format or the prefix does not carry them.
@@ -268,5 +289,15 @@ mod tests {
         assert_eq!(host(Some("[local]")), None);
         assert_eq!(host(Some("[unknown]")), None);
         assert_eq!(host(Some("10.0.0.1")), Some("10.0.0.1".to_owned()));
+    }
+
+    #[test]
+    fn labels_and_error_levels() {
+        assert_eq!(Severity::Log.label(), "LOG");
+        assert_eq!(Severity::Debug.label(), "DEBUG");
+        assert!(
+            Severity::Error.is_error() && Severity::Fatal.is_error() && Severity::Panic.is_error()
+        );
+        assert!(!Severity::Warning.is_error() && !Severity::Log.is_error());
     }
 }
