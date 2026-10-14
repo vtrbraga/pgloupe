@@ -4,6 +4,7 @@ pub mod baseline;
 pub mod ddl;
 pub mod errors;
 pub mod extended;
+pub mod locks;
 pub mod multiline;
 pub mod temp_files;
 
@@ -193,6 +194,8 @@ pub const ALL: &[Scenario] = &[
     errors::SCENARIO,
     multiline::SCENARIO,
     extended::SCENARIO,
+    locks::LOCK_WAIT,
+    locks::DEADLOCK,
 ];
 
 /// Scenarios to run: all when `only` is empty, else the named ones in canonical order.

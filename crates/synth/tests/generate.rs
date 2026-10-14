@@ -255,3 +255,15 @@ fn multiline_matches_manifest_and_logs_exact_text() {
 fn extended_matches_manifest() {
     assert_log_matches_manifest(&generate_corpus(&["extended"]));
 }
+
+#[test]
+#[ignore = "needs docker"]
+fn lock_wait_matches_manifest() {
+    assert_log_matches_manifest(&generate_corpus(&["lock_wait"]));
+}
+
+#[test]
+#[ignore = "needs docker"]
+fn deadlock_matches_manifest() {
+    assert_log_matches_manifest(&generate_corpus(&["deadlock"]));
+}
