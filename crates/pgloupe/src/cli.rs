@@ -354,6 +354,7 @@ fn logs_analyze(
         bucket_secs: args.bucket,
         threads: args.threads.map(usize::try_from).transpose()?,
         batch_size: pipeline::Options::new().batch_size,
+        hash_marks: None,
     };
     let output = match pipeline::run(&args.files, &options) {
         Ok(output) => output,

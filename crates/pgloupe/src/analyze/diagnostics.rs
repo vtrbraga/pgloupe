@@ -245,6 +245,7 @@ mod tests {
                 PrefixSource::NotApplicable
             },
             stats,
+            content: None,
         }
     }
 

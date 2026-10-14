@@ -21,6 +21,7 @@ use crate::log::{
     infer::{Inference, SAMPLE_LINES, infer_prefix},
     prefix::Prefix,
     source,
+    tee::{self, Content, TeeHandle},
 };
 
 /// A worker keeps up to this many times the requested fingerprints before the final re-cap, so the
@@ -40,6 +41,9 @@ pub struct Options {
     pub threads: Option<usize>,
     /// Records handed to a worker at a time.
     pub batch_size: usize,
+    /// When set, the decompressed bytes of each file are hashed while they are read, and the
+    /// running hash is snapshotted at these lengths (see [`Content`]).
+    pub hash_marks: Option<Vec<u64>>,
 }
 
 impl Options {
@@ -54,6 +58,7 @@ impl Options {
             bucket_secs: 60,
             threads: None,
             batch_size: 4_096,
+            hash_marks: None,
         }
     }
 }
@@ -81,6 +86,8 @@ pub struct FileSummary {
     pub prefix: Option<String>,
     pub prefix_source: PrefixSource,
     pub stats: DecodeStats,
+    /// Identity of the decompressed bytes; only when `Options::hash_marks` is set.
+    pub content: Option<Content>,
 }
 
 /// The result of a run.
@@ -237,6 +244,7 @@ struct Current {
     prefix: Option<String>,
     prefix_source: PrefixSource,
     decoder: Box<dyn Decoder + Send>,
+    tee: Option<TeeHandle>,
 }
 
 /// Yields batches of records, file after file.
@@ -265,6 +273,7 @@ impl Batches {
                     prefix: current.prefix,
                     prefix_source: current.prefix_source,
                     stats,
+                    content: current.tee.as_ref().map(TeeHandle::finish),
                 },
             ));
         }
@@ -338,7 +347,14 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
         source,
     };
     let bytes = std::fs::metadata(path).map_err(open_err)?.len();
-    let mut reader = source::open(path).map_err(open_err)?;
+    let reader = source::open(path).map_err(open_err)?;
+    let (mut reader, tee) = match &options.hash_marks {
+        Some(marks) => {
+            let (tee, handle) = tee::tee(reader, marks.clone());
+            (Box::new(tee) as Box<dyn BufRead + Send>, Some(handle))
+        }
+        None => (reader, None),
+    };
     let peek = reader.fill_buf().map_err(open_err)?;
     let blank = peek.iter().all(u8::is_ascii_whitespace);
     let format = match options.format {
@@ -389,6 +405,7 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
         prefix,
         prefix_source,
         decoder,
+        tee,
     })
 }
 
@@ -501,6 +518,41 @@ mod tests {
             .slices
         };
         assert_eq!(slices(1, 4_096), slices(4, 3));
+    }
+
+    #[test]
+    fn content_covers_every_byte_in_every_format() {
+        for (name, prefix) in [
+            ("sample.csv", None),
+            ("sample.json", None),
+            ("sample.log", Some("%m [%p] %q%u@%d/%a %Q ")),
+        ] {
+            let path = fixture(name);
+            let bytes = fs::read(&path).unwrap();
+            let options = Options {
+                hash_marks: Some(vec![10]),
+                prefix: prefix.map(str::to_owned),
+                ..Options::new()
+            };
+            let out = run_sliced(&path, &options).unwrap();
+            let content = out
+                .file
+                .content
+                .unwrap_or_else(|| panic!("{name}: no content"));
+            assert_eq!(content.size, bytes.len() as u64, "{name}");
+            assert_eq!(content.hash, xxhash_rust::xxh3::xxh3_128(&bytes), "{name}");
+            assert_eq!(
+                content.prefixes,
+                vec![(10, xxhash_rust::xxh3::xxh3_128(&bytes[..10]))],
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_content_is_computed_unless_asked() {
+        let out = run_sliced(&fixture("sample.json"), &Options::new()).unwrap();
+        assert!(out.file.content.is_none());
     }
 
     #[test]

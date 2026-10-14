@@ -518,6 +518,7 @@ mod tests {
                 records: 20,
                 ..DecodeStats::default()
             },
+            content: None,
         }];
         Output { acc, files }
     }

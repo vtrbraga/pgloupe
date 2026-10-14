@@ -379,6 +379,7 @@ mod tests {
                 sampled: 100,
             },
             stats,
+            content: None,
         }];
         Report::build(
             &Output { acc, files },

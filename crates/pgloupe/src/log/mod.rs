@@ -12,6 +12,7 @@ pub mod prefix;
 pub mod record;
 pub mod source;
 pub mod stderr;
+pub mod tee;
 pub mod time;
 
 pub use prefix::PrefixError;
