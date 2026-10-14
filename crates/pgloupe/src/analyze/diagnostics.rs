@@ -174,6 +174,12 @@ fn absence_warnings(output: &Output, warnings: &mut Vec<String>) {
                 .to_owned(),
         );
     }
+    let bare = totals.events.get("duration").copied().unwrap_or(0);
+    if bare > 0 {
+        warnings.push(format!(
+            "{bare} durations were logged without their statement text (log_duration, or log_statement together with log_min_duration_statement = 0) — they cannot be attributed to a statement; use log_min_duration_statement alone"
+        ));
+    }
     let mut missing = Vec::new();
     if !(seen("connection_received") || seen("connection_authorized") || seen("disconnection")) {
         missing.push("connections (log_connections / log_disconnections)");
@@ -445,5 +451,24 @@ mod tests {
             vec![summary(Format::Csv, None, DecodeStats::default())],
         ));
         assert!(!has(&csv, "%e"), "{:?}", csv.warnings);
+    }
+
+    #[test]
+    fn durations_without_statement_text_are_explained() {
+        let d = build(&output(
+            &[
+                "duration: 1.0 ms",
+                "duration: 2.0 ms",
+                "statement: SELECT 1",
+            ],
+            vec![],
+        ));
+        assert!(has(&d, "without their statement"), "{:?}", d.warnings);
+        let none = build(&output(&["duration: 1 ms  statement: SELECT 1"], vec![]));
+        assert!(
+            !has(&none, "without their statement"),
+            "{:?}",
+            none.warnings
+        );
     }
 }

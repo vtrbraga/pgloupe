@@ -7,7 +7,7 @@ use jiff::Timestamp;
 use super::{
     Merge,
     event::{Event, StatementKind, classify},
-    fingerprint::{display_text, fingerprint},
+    fingerprint::{display_text, fingerprint, sql_hash},
     sketch::Sketch,
 };
 use crate::log::LogRecord;
@@ -57,9 +57,13 @@ fn add_maps<K: Ord, V: Merge>(into: &mut BTreeMap<K, V>, from: BTreeMap<K, V>) {
 pub struct QueryStats {
     pub id: u64,
     pub parsed: bool,
-    /// Normalized text (the lexicographically smallest seen, so merging is commutative).
+    /// Normalized text of the representative sample (see `sample`).
     pub text: String,
+    /// The `query_id` of the representative sample.
     pub query_id: Option<i64>,
+    /// `(timestamp, hash of the raw text)` of the earliest sample seen; it decides `text` and
+    /// `query_id`, which makes both independent of arrival order and of how records are split.
+    sample: Option<(Timestamp, u64)>,
     /// `Statement` and `Execute` events.
     pub calls: u64,
     /// Calls that carried a duration.
@@ -84,6 +88,7 @@ impl QueryStats {
             parsed,
             text,
             query_id: None,
+            sample: None,
             calls: 0,
             timed: 0,
             total_us: 0,
@@ -97,6 +102,17 @@ impl QueryStats {
             lock_wait_us: 0,
             temp_files: 0,
             temp_bytes: 0,
+        }
+    }
+
+    /// Offers a spelling of this statement as the representative sample: the one with the smallest
+    /// `(timestamp, hash)` wins, wherever and whenever it is seen.
+    fn offer(&mut self, ts: Timestamp, sql: &str, query_id: Option<i64>) {
+        let key = (ts, sql_hash(sql));
+        if self.sample.is_none_or(|current| key < current) {
+            self.sample = Some(key);
+            self.text = display_text(sql, self.parsed);
+            self.query_id = query_id;
         }
     }
 
@@ -131,13 +147,14 @@ impl QueryStats {
 
 impl Merge for QueryStats {
     fn merge(&mut self, other: Self) {
-        if self.text.is_empty() || (!other.text.is_empty() && other.text < self.text) {
+        if other
+            .sample
+            .is_some_and(|theirs| self.sample.is_none_or(|ours| theirs < ours))
+        {
+            self.sample = other.sample;
             self.text = other.text;
+            self.query_id = other.query_id;
         }
-        self.query_id = match (self.query_id, other.query_id) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
         self.parsed &= other.parsed;
         self.calls += other.calls;
         self.timed += other.timed;
@@ -450,7 +467,7 @@ impl Totals {
             last_seen: ts,
         });
         stat.count += 1;
-        if ts < stat.first_seen {
+        if ts < stat.first_seen || (ts == stat.first_seen && record.message < stat.first_message) {
             stat.first_seen = ts;
             stat.first_message.clone_from(&record.message);
         }
@@ -515,29 +532,26 @@ impl Accumulators {
                 ..
             } => {
                 let _ = kind;
-                let query = self.query_for(text);
+                let query = self.query_for(text, ts, record.query_id);
                 query.call(*duration_ms, ts);
-                if query.query_id.is_none() {
-                    query.query_id = record.query_id;
-                }
             }
             Event::LockWait { .. } => {
                 if let Some(sql) = record.statement.as_deref() {
-                    let query = self.query_for(sql);
+                    let query = self.query_for(sql, ts, record.query_id);
                     query.seen(ts);
                     query.lock_waits += 1;
                 }
             }
             Event::LockAcquired { waited_ms, .. } => {
                 if let Some(sql) = record.statement.as_deref() {
-                    let query = self.query_for(sql);
+                    let query = self.query_for(sql, ts, record.query_id);
                     query.seen(ts);
                     query.lock_wait_us += to_micros(*waited_ms);
                 }
             }
             Event::TempFile { bytes, .. } => {
                 if let Some(sql) = record.statement.as_deref() {
-                    let query = self.query_for(sql);
+                    let query = self.query_for(sql, ts, record.query_id);
                     query.seen(ts);
                     query.temp_files += 1;
                     query.temp_bytes += bytes;
@@ -548,14 +562,15 @@ impl Accumulators {
         if record.level.is_error()
             && let Some(sql) = record.statement.as_deref()
         {
-            let query = self.query_for(sql);
+            let query = self.query_for(sql, ts, record.query_id);
             query.seen(ts);
             query.errors += 1;
         }
     }
 
-    /// The statistics of `sql`'s fingerprint, creating them (or using the overflow bucket).
-    fn query_for(&mut self, sql: &str) -> &mut QueryStats {
+    /// The statistics of `sql`'s fingerprint, creating them (or using the overflow bucket). The
+    /// statement is offered as the representative sample of its fingerprint.
+    fn query_for(&mut self, sql: &str, ts: Timestamp, query_id: Option<i64>) -> &mut QueryStats {
         let found = fingerprint(sql);
         if !found.parsed {
             self.totals.unparsed_statements += 1;
@@ -563,9 +578,12 @@ impl Accumulators {
         if !self.queries.contains_key(&found.id) && self.queries.len() >= self.limit {
             return &mut self.overflow;
         }
-        self.queries.entry(found.id).or_insert_with(|| {
-            QueryStats::new(found.id, found.parsed, display_text(sql, found.parsed))
-        })
+        let query = self
+            .queries
+            .entry(found.id)
+            .or_insert_with(|| QueryStats::new(found.id, found.parsed, String::new()));
+        query.offer(ts, sql, query_id);
+        query
     }
 
     /// Lowers the limit to `limit`, folding the least called fingerprints into the overflow bucket
@@ -579,7 +597,12 @@ impl Accumulators {
             self.queries.iter().map(|(id, q)| (*id, q.calls)).collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         for (id, _) in ranked.split_off(self.limit) {
-            if let Some(query) = self.queries.remove(&id) {
+            if let Some(mut query) = self.queries.remove(&id) {
+                // The overflow bucket keeps its own identity: only counters flow into it.
+                query.text = String::new();
+                query.query_id = None;
+                query.sample = None;
+                query.parsed = true;
                 self.overflow.merge(query);
             }
         }
@@ -906,5 +929,68 @@ mod tests {
         assert_eq!(to_micros(-1.0), 0);
         assert_eq!(to_micros(f64::NAN), 0);
         assert_eq!(to_micros(0.0004), 0);
+    }
+
+    fn spelled(second: i64, sql: &str, query_id: i64) -> LogRecord {
+        let mut r = statement(second, 1.0, sql);
+        r.query_id = Some(query_id);
+        r
+    }
+
+    #[test]
+    fn the_representative_text_and_query_id_do_not_depend_on_arrival_order() {
+        // Two spellings of one fingerprint (the alias does not matter), one tied in time.
+        let records = vec![
+            spelled(0, "SELECT 1 AS two_lines", 20),
+            spelled(0, "SELECT 1", 10),
+            spelled(5, "SELECT 2", 30),
+        ];
+        let whole = accumulate(&records);
+        let mut reversed: Vec<LogRecord> = records.clone();
+        reversed.reverse();
+        assert_eq!(accumulate(&reversed), whole);
+        for split in 0..=records.len() {
+            let (left, right) = records.split_at(split);
+            let mut merged = accumulate(right);
+            merged.merge(accumulate(left));
+            assert_eq!(merged, whole, "split {split}");
+        }
+        let query = whole.queries.values().next().unwrap();
+        assert_eq!(whole.queries.len(), 1);
+        assert_eq!(query.text, "SELECT $1");
+        assert_eq!(
+            query.query_id,
+            Some(10),
+            "the sample that wins the tie supplies both"
+        );
+    }
+
+    #[test]
+    fn the_first_error_message_does_not_depend_on_arrival_order() {
+        let mut first = LogRecord::new(at(0), Severity::Error, "zzz");
+        first.sqlstate = Some("23505".to_owned());
+        let mut second = LogRecord::new(at(0), Severity::Error, "aaa");
+        second.sqlstate = Some("23505".to_owned());
+        let both = accumulate(&[first.clone(), second.clone()]);
+        let swapped = accumulate(&[second.clone(), first.clone()]);
+        let mut merged = accumulate(&[first]);
+        merged.merge(accumulate(&[second]));
+        assert_eq!(both, swapped);
+        assert_eq!(both, merged);
+        let stat = &both.totals.errors[&("ERROR".to_owned(), Some("23505".to_owned()))];
+        assert_eq!(stat.first_message, "aaa");
+    }
+
+    #[test]
+    fn the_overflow_bucket_keeps_its_own_identity() {
+        let mut a = Accumulators::new(1, 60);
+        a.add_record(&spelled(0, "SELECT 1", 7));
+        a.add_record(&spelled(0, "SELECT 1", 7));
+        a.add_record(&spelled(0, "(SELECT 2) UNION (SELECT 3)", 8));
+        a.recap(1);
+        assert_eq!(a.overflow.text, "<overflow>");
+        assert_eq!(a.overflow.query_id, None);
+        assert!(a.overflow.parsed);
+        assert_eq!(a.overflow.calls, 1);
     }
 }

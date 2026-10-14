@@ -50,6 +50,12 @@ fn cut(text: String) -> String {
     }
 }
 
+/// A stable 64-bit hash of a statement's raw text, used to break ties deterministically.
+#[must_use]
+pub fn sql_hash(sql: &str) -> u64 {
+    fnv1a(sql.as_bytes())
+}
+
 /// 64-bit FNV-1a.
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;

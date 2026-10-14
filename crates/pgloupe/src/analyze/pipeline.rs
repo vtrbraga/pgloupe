@@ -115,8 +115,8 @@ pub enum AnalyzeError {
     Binary { path: PathBuf },
     #[error("{}: could not infer the log_line_prefix; pass --prefix with the server's setting", .path.display())]
     PrefixNotInferred { path: PathBuf, inference: Inference },
-    #[error("could not start the worker pool: {0}")]
-    Pool(String),
+    #[error("could not start the worker pool")]
+    Pool(#[source] rayon::ThreadPoolBuildError),
 }
 
 /// Reads `paths` in order and returns the merged statistics.
@@ -143,7 +143,7 @@ pub fn run(paths: &[PathBuf], options: &Options) -> Result<Output, AnalyzeError>
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(options.threads.unwrap_or(0))
         .build()
-        .map_err(|err| AnalyzeError::Pool(err.to_string()))?;
+        .map_err(AnalyzeError::Pool)?;
     let mut acc = pool.install(|| {
         batches
             .par_bridge()
@@ -289,7 +289,7 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
     let bytes = std::fs::metadata(path).map_err(open_err)?.len();
     let mut reader = source::open(path).map_err(open_err)?;
     let peek = reader.fill_buf().map_err(open_err)?;
-    let empty = peek.is_empty();
+    let blank = peek.iter().all(u8::is_ascii_whitespace);
     let format = match options.format {
         Some(format) => format,
         None if peek.iter().all(u8::is_ascii_whitespace) => Format::Json,
@@ -307,7 +307,7 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
             (sniffed, _) => sniffed,
         },
     };
-    let (prefix, prefix_source) = if format == Format::Stderr && !empty {
+    let (prefix, prefix_source) = if format == Format::Stderr && !blank {
         match &options.prefix {
             Some(prefix) => (Some(prefix.clone()), PrefixSource::Given),
             None => infer(path, options)?,
@@ -319,8 +319,14 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
         prefix: prefix.clone(),
         log_tz: options.log_tz,
     };
+    // A blank-only stderr file has no prefix to decode with; any decoder reads it as empty.
+    let decode_format = if format == Format::Stderr && prefix.is_none() {
+        Format::Json
+    } else {
+        format
+    };
     let decoder =
-        decoder_for(format, reader, &log_options).map_err(|source| AnalyzeError::Setup {
+        decoder_for(decode_format, reader, &log_options).map_err(|source| AnalyzeError::Setup {
             path: path.to_path_buf(),
             source,
         })?;
@@ -354,13 +360,21 @@ fn infer(path: &Path, options: &Options) -> Result<(Option<String>, PrefixSource
         path: path.to_path_buf(),
         source,
     };
-    let reader = source::open(path).map_err(open_err)?;
+    let mut reader = source::open(path).map_err(open_err)?;
     let mut lines = Vec::new();
-    for line in reader.lines().take(SAMPLE_LINES * 2) {
-        match line {
-            Ok(line) => lines.push(line),
-            Err(_err) => break,
+    let mut buf = Vec::new();
+    while lines.len() < SAMPLE_LINES * 2 {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
         }
+        // A line that is not valid UTF-8 must not end (or fail) the sample.
+        lines.push(
+            String::from_utf8_lossy(&buf)
+                .trim_end_matches(['\n', '\r'])
+                .to_owned(),
+        );
     }
     let inference = infer_prefix(&lines, options.log_tz);
     match inference.prefix.clone() {
@@ -534,5 +548,33 @@ mod tests {
         fs::remove_file(path).unwrap();
         assert_eq!(output.acc.queries.len(), 1);
         assert!(output.acc.overflow.calls > 0);
+    }
+
+    #[test]
+    fn a_non_utf8_first_line_does_not_defeat_prefix_inference() {
+        let mut bytes = b"2026-10-14 10:20:09.302 UTC [42] LOG:  caf\xE9\n".to_vec();
+        for i in 0..50 {
+            bytes.extend_from_slice(
+                format!("2026-10-14 10:20:10.{i:03} UTC [42] LOG:  fine\n").as_bytes(),
+            );
+        }
+        let path = scratch("latin1.log", &bytes);
+        let output = run(std::slice::from_ref(&path), &Options::new()).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(output.files[0].prefix.as_deref(), Some("%m [%p] "));
+        assert_eq!(output.acc.totals.records, 50);
+        assert_eq!(output.files[0].stats.skipped, 1);
+    }
+
+    #[test]
+    fn a_blank_only_file_is_fine_even_with_an_explicit_stderr_format() {
+        let path = scratch("blank.log", b"\n  \n\n");
+        let options = Options {
+            format: Some(Format::Stderr),
+            ..Options::new()
+        };
+        let output = run(std::slice::from_ref(&path), &options).unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(output.acc.totals.records, 0);
     }
 }
