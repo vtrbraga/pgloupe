@@ -2,6 +2,7 @@
 
 pub mod baseline;
 pub mod ddl;
+pub mod errors;
 pub mod temp_files;
 
 use anyhow::bail;
@@ -183,7 +184,12 @@ fn scenario_seed(seed: u64, name: &str) -> u64 {
 }
 
 /// Every scenario, in run order.
-pub const ALL: &[Scenario] = &[baseline::SCENARIO, ddl::SCENARIO, temp_files::SCENARIO];
+pub const ALL: &[Scenario] = &[
+    baseline::SCENARIO,
+    ddl::SCENARIO,
+    temp_files::SCENARIO,
+    errors::SCENARIO,
+];
 
 /// Scenarios to run: all when `only` is empty, else the named ones in canonical order.
 ///

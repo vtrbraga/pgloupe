@@ -226,3 +226,9 @@ fn ddl_matches_manifest() {
 fn temp_files_matches_manifest() {
     assert_log_matches_manifest(&generate_corpus(&["temp_files"]));
 }
+
+#[test]
+#[ignore = "needs docker"]
+fn errors_matches_manifest() {
+    assert_log_matches_manifest(&generate_corpus(&["errors"]));
+}
