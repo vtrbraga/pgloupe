@@ -174,7 +174,9 @@ pub enum DecodeError {
 /// A decoder could not be built.
 #[derive(Debug, Error)]
 pub enum SetupError {
-    #[error("this looks like a stderr log; pass --prefix with the server's log_line_prefix")]
+    #[error(
+        "this looks like a stderr log; pass --prefix with the server's log_line_prefix (or --format to force csv or json)"
+    )]
     MissingPrefix,
     #[error("invalid log_line_prefix")]
     Prefix(#[from] PrefixError),

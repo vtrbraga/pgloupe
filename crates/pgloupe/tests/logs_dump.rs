@@ -265,3 +265,67 @@ fn closing_stdout_early_is_not_an_error() -> io::Result<()> {
     );
     Ok(())
 }
+#[test]
+fn an_explicit_prefix_means_stderr_even_when_the_line_looks_like_csv() -> io::Result<()> {
+    let path = scratch(
+        "comma.log",
+        b"2026-10-14 10:20:09.289 UTC,[42] LOG:  hello\n",
+    )?;
+    let out = dump(&["--prefix", "%m,[%p] "], &path)?;
+    fs::remove_file(&path)?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("\"message\":\"hello\""),
+        "{}",
+        stdout(&out)
+    );
+    Ok(())
+}
+
+#[test]
+fn binary_input_is_not_called_a_stderr_log() -> io::Result<()> {
+    let path = scratch("elf.bin", &[0x7f, b'E', b'L', b'F', 0, 1, 2, 3, 0, 0])?;
+    let out = dump(&[], &path)?;
+    fs::remove_file(&path)?;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("binary"), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("stderr log"), "{}", stderr(&out));
+    Ok(())
+}
+
+#[test]
+fn a_blank_only_file_is_not_an_error() -> io::Result<()> {
+    let path = scratch("blank.json", b"\n\n   \n")?;
+    let out = dump(&["--format", "json"], &path)?;
+    fs::remove_file(&path)?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    Ok(())
+}
+
+#[test]
+fn unwritable_stdout_names_what_failed() -> io::Result<()> {
+    let devfull = fs::OpenOptions::new().write(true).open("/dev/full")?;
+    let out = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args(["logs", "dump"])
+        .arg(fixture("sample.csv"))
+        .stdout(devfull)
+        .output()?;
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("writing output"), "{}", stderr(&out));
+    Ok(())
+}
+
+#[test]
+fn unwritable_stderr_does_not_panic() -> io::Result<()> {
+    let devfull = fs::OpenOptions::new().write(true).open("/dev/full")?;
+    let out = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args(["logs", "dump", "/nonexistent/file.log"])
+        .stderr(devfull)
+        .output()?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "an error exit, not a panic (101)"
+    );
+    Ok(())
+}

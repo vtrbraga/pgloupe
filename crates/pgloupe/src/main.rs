@@ -16,12 +16,12 @@ fn main() -> ExitCode {
         (Ok(Exit::Failed), _) => ExitCode::FAILURE,
         (Err(err), _) if is_broken_pipe(&err) => ExitCode::SUCCESS,
         (Err(err), _) => {
-            eprintln!("error: {err:#}");
+            let _ = writeln!(io::stderr(), "error: {err:#}");
             ExitCode::FAILURE
         }
         (Ok(Exit::Ok), Err(err)) if err.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         (Ok(Exit::Ok), Err(err)) => {
-            eprintln!("error: {err}");
+            let _ = writeln!(io::stderr(), "error: writing output: {err}");
             ExitCode::FAILURE
         }
     }

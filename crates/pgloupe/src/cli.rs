@@ -193,13 +193,21 @@ fn logs_dump(args: &DumpArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyho
         LogFormat::Csv => Format::Csv,
         LogFormat::Json => Format::Json,
         LogFormat::Stderr => Format::Stderr,
+        // A prefix only makes sense for stderr logs.
+        LogFormat::Auto if args.prefix.is_some() => Format::Stderr,
         LogFormat::Auto => {
             let peek = reader
                 .fill_buf()
                 .with_context(|| format!("{}: could not read", args.file.display()))?;
             if peek.is_empty() {
-                writeln!(err, "{}", log::DecodeStats::default())?;
+                let _ = writeln!(err, "{}", log::DecodeStats::default());
                 return Ok(Exit::Ok);
+            }
+            if peek.contains(&0) {
+                bail!(
+                    "{}: looks like binary data, not a log; pass --format to force a decoder",
+                    args.file.display()
+                );
             }
             source::sniff(peek)
         }
@@ -214,8 +222,8 @@ fn logs_dump(args: &DumpArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyho
     while args.limit.is_none_or(|limit| written < limit) {
         match decoder.next_record() {
             Ok(Some(record)) => {
-                serde_json::to_writer(&mut *out, &record)?;
-                out.write_all(b"\n")?;
+                serde_json::to_writer(&mut *out, &record).context("writing output")?;
+                out.write_all(b"\n").context("writing output")?;
                 written += 1;
             }
             Ok(None) => break,
@@ -226,11 +234,11 @@ fn logs_dump(args: &DumpArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyho
         }
     }
     let stats = decoder.stats();
-    writeln!(err, "{stats}")?;
+    let _ = writeln!(err, "{stats}");
     if let Some(error) = read_error {
         return Err(anyhow::Error::new(error).context(format!("{}", args.file.display())));
     }
-    Ok(if stats.records == 0 && stats.lines > 0 {
+    Ok(if stats.records == 0 && stats.skipped > 0 {
         Exit::Failed
     } else {
         Exit::Ok
