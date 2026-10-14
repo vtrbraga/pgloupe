@@ -48,9 +48,16 @@ pub struct DecodeStats {
     pub records: u64,
     pub skipped: u64,
     pub first_skipped: Option<Skipped>,
+    /// Lines whose prefix matched but whose severity label is unknown.
+    pub no_label: u64,
 }
 
 impl DecodeStats {
+    /// Counts a skipped record, remembering the offending text (shape counting arrives later).
+    pub fn skip_with(&mut self, line: u64, reason: &str, _text: Option<&str>) {
+        self.skip(line, reason);
+    }
+
     /// Counts a skipped record; only the first one keeps its line and reason.
     pub fn skip(&mut self, line: u64, reason: impl Into<String>) {
         self.skipped += 1;

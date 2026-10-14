@@ -62,7 +62,7 @@ pub fn split_label(rest: &str) -> Option<(Label, &str)> {
         "QUERY" => Label::Query,
         "CONTEXT" => Label::Context,
         "STATEMENT" => Label::Statement,
-        "LOCATION" => Label::Location,
+        "LOCATION" | "BACKTRACE" => Label::Location,
         name => Label::Level(Severity::from_label(name)?),
     };
     Some((label, text))
@@ -549,5 +549,13 @@ mod tests {
             Some((Label::Level(Severity::Log), ""))
         );
         assert_eq!(split_label(""), None);
+    }
+
+    #[test]
+    fn backtrace_lines_are_secondary_and_ignored() {
+        assert_eq!(
+            split_label("BACKTRACE:  postgres: frame"),
+            Some((Label::Location, "postgres: frame"))
+        );
     }
 }

@@ -1,6 +1,9 @@
 //! stderr decoder: groups the physical lines of one entry into one record.
 
-use std::io::BufRead;
+use std::{
+    collections::{HashMap, VecDeque},
+    io::BufRead,
+};
 
 use jiff::{Timestamp, tz::Offset};
 
@@ -10,7 +13,10 @@ use super::{
     record::{LogRecord, Severity},
 };
 
-/// Which field of the open entry a tab-indented continuation line extends.
+/// More open entries than this are emitted, least recently touched first.
+const DEFAULT_MAX_OPEN: usize = 10_000;
+
+/// Which field of an open entry a tab-indented continuation line extends.
 #[derive(Debug, Clone, Copy)]
 enum Field {
     Message,
@@ -19,16 +25,20 @@ enum Field {
     Context,
     Statement,
     InternalQuery,
-    /// Read and discarded on purpose (`LOCATION:`).
+    /// Read and discarded on purpose (`LOCATION:`, `BACKTRACE:`).
     Ignored,
-    /// A line after this entry was skipped; its continuations must not be glued on.
+    /// A line after this entry was skipped; later lines must not be glued on.
     Dropped,
 }
+
+/// The backend an entry belongs to: its pid, or `None` when the prefix has no `%p`.
+type Key = Option<u32>;
 
 #[derive(Debug)]
 struct Pending {
     record: LogRecord,
     field: Field,
+    touched: u64,
 }
 
 /// Reads stderr logs written with a known `log_line_prefix`.
@@ -37,11 +47,16 @@ pub struct StderrDecoder<R: BufRead> {
     reader: R,
     prefix: Prefix,
     fallback: Option<Offset>,
-    pending: Option<Pending>,
+    open: HashMap<Key, Pending>,
+    ready: VecDeque<LogRecord>,
+    /// The entry tab-indented lines extend; `None` after a skipped line.
+    continuation: Option<Key>,
+    max_open: usize,
+    clock: u64,
     buf: Vec<u8>,
     line_no: u64,
     finished: bool,
-    /// A read error found while an entry was still open: reported after that entry.
+    /// A read error found while entries were open: reported after they are emitted.
     deferred: Option<DecodeError>,
     stats: DecodeStats,
 }
@@ -49,11 +64,25 @@ pub struct StderrDecoder<R: BufRead> {
 impl<R: BufRead> StderrDecoder<R> {
     /// `fallback` is the `--log-tz` offset for timezone abbreviations the log does not spell out.
     pub fn new(reader: R, prefix: Prefix, fallback: Option<Offset>) -> Self {
+        Self::with_max_open(reader, prefix, fallback, DEFAULT_MAX_OPEN)
+    }
+
+    /// Like [`StderrDecoder::new`] with an explicit bound on simultaneously open entries.
+    pub fn with_max_open(
+        reader: R,
+        prefix: Prefix,
+        fallback: Option<Offset>,
+        max_open: usize,
+    ) -> Self {
         StderrDecoder {
             reader,
             prefix,
             fallback,
-            pending: None,
+            open: HashMap::new(),
+            ready: VecDeque::new(),
+            continuation: None,
+            max_open: max_open.max(1),
+            clock: 0,
             buf: Vec::new(),
             line_no: 0,
             finished: false,
@@ -62,18 +91,29 @@ impl<R: BufRead> StderrDecoder<R> {
         }
     }
 
-    /// Counts a skipped line and stops its continuation lines from extending the open entry.
-    fn skip_line(&mut self, reason: impl Into<String>) {
-        self.stats.skip(self.line_no, reason);
-        if let Some(pending) = self.pending.as_mut() {
-            pending.field = Field::Dropped;
-        }
-    }
-
     fn emit(&mut self, mut record: LogRecord) -> LogRecord {
         self.stats.records += 1;
         split_error_position(&mut record);
         record
+    }
+
+    fn queue(&mut self, record: LogRecord) {
+        let record = self.emit(record);
+        self.ready.push_back(record);
+    }
+
+    /// Counts a skipped line. With a known pid only that backend's entry is closed; otherwise the
+    /// last touched entry is (the line may have been its continuation or secondary line).
+    fn skip_line(&mut self, reason: &str, pid: Option<u32>, text: Option<&str>) {
+        self.stats.skip_with(self.line_no, reason, text);
+        if reason.starts_with("no severity label") {
+            self.stats.no_label += 1;
+        }
+        let target = pid.map(Some).or(self.continuation);
+        if let Some(entry) = target.and_then(|key| self.open.get_mut(&key)) {
+            entry.field = Field::Dropped;
+        }
+        self.continuation = None;
     }
 
     /// The next non-blank line, or `None` at the end of input. Invalid UTF-8 is skipped.
@@ -100,15 +140,26 @@ impl<R: BufRead> StderrDecoder<R> {
                     }
                     return Ok(Some(line));
                 }
-                Err(_) => self.skip_line("line is not valid UTF-8"),
+                Err(_err) => self.skip_line("line is not valid UTF-8", None, None),
             }
         }
     }
 
-    fn continue_field(&mut self, extra: &str) {
-        let Some(pending) = self.pending.as_mut() else {
-            self.stats
-                .skip(self.line_no, "continuation line without a log entry");
+    fn continue_field(&mut self, extra: &str, line: &str) {
+        let Some(key) = self.continuation else {
+            self.stats.skip_with(
+                self.line_no,
+                "continuation of a skipped line or a line without an entry",
+                Some(line),
+            );
+            return;
+        };
+        let Some(pending) = self.open.get_mut(&key) else {
+            self.stats.skip_with(
+                self.line_no,
+                "continuation line without a log entry",
+                Some(line),
+            );
             return;
         };
         let target = match pending.field {
@@ -121,7 +172,7 @@ impl<R: BufRead> StderrDecoder<R> {
             Field::Ignored => None,
             Field::Dropped => {
                 self.stats
-                    .skip(self.line_no, "continuation of a skipped line");
+                    .skip_with(self.line_no, "continuation of a skipped line", Some(line));
                 None
             }
         };
@@ -131,13 +182,50 @@ impl<R: BufRead> StderrDecoder<R> {
         }
     }
 
-    fn attach(&mut self, label: Label, text: &str, pid: Option<u32>) {
-        // A skipped line closes the open entry: what follows may belong to the skipped one.
-        let open = |p: &&mut Pending| p.record.pid == pid && !matches!(p.field, Field::Dropped);
-        let Some(pending) = self.pending.as_mut().filter(open) else {
-            self.skip_line("detail or statement line without a matching log entry");
+    fn start_entry(&mut self, mut record: LogRecord, level: Severity, text: &str) {
+        record.level = level;
+        text.clone_into(&mut record.message);
+        let key = record.pid;
+        self.clock += 1;
+        let pending = Pending {
+            record,
+            field: Field::Message,
+            touched: self.clock,
+        };
+        if let Some(old) = self.open.insert(key, pending) {
+            self.queue(old.record);
+        } else if self.open.len() > self.max_open {
+            self.evict_oldest();
+        }
+        self.continuation = Some(key);
+    }
+
+    fn evict_oldest(&mut self) {
+        let oldest = self
+            .open
+            .iter()
+            .min_by_key(|(_, pending)| pending.touched)
+            .map(|(key, _)| *key);
+        if let Some(pending) = oldest.and_then(|key| self.open.remove(&key)) {
+            self.queue(pending.record);
+        }
+    }
+
+    fn attach(&mut self, label: Label, text: &str, pid: Option<u32>, line: &str) {
+        let Some(pending) = self
+            .open
+            .get_mut(&pid)
+            .filter(|p| !matches!(p.field, Field::Dropped))
+        else {
+            self.skip_line(
+                "detail or statement line without a matching log entry",
+                pid,
+                Some(line),
+            );
             return;
         };
+        self.clock += 1;
+        pending.touched = self.clock;
         let record = &mut pending.record;
         pending.field = match label {
             Label::Detail => {
@@ -162,6 +250,17 @@ impl<R: BufRead> StderrDecoder<R> {
             }
             Label::Location | Label::Level(_) => Field::Ignored,
         };
+        self.continuation = Some(pid);
+    }
+
+    /// Emits every open entry, oldest first.
+    fn flush_open(&mut self) {
+        let mut entries: Vec<Pending> = self.open.drain().map(|(_, pending)| pending).collect();
+        entries.sort_by_key(|pending| (pending.record.ts, pending.record.pid));
+        for pending in entries {
+            self.queue(pending.record);
+        }
+        self.continuation = None;
     }
 }
 
@@ -185,46 +284,39 @@ fn split_error_position(record: &mut LogRecord) {
 impl<R: BufRead> Decoder for StderrDecoder<R> {
     fn next_record(&mut self) -> Result<Option<LogRecord>, DecodeError> {
         loop {
+            if let Some(record) = self.ready.pop_front() {
+                return Ok(Some(record));
+            }
             if let Some(error) = self.deferred.take() {
                 return Err(error);
             }
             if self.finished {
-                return Ok(self.pending.take().map(|p| self.emit(p.record)));
+                return Ok(None);
             }
             let line = match self.read_line() {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     self.finished = true;
+                    self.flush_open();
                     continue;
                 }
-                Err(error) => match self.pending.take() {
-                    // Hand out the complete entry first; the error follows on the next call.
-                    Some(pending) => {
-                        self.deferred = Some(error);
-                        return Ok(Some(self.emit(pending.record)));
-                    }
-                    None => return Err(error),
-                },
+                Err(error) => {
+                    // Hand out the complete entries first; the error follows.
+                    self.finished = true;
+                    self.deferred = Some(error);
+                    self.flush_open();
+                    continue;
+                }
             };
             if let Some(rest) = line.strip_prefix('\t') {
-                self.continue_field(rest);
+                self.continue_field(rest, &line);
                 continue;
             }
             let mut record = LogRecord::new(Timestamp::UNIX_EPOCH, Severity::Log, String::new());
             match self.prefix.parse_line(&line, &mut record, self.fallback) {
-                Err(reason) => self.skip_line(reason),
-                Ok((Label::Level(level), text)) => {
-                    record.level = level;
-                    text.clone_into(&mut record.message);
-                    let done = self.pending.replace(Pending {
-                        record,
-                        field: Field::Message,
-                    });
-                    if let Some(done) = done {
-                        return Ok(Some(self.emit(done.record)));
-                    }
-                }
-                Ok((label, text)) => self.attach(label, text, record.pid),
+                Err(reason) => self.skip_line(&reason, record.pid, Some(&line)),
+                Ok((Label::Level(level), text)) => self.start_entry(record, level, text),
+                Ok((label, text)) => self.attach(label, text, record.pid, &line),
             }
         }
     }
@@ -555,5 +647,110 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].detail, None);
         assert_eq!(stats.skipped, 2);
+    }
+
+    const SIMPLE: &str = "%m [%p] ";
+
+    fn line(pid: u32, label: &str, text: &str) -> String {
+        format!("2026-10-14 10:20:12.500 UTC [{pid}] {label}:  {text}\n")
+    }
+
+    #[test]
+    fn interleaved_backends_keep_their_own_lines() {
+        let text = [
+            line(1, "ERROR", "boom one"),
+            line(2, "ERROR", "boom two"),
+            line(1, "STATEMENT", "SELECT a"),
+            line(2, "DETAIL", "detail two"),
+            "\tmore detail two\n".to_owned(),
+        ]
+        .concat();
+        let (records, stats) = decode_with(SIMPLE, &text);
+        assert_eq!(stats.skipped, 0, "{:?}", stats.first_skipped);
+        assert_eq!(records.len(), 2);
+        let one = records.iter().find(|r| r.pid == Some(1)).unwrap();
+        let two = records.iter().find(|r| r.pid == Some(2)).unwrap();
+        assert_eq!(one.statement.as_deref(), Some("SELECT a"));
+        assert_eq!(one.detail, None);
+        assert_eq!(two.detail.as_deref(), Some("detail two\nmore detail two"));
+        assert_eq!(two.statement, None);
+    }
+
+    #[test]
+    fn open_entries_are_flushed_in_time_order() {
+        let text = [
+            "2026-10-14 10:20:12.700 UTC [2] LOG:  later\n",
+            "2026-10-14 10:20:12.100 UTC [1] LOG:  earlier\n",
+        ]
+        .concat();
+        let (records, _) = decode_with(SIMPLE, &text);
+        let messages: Vec<&str> = records.iter().map(|r| r.message.as_str()).collect();
+        assert_eq!(messages, ["earlier", "later"]);
+    }
+
+    #[test]
+    fn a_skipped_line_of_one_pid_leaves_other_pids_entries_open() {
+        let mut bytes = line(1, "ERROR", "one").into_bytes();
+        bytes.extend_from_slice(line(2, "ERROR", "two").as_bytes());
+        bytes.extend_from_slice(b"2026-10-14 10:20:12.500 UTC [2] SHOUT:  what\n");
+        bytes.extend_from_slice(line(1, "STATEMENT", "SELECT a").as_bytes());
+        bytes.extend_from_slice(line(2, "STATEMENT", "SELECT b").as_bytes());
+        let mut decoder =
+            StderrDecoder::new(bytes.as_slice(), Prefix::compile(SIMPLE).unwrap(), None);
+        let mut records = Vec::new();
+        while let Some(record) = decoder.next_record().unwrap() {
+            records.push(record);
+        }
+        let one = records.iter().find(|r| r.pid == Some(1)).unwrap();
+        let two = records.iter().find(|r| r.pid == Some(2)).unwrap();
+        assert_eq!(one.statement.as_deref(), Some("SELECT a"));
+        assert_eq!(
+            two.statement, None,
+            "pid 2's entry was closed by its skipped line"
+        );
+        assert_eq!(decoder.stats().skipped, 2);
+    }
+
+    #[test]
+    fn the_least_recently_touched_entry_is_evicted_over_the_cap() {
+        let text = [
+            line(1, "LOG", "a"),
+            line(2, "LOG", "b"),
+            line(3, "LOG", "c"),
+        ]
+        .concat();
+        let mut decoder = StderrDecoder::with_max_open(
+            text.as_bytes(),
+            Prefix::compile(SIMPLE).unwrap(),
+            None,
+            2,
+        );
+        let first = decoder.next_record().unwrap().unwrap();
+        assert_eq!(first.message, "a", "pid 1 was evicted when pid 3 arrived");
+        let mut rest = Vec::new();
+        while let Some(record) = decoder.next_record().unwrap() {
+            rest.push(record.message);
+        }
+        assert_eq!(rest, ["b", "c"]);
+    }
+
+    #[test]
+    fn prefixes_without_a_pid_use_one_shared_entry() {
+        let text = "2026-10-14 10:20:12.500 UTC ERROR:  boom\n\
+                    2026-10-14 10:20:12.500 UTC STATEMENT:  SELECT 1\n";
+        let (records, stats) = decode_with("%m ", text);
+        assert_eq!(stats.skipped, 0, "{:?}", stats.first_skipped);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].statement.as_deref(), Some("SELECT 1"));
+    }
+
+    #[test]
+    fn backtrace_lines_and_their_continuations_are_dropped_silently() {
+        let text =
+            format!("{SESSION} ERROR:  boom\n{SESSION} BACKTRACE:  frame one\n\tframe two\n");
+        let (records, stats) = decode(&text);
+        assert_eq!(records.len(), 1);
+        assert_eq!(stats.skipped, 0);
+        assert_eq!(records[0].message, "boom");
     }
 }
