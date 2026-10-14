@@ -14,6 +14,10 @@ pub const CONTROL_APP: &str = "synth:control";
 /// Backstop so a bug in a scenario fails with a lock timeout instead of hanging forever.
 const SESSION_OPTIONS: &str = "-c lock_timeout=30s";
 
+/// Control sessions neither log nor track their statements, so they leave no trace in the corpus.
+const CONTROL_OPTIONS: &str =
+    "-c lock_timeout=30s -c log_min_duration_statement=-1 -c pg_stat_statements.track=none";
+
 /// Where the container's server listens on the host.
 #[derive(Debug, Clone, Copy)]
 pub struct Target {
@@ -28,13 +32,23 @@ impl Target {
     ///
     /// Fails if the connection is refused.
     pub fn connect(self, db: &str, user: &str, app: &str) -> anyhow::Result<Client> {
+        self.connect_with(db, user, app, SESSION_OPTIONS)
+    }
+
+    fn connect_with(
+        self,
+        db: &str,
+        user: &str,
+        app: &str,
+        options: &str,
+    ) -> anyhow::Result<Client> {
         Config::new()
             .host("127.0.0.1")
             .port(self.port)
             .dbname(db)
             .user(user)
             .application_name(app)
-            .options(SESSION_OPTIONS)
+            .options(options)
             .connect(NoTls)
             .with_context(|| format!("connecting to {db} as {user}"))
     }
@@ -45,13 +59,7 @@ impl Target {
     ///
     /// Fails if the connection or the `SET` fails.
     pub fn control(self, db: &str) -> anyhow::Result<Client> {
-        let mut client = self.connect(db, "postgres", CONTROL_APP)?;
-        client
-            .batch_execute(
-                "SET log_min_duration_statement = -1; SET pg_stat_statements.track = 'none'",
-            )
-            .context("configuring control session")?;
-        Ok(client)
+        self.connect_with(db, "postgres", CONTROL_APP, CONTROL_OPTIONS)
     }
 }
 

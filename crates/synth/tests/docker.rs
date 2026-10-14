@@ -140,6 +140,28 @@ fn setup_sessions_are_not_tracked_by_pgss() {
 
 #[test]
 #[ignore = "needs docker"]
+fn control_sessions_leave_no_trace_in_pgss() {
+    let label = format!("pgloupe.synth.test={}", common::unique("notrace"));
+    let pg = start("notrace", &label);
+    let target = Target { port: pg.port() };
+    let mut control = target.control("postgres").unwrap();
+    control
+        .batch_execute("CREATE EXTENSION pg_stat_statements")
+        .unwrap();
+    let mut second = target.control("postgres").unwrap();
+    let set_rows = session::query_scalar(
+        &mut second,
+        "SELECT count(*) FROM pg_stat_statements WHERE query LIKE 'SET %'",
+    )
+    .unwrap();
+    assert_eq!(
+        set_rows, "0",
+        "opening control sessions must not add pgss rows"
+    );
+}
+
+#[test]
+#[ignore = "needs docker"]
 fn scenario_sessions_have_a_lock_timeout_backstop() {
     let label = format!("pgloupe.synth.test={}", common::unique("locktimeout"));
     let pg = start("locktimeout", &label);

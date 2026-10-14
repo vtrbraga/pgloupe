@@ -126,7 +126,7 @@ fn check_reusable(existing: &Manifest, scenarios: &[&Scenario]) -> anyhow::Resul
     let generated: Vec<&str> = existing.scenarios.iter().map(String::as_str).collect();
     if generated != requested {
         bail!(
-            "existing corpus was generated for scenarios [{}], not [{}]; use --force to regenerate",
+            "existing corpus was generated for scenarios [{}], not [{}]; --force replaces the existing corpus",
             generated.join(", "),
             requested.join(", ")
         );
@@ -192,7 +192,7 @@ mod tests {
         let err = check_reusable(&manifest_with(&["a"]), &[&A, &B])
             .unwrap_err()
             .to_string();
-        assert!(err.contains("--force"), "{err}");
+        assert!(err.contains("--force replaces"), "{err}");
         assert!(err.contains('a') && err.contains('b'), "{err}");
     }
 }

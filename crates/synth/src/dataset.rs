@@ -5,6 +5,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process,
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -13,6 +14,9 @@ use sha2::{Digest as _, Sha256};
 
 /// Pagila git commit; newer commits need pgvector and PG18-only features.
 pub const PAGILA_COMMIT: &str = "e0e35a666f31a786b9d3c06cb83799fc46db25d4";
+
+/// Distinguishes temp files of concurrent writers within one process.
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Upper bound for one file download.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
@@ -59,7 +63,11 @@ pub fn verify(bytes: &[u8], expected: &str, what: &str) -> anyhow::Result<()> {
 /// Fails if the write or the rename fails.
 fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     let mut partial = path.as_os_str().to_owned();
-    partial.push(format!(".{}.part", process::id()));
+    partial.push(format!(
+        ".{}.{}.part",
+        process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
     let partial = PathBuf::from(partial);
     fs::write(&partial, bytes).with_context(|| format!("writing {}", partial.display()))?;
     fs::rename(&partial, path).with_context(|| format!("renaming into {}", path.display()))
@@ -133,6 +141,29 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["file.sql"]);
+    }
+
+    #[test]
+    fn write_atomic_survives_concurrent_writers() {
+        let dir = env::temp_dir().join(format!("synth-unit-atomic-race-{}", process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("shared.sql");
+        let content = vec![b'x'; 1 << 20];
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| write_atomic(&path, &content)))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for result in &results {
+            result.as_ref().unwrap();
+        }
+        assert_eq!(std::fs::read(&path).unwrap().len(), 1 << 20);
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["shared.sql"]);
     }
 
     #[test]

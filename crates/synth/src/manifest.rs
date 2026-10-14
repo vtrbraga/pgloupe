@@ -57,6 +57,16 @@ pub struct Expect {
 }
 
 /// Everything a test needs to know about a generated corpus.
+///
+/// Corpus properties a parser developer should expect:
+/// - The log starts with the Docker entrypoint's temporary server: two `starting PostgreSQL`
+///   lines, a `shutdown immediate` checkpoint, and `psql`/`pgbench`/`pg_isready` connections.
+/// - `connection authorized` rows have an empty `application_name` column in csvlog and
+///   jsonlog; the application only appears in the message text.
+/// - Event kinds are not mutually exclusive: a deadlock is both [`EventKind::Deadlock`] and
+///   an [`EventKind::Error`] with SQLSTATE `40P01`.
+/// - Only log events are listed in `expect`; `pg_stat_statements` properties (nested calls,
+///   evictions, resets) are asserted by the `synth` integration tests.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     /// `synth` crate version.
@@ -75,9 +85,11 @@ pub struct Manifest {
     pub pagila_commit: String,
     /// Server settings passed at startup.
     pub settings: Vec<(String, String)>,
-    /// Server time when loading finished (`now()::text`).
+    /// Server time when loading finished: `now()::text` in UTC, e.g. `2026-10-14 10:20:10.758449+00`.
+    ///
+    /// Log timestamps use a different layout (`2026-10-14 10:20:09.289 UTC`).
     pub load_finished_at: String,
-    /// Server time of snapshots 0, 1 and 2.
+    /// Server time of snapshots 0, 1 and 2, in the same layout as `load_finished_at`.
     pub snapshots_at: Vec<String>,
     /// Scenarios run, in order.
     pub scenarios: Vec<String>,
