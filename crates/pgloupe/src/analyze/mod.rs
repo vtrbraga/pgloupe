@@ -5,6 +5,7 @@ pub mod diagnostics;
 pub mod event;
 pub mod fingerprint;
 pub mod pipeline;
+pub mod report;
 pub mod sketch;
 
 /// Combining two partial results into one.
