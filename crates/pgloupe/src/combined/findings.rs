@@ -32,6 +32,8 @@ pub struct Context<'a> {
     /// The rows that will be shown.
     pub top: &'a [JoinedRow],
     pub has_logs: bool,
+    /// The logs come from a store, whose windows are whole hours.
+    pub from_store: bool,
 }
 
 /// `1 statement` or `3 statements`.
@@ -70,9 +72,13 @@ pub fn findings(ctx: &Context<'_>) -> Vec<Finding> {
         && overlap >= MIN_OVERLAP_PCT
         && (ratio >= MAX_WINDOW_RATIO || ratio <= 1.0 / MAX_WINDOW_RATIO)
     {
-        let how = if ratio >= MAX_WINDOW_RATIO {
+        let how = if ratio >= MAX_WINDOW_RATIO && ctx.from_store {
             format!(
-                "the log window is {ratio:.1}× the snapshot window, so the log's counts and totals cover a longer period than the statistics' deltas; pass --since and --until (or trim the logs) to match the snapshot interval"
+                "the log window is {ratio:.1}× the snapshot window: the store keeps whole hours, so its window cannot be narrower than an hour; take the snapshots on hour boundaries (about an hour apart), or analyze the log files directly instead of the store"
+            )
+        } else if ratio >= MAX_WINDOW_RATIO {
+            format!(
+                "the log window is {ratio:.1}× the snapshot window, so the log's counts and totals cover a longer period than the statistics' deltas; trim the logs to the snapshot interval"
             )
         } else {
             format!(
@@ -288,6 +294,7 @@ mod tests {
             window_ratio: ratio,
             top: &top,
             has_logs: true,
+            from_store: false,
         })
     }
 
@@ -496,5 +503,32 @@ mod tests {
             .unwrap();
         assert_eq!(f.severity, "warn");
         assert!(f.message.contains("whole history"), "{}", f.message);
+    }
+
+    #[test]
+    fn the_advice_for_a_store_does_not_suggest_flags_that_cannot_help() {
+        let (d, log) = healthy_inputs();
+        let joined = join(log, Some(&d));
+        let found = findings(&Context {
+            delta: Some(&d),
+            joined: &joined,
+            overlap_pct: Some(100.0),
+            window_ratio: Some(9.9),
+            top: &joined.rows,
+            has_logs: true,
+            from_store: true,
+        });
+        let f = found.iter().find(|f| f.code == "windows_mismatch").unwrap();
+        assert!(f.message.contains("whole hours"), "{}", f.message);
+        assert!(!f.message.contains("--since"), "{}", f.message);
+        // Plain files get the trimming advice.
+        let files = run_with_ratio(
+            Some(&d),
+            log_rows(&[("SELECT 1", 1, 1.0)]),
+            Some(100.0),
+            Some(9.9),
+        );
+        let f = files.iter().find(|f| f.code == "windows_mismatch").unwrap();
+        assert!(f.message.contains("trim the logs"), "{}", f.message);
     }
 }

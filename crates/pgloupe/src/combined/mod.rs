@@ -208,6 +208,9 @@ pub fn build(
         window_ratio: ratio,
         top: &joined.rows[..shown],
         has_logs: log_input.is_some(),
+        from_store: log_input
+            .as_ref()
+            .is_some_and(|input| input.source == "store"),
     });
     joined.rows.truncate(shown);
     CombinedReport {
