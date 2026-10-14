@@ -1,0 +1,16 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Local development data (never commit raw logs or stats)
+/data/
+
+# Local Claude notes (docs live in OneDrive, see CLAUDE.md)
+CLAUDE.md
+.claude/settings.local.json
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

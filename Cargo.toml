@@ -1,0 +1,11 @@
+[package]
+name = "pgloupe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A close look at your Postgres logs and query stats."
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
