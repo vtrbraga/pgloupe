@@ -303,3 +303,22 @@ fn functions_hide_inner_statements_from_logs_but_not_pgss() {
 fn connections_matches_manifest() {
     assert_log_matches_manifest(&generate_corpus(&["connections"]));
 }
+
+#[test]
+#[ignore = "needs docker"]
+fn pgss_churn_evicts_and_resets_between_snapshots_1_and_2() {
+    let dir = generate_corpus(&["pgss_churn"]);
+    assert_log_matches_manifest(&dir);
+    let manifest = Manifest::read(&dir).unwrap();
+    let (headers, rows) = read_csv_with_headers(&dir.join("pgss_info_2.csv"));
+    let dealloc: u64 = rows[0][column(&headers, "dealloc")].parse().unwrap();
+    assert!(dealloc > 0, "expected evictions");
+    let stats_reset = &rows[0][column(&headers, "stats_reset")];
+    // Same UTC text format on both sides, so string order is time order.
+    assert!(
+        stats_reset > manifest.snapshots_at[1].as_str(),
+        "{stats_reset} not after snapshot 1"
+    );
+    let (_, info_1) = read_csv_with_headers(&dir.join("pgss_info_1.csv"));
+    assert_eq!(&info_1[0][column(&headers, "dealloc")], "0");
+}

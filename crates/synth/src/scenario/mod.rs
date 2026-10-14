@@ -1,6 +1,7 @@
 //! Scenario framework: named workloads and the log events they must produce.
 
 pub mod baseline;
+pub mod churn;
 pub mod connections;
 pub mod ddl;
 pub mod errors;
@@ -200,6 +201,7 @@ pub const ALL: &[Scenario] = &[
     connections::SCENARIO,
     multiline::SCENARIO,
     extended::SCENARIO,
+    churn::SCENARIO,
 ];
 
 /// Scenarios to run: all when `only` is empty, else the named ones in canonical order.
