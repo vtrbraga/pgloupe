@@ -114,6 +114,12 @@ fn prefix_warnings(files: &[FileSummary], warnings: &mut Vec<String>) {
                 .to_owned(),
         );
     }
+    if prefixes.iter().any(|p| !p.contains("%e")) {
+        warnings.push(
+            "the log_line_prefix has no %e (SQLSTATE) — errors cannot be told apart by code in this stderr log"
+                .to_owned(),
+        );
+    }
     if prefixes
         .iter()
         .any(|p| !p.contains("%u") && !p.contains("%d") && !p.contains("%a"))
@@ -412,5 +418,32 @@ mod tests {
         };
         let d = build(&output(&["statement: SELECT 1"], vec![ok]));
         assert!(!has(&d, "was inferred"), "{:?}", d.warnings);
+    }
+
+    #[test]
+    fn a_stderr_prefix_without_sqlstate_warns_about_error_grouping() {
+        let d = build(&output(
+            &["statement: SELECT 1"],
+            vec![summary(
+                Format::Stderr,
+                Some("%m [%p] "),
+                DecodeStats::default(),
+            )],
+        ));
+        assert!(has(&d, "%e"), "{:?}", d.warnings);
+        let with = build(&output(
+            &["statement: SELECT 1"],
+            vec![summary(
+                Format::Stderr,
+                Some("%m [%p] %e "),
+                DecodeStats::default(),
+            )],
+        ));
+        assert!(!has(&with, "%e"), "{:?}", with.warnings);
+        let csv = build(&output(
+            &["statement: SELECT 1"],
+            vec![summary(Format::Csv, None, DecodeStats::default())],
+        ));
+        assert!(!has(&csv, "%e"), "{:?}", csv.warnings);
     }
 }
