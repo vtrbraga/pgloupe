@@ -51,13 +51,15 @@ pub struct StatsSide {
     pub temp_blks_written: u64,
     pub wal_bytes: u64,
     pub share_pct: f64,
+    /// Calls of the same statement inside functions (`track = all`), kept out of `calls`.
+    pub nested_calls: u64,
     /// Statistics entries merged into this row.
     pub entries: usize,
     /// Distinct `queryid`s among them.
     pub queryid_count: usize,
     /// The first five, ascending, as text (64-bit ids do not survive JSON numbers).
     pub queryids: Vec<String>,
-    /// `new`, `restarted`, `partial`, `evicted_suspect`.
+    /// `new`, `restarted`, `partial`, `evicted_suspect`, `nested` (only ever run inside functions).
     pub flags: Vec<&'static str>,
 }
 

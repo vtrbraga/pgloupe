@@ -34,15 +34,33 @@ pub struct Joined {
     pub rollups: usize,
 }
 
-/// Statistics entries that share a fingerprint.
+/// Statistics entries that share a fingerprint. Entries for statements run inside functions
+/// (`toplevel = false`, only with `pg_stat_statements.track = all`) are kept apart: the log does
+/// not record them, and their time is already part of their caller's.
 #[derive(Default)]
 struct Group {
     text: String,
     queryids: BTreeSet<i64>,
     entries: usize,
-    delta: Counters,
-    share_pct: f64,
+    top: Counters,
+    top_entries: usize,
+    nested: Counters,
+    top_share_pct: f64,
+    nested_share_pct: f64,
     flags: BTreeSet<&'static str>,
+}
+
+fn add_counters(into: &mut Counters, d: &Counters) {
+    into.calls += d.calls;
+    into.rows += d.rows;
+    into.plans += d.plans;
+    into.total_plan_time += d.total_plan_time;
+    into.total_exec_time += d.total_exec_time;
+    into.shared_blks_hit += d.shared_blks_hit;
+    into.shared_blks_read += d.shared_blks_read;
+    into.temp_blks_read += d.temp_blks_read;
+    into.temp_blks_written += d.temp_blks_written;
+    into.wal_bytes += d.wal_bytes;
 }
 
 impl Group {
@@ -52,18 +70,14 @@ impl Group {
         }
         self.entries += 1;
         self.queryids.insert(row.key.queryid);
-        let d = &row.delta;
-        self.delta.calls += d.calls;
-        self.delta.rows += d.rows;
-        self.delta.plans += d.plans;
-        self.delta.total_plan_time += d.total_plan_time;
-        self.delta.total_exec_time += d.total_exec_time;
-        self.delta.shared_blks_hit += d.shared_blks_hit;
-        self.delta.shared_blks_read += d.shared_blks_read;
-        self.delta.temp_blks_read += d.temp_blks_read;
-        self.delta.temp_blks_written += d.temp_blks_written;
-        self.delta.wal_bytes += d.wal_bytes;
-        self.share_pct += row.share_pct;
+        if row.key.toplevel {
+            self.top_entries += 1;
+            add_counters(&mut self.top, &row.delta);
+            self.top_share_pct += row.share_pct;
+        } else {
+            add_counters(&mut self.nested, &row.delta);
+            self.nested_share_pct += row.share_pct;
+        }
         match row.status {
             Status::New => {
                 self.flags.insert("new");
@@ -86,19 +100,32 @@ impl Group {
         reason = "call counts stay far below 2^53"
     )]
     fn side(&self) -> StatsSide {
-        let calls = self.delta.calls;
+        // Top-level entries speak for the statement; a statement seen only inside functions
+        // speaks through its nested entries and says so.
+        let nested_only = self.top_entries == 0;
+        let (counted, share_pct) = if nested_only {
+            (&self.nested, self.nested_share_pct)
+        } else {
+            (&self.top, self.top_share_pct)
+        };
+        let calls = counted.calls;
+        let mut flags = self.flags.clone();
+        if nested_only {
+            flags.insert("nested");
+        }
         StatsSide {
             calls,
-            total_exec_ms: self.delta.total_exec_time,
-            mean_ms: (calls > 0).then(|| self.delta.total_exec_time / calls as f64),
-            rows: self.delta.rows,
-            plans: self.delta.plans,
-            shared_blks_hit: self.delta.shared_blks_hit,
-            shared_blks_read: self.delta.shared_blks_read,
-            temp_blks_read: self.delta.temp_blks_read,
-            temp_blks_written: self.delta.temp_blks_written,
-            wal_bytes: self.delta.wal_bytes,
-            share_pct: self.share_pct,
+            total_exec_ms: counted.total_exec_time,
+            mean_ms: (calls > 0).then(|| counted.total_exec_time / calls as f64),
+            rows: counted.rows,
+            plans: counted.plans,
+            shared_blks_hit: counted.shared_blks_hit,
+            shared_blks_read: counted.shared_blks_read,
+            temp_blks_read: counted.temp_blks_read,
+            temp_blks_written: counted.temp_blks_written,
+            wal_bytes: counted.wal_bytes,
+            share_pct,
+            nested_calls: if nested_only { 0 } else { self.nested.calls },
             entries: self.entries,
             queryid_count: self.queryids.len(),
             queryids: self
@@ -107,7 +134,7 @@ impl Group {
                 .take(MAX_QUERYIDS)
                 .map(ToString::to_string)
                 .collect(),
-            flags: self.flags.iter().copied().collect(),
+            flags: flags.into_iter().collect(),
         }
     }
 }
@@ -249,7 +276,10 @@ pub fn rank(rows: &mut [JoinedRow], by: SortBy) {
 #[cfg(test)]
 mod tests {
     use super::{super::testkit::*, *};
-    use crate::{stats::delta::diff, testutil::key};
+    use crate::{
+        stats::{delta::diff, snapshot::Key},
+        testutil::key,
+    };
 
     const FILM: &str = "SELECT * FROM film WHERE film_id = $1";
 
@@ -437,5 +467,42 @@ mod tests {
         );
         rank(&mut joined, SortBy::P95);
         assert_eq!(order(&joined).last().unwrap(), "SELECT * FROM c");
+    }
+
+    fn nested_key(queryid: i64) -> Key {
+        Key {
+            toplevel: false,
+            ..key(queryid)
+        }
+    }
+
+    #[test]
+    fn nested_calls_do_not_inflate_the_top_level_numbers() {
+        // `pg_stat_statements.track = all`: the same statement also ran inside a function.
+        let d = delta(&[
+            (key(1), Some(FILM), 30, 30.0),
+            (nested_key(1), Some(FILM), 100, 40.0),
+        ]);
+        let log = log_rows(&[("SELECT * FROM film WHERE film_id = 5", 30, 1.0)]);
+        let joined = join(log, Some(&d));
+        assert_eq!(joined.rows.len(), 1);
+        let row = &joined.rows[0];
+        let stats = row.stats.as_ref().unwrap();
+        assert_eq!(
+            (stats.calls, stats.nested_calls, stats.entries),
+            (30, 100, 2)
+        );
+        assert!((stats.total_exec_ms - 30.0).abs() < 1e-9);
+        assert!((row.coverage.unwrap() - 1.0).abs() < 1e-9);
+        assert!(!stats.flags.contains(&"nested"));
+    }
+
+    #[test]
+    fn a_statement_that_only_runs_nested_is_flagged() {
+        let d = delta(&[(nested_key(7), Some(FILM), 12, 24.0)]);
+        let joined = join(Vec::new(), Some(&d));
+        let stats = joined.rows[0].stats.as_ref().unwrap();
+        assert_eq!((stats.calls, stats.nested_calls), (12, 0));
+        assert!(stats.flags.contains(&"nested"), "{:?}", stats.flags);
     }
 }

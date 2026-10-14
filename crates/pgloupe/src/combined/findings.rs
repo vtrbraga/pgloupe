@@ -159,15 +159,28 @@ fn stats_rules(delta: &Delta, found: &mut Vec<Finding>) {
     }
 }
 
+fn is_nested_only(row: &JoinedRow) -> bool {
+    row.stats
+        .as_ref()
+        .is_some_and(|stats| stats.flags.contains(&"nested"))
+}
+
 fn heavy_stats_only(ctx: &Context<'_>, found: &mut Vec<Finding>) {
     let exec = |row: &JoinedRow| row.stats.as_ref().map_or(0.0, |stats| stats.total_exec_ms);
-    let total: f64 = ctx.joined.rows.iter().map(exec).sum();
+    // Statements that only run inside functions are already part of their callers' time.
+    let total: f64 = ctx
+        .joined
+        .rows
+        .iter()
+        .filter(|row| !is_nested_only(row))
+        .map(exec)
+        .sum();
     // Unreadable entries (`q…`) may well be in the logs; they only cannot be matched.
     let mut only: Vec<&JoinedRow> = ctx
         .joined
         .rows
         .iter()
-        .filter(|r| r.link == "stats" && !r.fingerprint.starts_with('q'))
+        .filter(|r| r.link == "stats" && !r.fingerprint.starts_with('q') && !is_nested_only(r))
         .collect();
     only.sort_by(|a, b| {
         exec(b)

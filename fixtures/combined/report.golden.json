@@ -229,6 +229,7 @@
         "entries": 1,
         "flags": [],
         "mean_ms": 100.0,
+        "nested_calls": 0,
         "plans": 0,
         "queryid_count": 1,
         "queryids": [
@@ -258,6 +259,7 @@
           "new"
         ],
         "mean_ms": 35.0,
+        "nested_calls": 0,
         "plans": 0,
         "queryid_count": 1,
         "queryids": [
@@ -309,6 +311,7 @@
         "entries": 1,
         "flags": [],
         "mean_ms": 0.5,
+        "nested_calls": 0,
         "plans": 0,
         "queryid_count": 1,
         "queryids": [
