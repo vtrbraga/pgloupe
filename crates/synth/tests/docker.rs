@@ -105,3 +105,77 @@ fn wait_for_lock_wait_times_out_for_idle_backend() {
     session::wait_for_lock_wait(&mut control, pid, Duration::from_millis(300)).unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(2));
 }
+
+#[test]
+#[ignore = "needs docker"]
+fn setup_sessions_are_not_tracked_by_pgss() {
+    let label = format!("pgloupe.synth.test={}", common::unique("untracked"));
+    let pg = start("untracked", &label);
+    let mut control = Target { port: pg.port() }.control("postgres").unwrap();
+    control
+        .batch_execute("CREATE EXTENSION pg_stat_statements")
+        .unwrap();
+    control
+        .batch_execute("SELECT 1 AS synth_marker_control")
+        .unwrap();
+    pg.exec_unlogged(&[
+        "psql",
+        "-U",
+        "postgres",
+        "-Atc",
+        "SELECT 1 AS synth_marker_exec",
+    ])
+    .unwrap();
+    let tracked = session::query_scalar(
+        &mut control,
+        "SELECT count(*) FROM pg_stat_statements \
+         WHERE query LIKE '%synth_marker_%' AND query NOT LIKE '%pg_stat_statements%'",
+    )
+    .unwrap();
+    assert_eq!(
+        tracked, "0",
+        "setup statements must not consume pgss entries"
+    );
+}
+
+#[test]
+#[ignore = "needs docker"]
+fn failed_startup_reports_container_logs_quickly() {
+    let dir = common::scratch_dir("failstart");
+    let log = dir.join("log");
+    let dataset = dir.join("dataset");
+    fs::create_dir_all(&log).unwrap();
+    fs::create_dir_all(&dataset).unwrap();
+    let name = common::unique("failstart");
+    let started = Instant::now();
+    // A uid missing from the mounted /etc/passwd makes initdb exit immediately.
+    let err = PgContainer::start(&RunSpec {
+        name: &name,
+        image: "postgres:17",
+        label: "pgloupe.synth.test=failstart",
+        uid: 54321,
+        gid: 54321,
+        log_dir: &log,
+        dataset_dir: &dataset,
+    })
+    .unwrap_err();
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("exited before becoming ready"),
+        "{message}"
+    );
+    assert!(
+        message.contains("initdb") || message.contains("user"),
+        "logs missing: {message}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "took {:?}",
+        started.elapsed()
+    );
+    let filter = format!("name={name}");
+    assert_eq!(
+        docker(&["ps", "-aq", "--filter", filter.as_str()]).unwrap(),
+        ""
+    );
+}

@@ -4,6 +4,8 @@ use std::{
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
+    process,
+    time::Duration,
 };
 
 use anyhow::{Context as _, bail};
@@ -11,6 +13,9 @@ use sha2::{Digest as _, Sha256};
 
 /// Pagila git commit; newer commits need pgvector and PG18-only features.
 pub const PAGILA_COMMIT: &str = "e0e35a666f31a786b9d3c06cb83799fc46db25d4";
+
+/// Upper bound for one file download.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Files to load, in order, with their sha256.
 pub const PAGILA_FILES: &[(&str, &str)] = &[
@@ -47,6 +52,19 @@ pub fn verify(bytes: &[u8], expected: &str, what: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Writes `bytes` to a sibling temp file, then renames it over `path`.
+///
+/// # Errors
+///
+/// Fails if the write or the rename fails.
+fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let mut partial = path.as_os_str().to_owned();
+    partial.push(format!(".{}.part", process::id()));
+    let partial = PathBuf::from(partial);
+    fs::write(&partial, bytes).with_context(|| format!("writing {}", partial.display()))?;
+    fs::rename(&partial, path).with_context(|| format!("renaming into {}", path.display()))
+}
+
 /// Returns the directory with verified Pagila files, downloading missing or corrupt ones.
 ///
 /// # Errors
@@ -55,6 +73,10 @@ pub fn verify(bytes: &[u8], expected: &str, what: &str) -> anyhow::Result<()> {
 pub fn ensure_pagila(cache: &Path) -> anyhow::Result<PathBuf> {
     let dir = cache.join(format!("pagila-{PAGILA_COMMIT}"));
     fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(DOWNLOAD_TIMEOUT))
+        .build()
+        .into();
     for (file, sha) in PAGILA_FILES {
         let path = dir.join(file);
         if fs::read(&path).is_ok_and(|bytes| sha256_hex(&bytes) == *sha) {
@@ -62,7 +84,8 @@ pub fn ensure_pagila(cache: &Path) -> anyhow::Result<PathBuf> {
         }
         let url =
             format!("https://raw.githubusercontent.com/devrimgunduz/pagila/{PAGILA_COMMIT}/{file}");
-        let mut response = ureq::get(&url)
+        let mut response = agent
+            .get(&url)
             .call()
             .with_context(|| format!("GET {url}"))?;
         let bytes = response
@@ -70,14 +93,14 @@ pub fn ensure_pagila(cache: &Path) -> anyhow::Result<PathBuf> {
             .read_to_vec()
             .with_context(|| format!("reading body of {url}"))?;
         verify(&bytes, sha, file)?;
-        fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+        write_atomic(&path, &bytes)?;
     }
     Ok(dir)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{env, process};
+    use std::env;
 
     use super::*;
 
@@ -95,6 +118,21 @@ mod tests {
         verify(b"abc", &good, "abc").unwrap();
         let err = verify(b"abd", &good, "abc").unwrap_err().to_string();
         assert!(err.contains("abc"), "error should name the file: {err}");
+    }
+
+    #[test]
+    fn write_atomic_replaces_content_and_leaves_no_partial_file() {
+        let dir = env::temp_dir().join(format!("synth-unit-atomic-{}", process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("file.sql");
+        std::fs::write(&path, b"old").unwrap();
+        write_atomic(&path, b"new").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["file.sql"]);
     }
 
     #[test]

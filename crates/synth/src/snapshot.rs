@@ -40,7 +40,9 @@ pub fn take(control: &mut Client, dir: &Path, n: u8) -> anyhow::Result<String> {
 }
 
 fn copy_to(client: &mut Client, path: &Path, sql: &str) -> anyhow::Result<()> {
-    let mut reader = client.copy_out(sql)?;
+    let mut reader = client
+        .copy_out(sql)
+        .with_context(|| format!("copying to {}", path.display()))?;
     let mut file = File::create(path).with_context(|| format!("creating {}", path.display()))?;
     io::copy(&mut reader, &mut file).with_context(|| format!("writing {}", path.display()))?;
     Ok(())

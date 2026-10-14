@@ -39,7 +39,11 @@ impl Target {
     /// Fails if the connection or the `SET` fails.
     pub fn control(self, db: &str) -> anyhow::Result<Client> {
         let mut client = self.connect(db, "postgres", CONTROL_APP)?;
-        client.batch_execute("SET log_min_duration_statement = -1")?;
+        client
+            .batch_execute(
+                "SET log_min_duration_statement = -1; SET pg_stat_statements.track = 'none'",
+            )
+            .context("configuring control session")?;
         Ok(client)
     }
 }

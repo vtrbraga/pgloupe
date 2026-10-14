@@ -3,7 +3,7 @@
 use std::{
     ffi::OsStr,
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -187,7 +187,11 @@ impl PgContainer {
     ///
     /// Fails if docker fails or the server is not ready within 60 s; the container is removed.
     pub fn start(spec: &RunSpec<'_>) -> anyhow::Result<Self> {
-        docker(&run_args(spec))?;
+        if let Err(e) = docker(&run_args(spec)) {
+            // `docker run` can fail after creating the container.
+            let _ = docker(&["rm", "-f", spec.name]);
+            return Err(e);
+        }
         let mut container = Self {
             name: spec.name.to_owned(),
             port: 0,
@@ -218,7 +222,7 @@ impl PgContainer {
         let mut args = vec![
             "exec",
             "-e",
-            "PGOPTIONS=-c log_min_duration_statement=-1",
+            "PGOPTIONS=-c log_min_duration_statement=-1 -c pg_stat_statements.track=none",
             self.name.as_str(),
         ];
         args.extend_from_slice(cmd);
@@ -237,6 +241,13 @@ impl PgContainer {
     fn wait_ready(&self) -> anyhow::Result<()> {
         let deadline = Instant::now() + READY_TIMEOUT;
         while Instant::now() < deadline {
+            if docker(&["inspect", "-f", "{{.State.Running}}", self.name.as_str()])? != "true" {
+                bail!(
+                    "container {} exited before becoming ready; last logs:\n{}",
+                    self.name,
+                    self.logs()
+                );
+            }
             let ready = Command::new("docker")
                 .args([
                     "exec",
@@ -248,6 +259,8 @@ impl PgContainer {
                     "-U",
                     "postgres",
                 ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status()
                 .is_ok_and(|status| status.success());
             if ready {
@@ -256,9 +269,25 @@ impl PgContainer {
             thread::sleep(Duration::from_millis(500));
         }
         bail!(
-            "postgres in {} not ready after {READY_TIMEOUT:?}",
-            self.name
+            "postgres in {} not ready after {READY_TIMEOUT:?}; last logs:\n{}",
+            self.name,
+            self.logs()
         )
+    }
+
+    /// Last lines of the container's stdout and stderr, for error messages.
+    fn logs(&self) -> String {
+        match Command::new("docker")
+            .args(["logs", "--tail", "50", self.name.as_str()])
+            .output()
+        {
+            Ok(out) => format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            ),
+            Err(e) => format!("(could not read logs: {e})"),
+        }
     }
 }
 

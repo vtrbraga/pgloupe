@@ -21,12 +21,20 @@ pub const ROLES: &[&str] = &["app_rw", "app_ro", "report"];
 pub fn load(pg: &PgContainer, target: Target) -> anyhow::Result<String> {
     let mut control = target.control("postgres")?;
     for role in ROLES {
-        control.batch_execute(&format!("CREATE ROLE {role} LOGIN"))?;
+        control
+            .batch_execute(&format!("CREATE ROLE {role} LOGIN"))
+            .with_context(|| format!("creating role {role}"))?;
     }
     // CREATE DATABASE cannot run inside a multi-statement (implicit transaction) query.
-    control.batch_execute("CREATE DATABASE pagila")?;
-    control.batch_execute("CREATE DATABASE bench")?;
-    control.batch_execute("CREATE EXTENSION pg_stat_statements")?;
+    control
+        .batch_execute("CREATE DATABASE pagila")
+        .context("creating database pagila")?;
+    control
+        .batch_execute("CREATE DATABASE bench")
+        .context("creating database bench")?;
+    control
+        .batch_execute("CREATE EXTENSION pg_stat_statements")
+        .context("creating pg_stat_statements extension")?;
 
     for (file, _) in PAGILA_FILES {
         let path = format!("/dataset/{file}");
@@ -48,10 +56,12 @@ pub fn load(pg: &PgContainer, target: Target) -> anyhow::Result<String> {
         .context("initializing pgbench")?;
 
     let mut pagila = target.control("pagila")?;
-    pagila.batch_execute(
-        "GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_ro, report;
+    pagila
+        .batch_execute(
+            "GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_ro, report;
          GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO app_rw;
          GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO app_rw;",
-    )?;
+        )
+        .context("granting privileges on pagila")?;
     query_scalar(&mut control, "SELECT now()::text")
 }

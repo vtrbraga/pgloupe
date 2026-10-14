@@ -17,7 +17,7 @@ use synth::{
     cli::{GenerateArgs, PgMajor},
     generate,
     manifest::{EventKind, Expect, Manifest},
-    scenario,
+    scenario::{self, Ctx, Phase, Scenario},
 };
 
 const SEVERITY: usize = 11;
@@ -177,4 +177,34 @@ fn stale_tmp_dir_is_replaced() {
     fs::write(tmp.join("junk"), "from an interrupted run").unwrap();
     let dir = generate::run_with(&args, &[]).unwrap();
     assert!(!dir.join("junk").exists());
+}
+
+fn fail(_: &mut Ctx) -> anyhow::Result<()> {
+    anyhow::bail!("boom")
+}
+
+const FAILING: Scenario = Scenario {
+    name: "failing",
+    phase: Phase::Main,
+    run: fail,
+    expect: &[],
+};
+
+#[test]
+#[ignore = "needs docker"]
+fn failed_scenario_keeps_tmp_and_leaves_existing_corpus_untouched() {
+    let mut args = args(&[]);
+    let dir = generate::run_with(&args, &[]).unwrap();
+    fs::write(dir.join("marker"), "keep").unwrap();
+    args.force = true;
+    let err = generate::run_with(&args, &[&FAILING]).unwrap_err();
+    assert!(format!("{err:#}").contains("scenario failing"), "{err:#}");
+    assert!(
+        dir.join("marker").exists(),
+        "failed --force run must not replace the corpus"
+    );
+    assert!(
+        dir.with_extension("tmp").join("log").is_dir(),
+        "partial output stays for inspection"
+    );
 }
