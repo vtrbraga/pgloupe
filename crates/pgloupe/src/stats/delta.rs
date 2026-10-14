@@ -139,6 +139,46 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Result<Delta, DeltaError> {
     })
 }
 
+/// Which metric orders the ranking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortBy {
+    /// Δ`total_exec_time`.
+    Total,
+    /// Δ`calls`.
+    Calls,
+    /// Δ`total_exec_time` / Δ`calls`.
+    Mean,
+}
+
+impl Delta {
+    /// Rows with activity in the window, highest first.
+    ///
+    /// `min_calls` only filters the [`SortBy::Mean`] ranking, where a mean over few calls misleads.
+    /// Ties break by ascending key, so the order is deterministic.
+    #[must_use]
+    pub fn ranked(&self, by: SortBy, top: usize, min_calls: u64) -> Vec<&Row> {
+        let mut rows: Vec<&Row> = self.rows.iter().filter(|r| r.delta.calls > 0).collect();
+        if by == SortBy::Mean {
+            rows.retain(|r| r.delta.calls >= min_calls);
+        }
+        rows.sort_by(|a, b| {
+            sort_key(b, by)
+                .total_cmp(&sort_key(a, by))
+                .then_with(|| a.key.cmp(&b.key))
+        });
+        rows.truncate(top);
+        rows
+    }
+}
+
+fn sort_key(row: &Row, by: SortBy) -> f64 {
+    match by {
+        SortBy::Total => row.delta.total_exec_time,
+        SortBy::Calls => to_f64(row.delta.calls),
+        SortBy::Mean => row.window_mean().unwrap_or(0.0),
+    }
+}
+
 fn check_window(before: &Snapshot, after: &Snapshot) -> Result<(), DeltaError> {
     let (before_major, after_major) = (
         before.server_version_num / 10_000,
@@ -618,5 +658,73 @@ mod tests {
         assert_eq!(delta.evictions, None);
         assert!(!row_for(&delta, 2).evicted_suspect);
         assert!(approx_eq(row_for(&delta, 2).delta.total_exec_time, 1.0));
+    }
+
+    fn ranked_ids(delta: &Delta, by: SortBy, top: usize, min_calls: u64) -> Vec<i64> {
+        delta
+            .ranked(by, top, min_calls)
+            .iter()
+            .map(|row| row.key.queryid)
+            .collect()
+    }
+
+    /// Window deltas: id 1 = 60 calls / 30 ms; 2 = 4 calls / 400 ms; 3 = 2 calls / 70 ms;
+    /// 4 = unchanged; 5 = 60 calls / 30 ms (ties with 1).
+    fn ranking_fixture() -> Delta {
+        let before = snap(
+            T0,
+            V17,
+            vec![
+                (1, entry(100, 50.0)),
+                (2, entry(10, 200.0)),
+                (4, entry(20, 2.0)),
+                (5, entry(100, 50.0)),
+            ],
+        );
+        let after = snap(
+            T1,
+            V17,
+            vec![
+                (1, entry(160, 80.0)),
+                (2, entry(14, 600.0)),
+                (3, entry(2, 70.0)),
+                (4, entry(20, 2.0)),
+                (5, entry(160, 80.0)),
+            ],
+        );
+        diff(&before, &after).unwrap()
+    }
+
+    #[test]
+    fn ranks_by_total_time_and_skips_idle_rows() {
+        let delta = ranking_fixture();
+        assert_eq!(ranked_ids(&delta, SortBy::Total, 10, 1), [2, 3, 1, 5]);
+    }
+
+    #[test]
+    fn ranks_by_calls_with_ties_broken_by_key() {
+        let delta = ranking_fixture();
+        assert_eq!(ranked_ids(&delta, SortBy::Calls, 10, 1), [1, 5, 2, 3]);
+    }
+
+    #[test]
+    fn ranks_by_window_mean_and_applies_min_calls() {
+        let delta = ranking_fixture();
+        // means: 2 -> 100, 3 -> 35, 1 and 5 -> 0.5
+        assert_eq!(ranked_ids(&delta, SortBy::Mean, 10, 1), [2, 3, 1, 5]);
+        assert_eq!(ranked_ids(&delta, SortBy::Mean, 10, 3), [2, 1, 5]);
+    }
+
+    #[test]
+    fn top_truncates_and_zero_is_empty() {
+        let delta = ranking_fixture();
+        assert_eq!(ranked_ids(&delta, SortBy::Total, 2, 1), [2, 3]);
+        assert!(delta.ranked(SortBy::Total, 0, 1).is_empty());
+    }
+
+    #[test]
+    fn min_calls_does_not_filter_total_or_calls_rankings() {
+        let delta = ranking_fixture();
+        assert_eq!(ranked_ids(&delta, SortBy::Total, 10, 1000), [2, 3, 1, 5]);
     }
 }
