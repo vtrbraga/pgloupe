@@ -7,6 +7,7 @@ use thiserror::Error;
 
 pub mod csvlog;
 pub mod jsonlog;
+pub mod prefix;
 pub mod record;
 pub mod source;
 pub mod time;
