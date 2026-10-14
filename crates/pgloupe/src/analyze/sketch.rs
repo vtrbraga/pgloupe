@@ -2,6 +2,8 @@
 
 use std::{collections::BTreeMap, sync::LazyLock};
 
+use serde::{Deserialize, Serialize};
+
 use super::Merge;
 
 /// Relative accuracy of every reported quantile (for positive values).
@@ -14,7 +16,8 @@ static LN_GAMMA: LazyLock<f64> = LazyLock::new(|| ((1.0 + ALPHA) / (1.0 - ALPHA)
 /// `DDSketch`: values are counted in logarithmic buckets of ratio γ = (1+α)/(1−α), so any quantile
 /// is within α of the true value. Merging adds bucket counts, which is associative and
 /// commutative.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "SketchRepr", into = "SketchRepr")]
 pub struct Sketch {
     buckets: BTreeMap<i32, u64>,
     /// Values ≤ 0 (a duration cannot be negative; they are counted, not bucketed).
@@ -22,6 +25,41 @@ pub struct Sketch {
     count: u64,
     min: f64,
     max: f64,
+}
+
+/// What a [`Sketch`] looks like on disk.
+#[derive(Serialize, Deserialize)]
+struct SketchRepr {
+    buckets: Vec<(i32, u64)>,
+    zeros: u64,
+    count: u64,
+    /// `f64::to_bits`: infinities (an empty sketch) have no JSON form, and bits round trip exactly.
+    min_bits: u64,
+    max_bits: u64,
+}
+
+impl From<Sketch> for SketchRepr {
+    fn from(sketch: Sketch) -> Self {
+        SketchRepr {
+            buckets: sketch.buckets.into_iter().collect(),
+            zeros: sketch.zeros,
+            count: sketch.count,
+            min_bits: sketch.min.to_bits(),
+            max_bits: sketch.max.to_bits(),
+        }
+    }
+}
+
+impl From<SketchRepr> for Sketch {
+    fn from(repr: SketchRepr) -> Self {
+        Sketch {
+            buckets: repr.buckets.into_iter().collect(),
+            zeros: repr.zeros,
+            count: repr.count,
+            min: f64::from_bits(repr.min_bits),
+            max: f64::from_bits(repr.max_bits),
+        }
+    }
 }
 
 impl Default for Sketch {
@@ -153,6 +191,19 @@ impl Merge for Sketch {
 mod tests {
     use super::*;
     use crate::testutil::approx_eq;
+
+    #[test]
+    fn an_empty_and_a_filled_sketch_survive_json() {
+        let empty = Sketch::new();
+        let json = serde_json::to_string(&empty).unwrap();
+        assert_eq!(serde_json::from_str::<Sketch>(&json).unwrap(), empty);
+        let mut filled = Sketch::new();
+        for v in [0.0, 0.3, 12.5, 12.5, 4000.125] {
+            filled.add(v);
+        }
+        let json = serde_json::to_string(&filled).unwrap();
+        assert_eq!(serde_json::from_str::<Sketch>(&json).unwrap(), filled);
+    }
 
     /// A small deterministic generator, so tests need no `rand`.
     struct Lcg(u64);

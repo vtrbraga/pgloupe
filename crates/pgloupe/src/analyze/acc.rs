@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use jiff::Timestamp;
+use serde::{Deserialize, Serialize};
 
 use super::{
     Merge,
@@ -52,8 +53,33 @@ fn add_maps<K: Ord, V: Merge>(into: &mut BTreeMap<K, V>, from: BTreeMap<K, V>) {
     }
 }
 
+/// Maps with non-string keys travel as a list of `[key, value]` pairs.
+mod pairs {
+    use std::collections::BTreeMap;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<K: Serialize, V: Serialize, S: Serializer>(
+        map: &BTreeMap<K, V>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(map.iter())
+    }
+
+    pub fn deserialize<'de, K, V, D>(deserializer: D) -> Result<BTreeMap<K, V>, D::Error>
+    where
+        K: Deserialize<'de> + Ord,
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    {
+        Ok(Vec::<(K, V)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
+    }
+}
+
 /// Statistics of one normalized statement.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryStats {
     pub id: u64,
     pub parsed: bool,
@@ -188,7 +214,7 @@ impl Merge for QueryStats {
 }
 
 /// One kind of error: `(level, sqlstate)`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorStat {
     pub count: u64,
     pub first_message: String,
@@ -209,7 +235,7 @@ impl Merge for ErrorStat {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LockStats {
     pub waits: u64,
     pub acquired: u64,
@@ -229,7 +255,7 @@ impl Merge for LockStats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TempStats {
     pub files: u64,
     pub bytes: u64,
@@ -244,7 +270,7 @@ impl Merge for TempStats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ConnStats {
     pub received: u64,
     pub authenticated: u64,
@@ -264,7 +290,7 @@ impl Merge for ConnStats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CheckpointStats {
     pub started: u64,
     pub done: u64,
@@ -290,7 +316,7 @@ impl Merge for CheckpointStats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TableStats {
     pub vacuums: u64,
     pub analyzes: u64,
@@ -307,7 +333,7 @@ impl Merge for TableStats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Bucket {
     pub statements: u64,
     pub errors: u64,
@@ -316,7 +342,7 @@ pub struct Bucket {
 }
 
 /// Event counts per time bucket (`bucket_secs` wide).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Timeline {
     pub bucket_secs: i64,
     /// Keyed by the bucket's start, in Unix seconds.
@@ -343,7 +369,7 @@ impl Merge for Timeline {
 }
 
 /// Everything that is not per fingerprint.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Totals {
     pub records: u64,
     pub first: Option<Timestamp>,
@@ -353,11 +379,13 @@ pub struct Totals {
     /// Records per severity label.
     pub levels: BTreeMap<String, u64>,
     /// Records at `ERROR` or above, by `(level, sqlstate)`.
+    #[serde(with = "pairs")]
     pub errors: BTreeMap<(String, Option<String>), ErrorStat>,
     pub locks: LockStats,
     pub temp: TempStats,
     pub connections: ConnStats,
     /// Keyed by `restart` (false = checkpoint, true = restartpoint).
+    #[serde(with = "pairs")]
     pub checkpoints: BTreeMap<bool, CheckpointStats>,
     pub autovacuum: BTreeMap<String, TableStats>,
     pub timeline: Timeline,
@@ -510,7 +538,7 @@ impl Merge for Totals {
 }
 
 /// All statistics of a run (or a part of one).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Accumulators {
     pub totals: Totals,
     pub queries: BTreeMap<u64, QueryStats>,

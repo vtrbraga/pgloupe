@@ -401,6 +401,16 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn accumulators_survive_json() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/analyze/events.json");
+        let output = run(&[path], &Options::new()).unwrap();
+        let json = serde_json::to_string(&output.acc).unwrap();
+        let back: Accumulators = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, output.acc);
+    }
+
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/logs")
