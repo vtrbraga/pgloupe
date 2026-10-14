@@ -5,6 +5,7 @@ pub mod cli;
 pub mod error;
 pub mod log;
 pub mod stats;
+pub mod store;
 
 #[cfg(test)]
 pub(crate) mod testutil;
