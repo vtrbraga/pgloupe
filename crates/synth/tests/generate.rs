@@ -232,3 +232,26 @@ fn temp_files_matches_manifest() {
 fn errors_matches_manifest() {
     assert_log_matches_manifest(&generate_corpus(&["errors"]));
 }
+
+#[test]
+#[ignore = "needs docker"]
+fn multiline_matches_manifest_and_logs_exact_text() {
+    let dir = generate_corpus(&["multiline"]);
+    assert_log_matches_manifest(&dir);
+    let manifest = Manifest::read(&dir).unwrap();
+    assert_eq!(manifest.multiline_texts.len(), 10);
+    let rows = read_csv(&dir.join("log/postgresql.csv"));
+    for text in &manifest.multiline_texts {
+        let suffix = format!(" statement: {text}");
+        assert!(
+            rows.iter().any(|r| r[MESSAGE].ends_with(&suffix)),
+            "statement not logged verbatim: {text:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs docker"]
+fn extended_matches_manifest() {
+    assert_log_matches_manifest(&generate_corpus(&["extended"]));
+}

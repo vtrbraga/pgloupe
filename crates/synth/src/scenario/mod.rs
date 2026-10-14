@@ -3,6 +3,8 @@
 pub mod baseline;
 pub mod ddl;
 pub mod errors;
+pub mod extended;
+pub mod multiline;
 pub mod temp_files;
 
 use anyhow::bail;
@@ -189,6 +191,8 @@ pub const ALL: &[Scenario] = &[
     ddl::SCENARIO,
     temp_files::SCENARIO,
     errors::SCENARIO,
+    multiline::SCENARIO,
+    extended::SCENARIO,
 ];
 
 /// Scenarios to run: all when `only` is empty, else the named ones in canonical order.
