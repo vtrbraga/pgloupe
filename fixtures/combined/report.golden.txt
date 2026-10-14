@@ -44,6 +44,43 @@ checkpoints
 autovacuum
   none
 
+query types
+  kind    calls  total_ms  mean_ms  share%
+  update      2    220.00   110.00    95.9
+  select      6      9.30     1.55     4.1
+
+statement durations
+  <= 1 ms                 4   50.0%  ##############################
+  1 ms - 5 ms             2   25.0%  ###############
+  5 ms - 10 ms            0    0.0%
+  10 ms - 25 ms           0    0.0%
+  25 ms - 50 ms           0    0.0%
+  50 ms - 100 ms          0    0.0%
+  100 ms - 500 ms         2   25.0%  ###############
+  500 ms - 1 s            0    0.0%
+  1 s - 5 s               0    0.0%
+  5 s - 10 s              0    0.0%
+  > 10 s                  0    0.0%
+
+session durations
+  none
+
+by database
+  value   statements  total_ms  mean_ms  errors  conns  sessions  session_ms
+  pagila           8    229.30    28.66       1      0         0           -
+
+by user
+  value     statements  total_ms  mean_ms  errors  conns  sessions  session_ms
+  postgres           8    229.30    28.66       1      0         0           -
+
+by application
+  value       statements  total_ms  mean_ms  errors  conns  sessions  session_ms
+  synth:demo           8    229.30    28.66       1      0         0           -
+
+by host
+  value   statements  total_ms  mean_ms  errors  conns  sessions  session_ms
+  (none)           8    229.30    28.66       1      0         0           -
+
 timeline (bucket 1m)
   busiest statements: 2026-10-14T10:01:00Z (1)
   busiest errors: 2026-10-14T10:09:00Z (1)

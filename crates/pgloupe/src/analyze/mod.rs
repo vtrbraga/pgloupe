@@ -2,8 +2,11 @@
 
 pub mod acc;
 pub mod diagnostics;
+pub mod dimensions;
 pub mod event;
 pub mod fingerprint;
+pub mod histogram;
+pub mod kind;
 pub mod pipeline;
 pub mod render;
 pub mod report;

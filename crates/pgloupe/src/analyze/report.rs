@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use super::{
     acc::{Accumulators, QueryStats, to_micros},
     diagnostics::{self, Diagnostics},
+    dimensions::{DimStats, Dimension},
+    histogram::{self, HistogramBucket},
+    kind::QueryKind,
     pipeline::{FileSummary, Output, PrefixSource},
     sketch::Sketch,
 };
@@ -17,6 +20,8 @@ use crate::log::Format;
 const SCHEMA_VERSION: u32 = 1;
 /// Tables listed in the autovacuum section.
 const TOP_TABLES: usize = 10;
+/// Values listed per breakdown dimension.
+const TOP_DIMENSION_VALUES: usize = 20;
 
 /// What orders the statement table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,10 +55,74 @@ pub struct Report {
     pub connections: ConnectionsReport,
     pub checkpoints: Vec<CheckpointRow>,
     pub autovacuum: Vec<TableRow>,
+    /// Statements by what they do, busiest first.
+    pub kinds: Vec<KindRow>,
+    /// Statement and session durations in fixed ranges.
+    pub histograms: HistogramsReport,
+    /// Statements, errors and sessions by database, user, application and host.
+    pub dimensions: DimensionsReport,
     pub timeline: TimelineReport,
     /// Present when the report was built from a store.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub store: Option<StoreInfo>,
+}
+
+/// One class of statements.
+#[derive(Debug, Clone, Serialize)]
+pub struct KindRow {
+    /// `select`, `insert`, `update`, `delete`, `copy`, `ddl`, `tcl`, `utility` or `other`.
+    pub kind: &'static str,
+    /// Statements run.
+    pub calls: u64,
+    /// Of those, the ones that carried a duration.
+    pub timed_calls: u64,
+    /// Their summed duration, in milliseconds.
+    pub total_ms: f64,
+    /// `total_ms` ÷ `timed_calls`.
+    pub mean_ms: Option<f64>,
+    /// Share of all statement time, in percent.
+    pub share_pct: f64,
+}
+
+/// Duration histograms; the last bucket of each has no upper edge.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistogramsReport {
+    /// Statement durations (edges 1 ms to 10 s).
+    pub statements: Vec<HistogramBucket>,
+    /// Session durations (edges 1 s to 24 h).
+    pub sessions: Vec<HistogramBucket>,
+}
+
+/// What one database, user, application or host did.
+#[derive(Debug, Clone, Serialize)]
+pub struct DimensionRow {
+    /// The value, `(none)` for records without it and `(other)` for the ones beyond the cap.
+    pub value: String,
+    /// Statements run.
+    pub statements: u64,
+    /// Of those, the ones that carried a duration.
+    pub timed_calls: u64,
+    /// Their summed duration, in milliseconds.
+    pub total_ms: f64,
+    /// `total_ms` ÷ `timed_calls`.
+    pub mean_ms: Option<f64>,
+    /// Records at `ERROR` or above.
+    pub errors: u64,
+    /// Connections authorized.
+    pub connections: u64,
+    /// Sessions that ended.
+    pub sessions: u64,
+    /// Their mean duration, in milliseconds.
+    pub mean_session_ms: Option<f64>,
+}
+
+/// The busiest values of each dimension.
+#[derive(Debug, Clone, Serialize)]
+pub struct DimensionsReport {
+    pub database: Vec<DimensionRow>,
+    pub user: Vec<DimensionRow>,
+    pub application: Vec<DimensionRow>,
+    pub host: Vec<DimensionRow>,
 }
 
 /// Where a report came from, when it came from a store.
@@ -283,6 +352,20 @@ impl Report {
             },
             checkpoints: checkpoints(acc),
             autovacuum: autovacuum(acc),
+            kinds: kinds(acc),
+            histograms: HistogramsReport {
+                statements: histogram::buckets(&totals.durations, &histogram::STATEMENT_EDGES_MS),
+                sessions: histogram::buckets(
+                    &totals.connections.session,
+                    &histogram::SESSION_EDGES_MS,
+                ),
+            },
+            dimensions: DimensionsReport {
+                database: dimension_rows(acc, Dimension::Database),
+                user: dimension_rows(acc, Dimension::User),
+                application: dimension_rows(acc, Dimension::Application),
+                host: dimension_rows(acc, Dimension::Host),
+            },
             timeline: timeline(acc),
             store: None,
         }
@@ -425,6 +508,80 @@ fn errors(acc: &Accumulators) -> Vec<ErrorRow> {
             .then_with(|| a.sqlstate.cmp(&b.sqlstate))
     });
     rows
+}
+
+fn kinds(acc: &Accumulators) -> Vec<KindRow> {
+    let total = total_us(acc);
+    let mut rows: Vec<KindRow> = QueryKind::ALL
+        .iter()
+        .filter_map(|&kind| {
+            let mut sums = (0, 0, 0);
+            let members = acc
+                .queries
+                .values()
+                .chain(std::iter::once(&acc.overflow))
+                .filter(|query| {
+                    let own = if query.id == 0 {
+                        QueryKind::Other
+                    } else {
+                        query.kind
+                    };
+                    own == kind
+                });
+            for query in members {
+                sums = (
+                    sums.0 + query.calls,
+                    sums.1 + query.timed,
+                    sums.2 + query.total_us,
+                );
+            }
+            (sums.0 > 0).then(|| KindRow {
+                kind: kind.as_str(),
+                calls: sums.0,
+                timed_calls: sums.1,
+                total_ms: ms(sums.2),
+                mean_ms: (sums.1 > 0).then(|| ms(sums.2) / count(sums.1)),
+                share_pct: percent(sums.2, total),
+            })
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.total_ms
+            .total_cmp(&a.total_ms)
+            .then_with(|| b.calls.cmp(&a.calls))
+    });
+    rows
+}
+
+fn dimension_rows(acc: &Accumulators, dimension: Dimension) -> Vec<DimensionRow> {
+    let mut rows: Vec<(&String, &DimStats)> = acc.dims.of(dimension).iter().collect();
+    rows.sort_by(|a, b| {
+        Reverse(a.1.total_us)
+            .cmp(&Reverse(b.1.total_us))
+            .then_with(|| b.1.statements.cmp(&a.1.statements))
+            .then_with(|| b.1.connections.cmp(&a.1.connections))
+            .then_with(|| a.0.cmp(b.0))
+    });
+    rows.into_iter()
+        .take(TOP_DIMENSION_VALUES)
+        .map(|(value, stats)| DimensionRow {
+            value: value.clone(),
+            statements: stats.statements,
+            timed_calls: stats.timed,
+            total_ms: ms(stats.total_us),
+            mean_ms: (stats.timed > 0).then(|| ms(stats.total_us) / count(stats.timed)),
+            errors: stats.errors,
+            connections: stats.connections,
+            sessions: stats.sessions,
+            mean_session_ms: (stats.sessions > 0)
+                .then(|| ms(stats.session_us) / count(stats.sessions)),
+        })
+        .collect()
+}
+
+#[expect(clippy::cast_precision_loss, reason = "counts stay far below 2^53")]
+fn count(n: u64) -> f64 {
+    n as f64
 }
 
 fn checkpoints(acc: &Accumulators) -> Vec<CheckpointRow> {

@@ -7,8 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Merge,
+    dimensions::{self, Attributes, Dimensions, Tally},
     event::{Event, StatementKind, classify},
-    fingerprint::{display_text, fingerprint, sql_hash},
+    fingerprint::{display_text, fingerprint, sql_hash, statement_kind},
+    kind::QueryKind,
     sketch::Sketch,
 };
 use crate::log::LogRecord;
@@ -83,6 +85,8 @@ mod pairs {
 pub struct QueryStats {
     pub id: u64,
     pub parsed: bool,
+    /// What the statement does.
+    pub kind: QueryKind,
     /// Normalized text of the representative sample (see `sample`).
     pub text: String,
     /// The `query_id` of the representative sample.
@@ -112,10 +116,11 @@ pub struct QueryStats {
 }
 
 impl QueryStats {
-    fn new(id: u64, parsed: bool, text: String) -> Self {
+    fn new(id: u64, parsed: bool, text: String, kind: QueryKind) -> Self {
         QueryStats {
             id,
             parsed,
+            kind,
             text,
             query_id: None,
             sample: None,
@@ -192,6 +197,9 @@ impl Merge for QueryStats {
             self.query_id = other.query_id;
         }
         self.parsed &= other.parsed;
+        if self.kind == QueryKind::Other {
+            self.kind = other.kind;
+        }
         self.calls += other.calls;
         self.statement_calls += other.statement_calls;
         self.execute_calls += other.execute_calls;
@@ -413,6 +421,8 @@ pub struct Totals {
     pub autovacuum: BTreeMap<String, TableStats>,
     pub timeline: Timeline,
     pub unparsed_statements: u64,
+    /// Durations of every statement that carried one, in milliseconds.
+    pub durations: Sketch,
 }
 
 impl Totals {
@@ -434,6 +444,7 @@ impl Totals {
                 buckets: BTreeMap::new(),
             },
             unparsed_statements: 0,
+            durations: Sketch::new(),
         }
     }
 
@@ -453,8 +464,15 @@ impl Totals {
         match event {
             Event::Statement {
                 kind: StatementKind::Statement | StatementKind::Execute,
+                duration_ms,
                 ..
-            } => self.timeline.add(ts, |b| b.statements += 1),
+            } => {
+                self.timeline.add(ts, |b| b.statements += 1);
+                if let Some(ms) = duration_ms {
+                    self.durations.add(*ms);
+                }
+            }
+            Event::Duration { duration_ms } => self.durations.add(*duration_ms),
             Event::LockWait { .. } => {
                 self.locks.waits += 1;
                 self.timeline.add(ts, |b| b.lock_waits += 1);
@@ -557,6 +575,7 @@ impl Merge for Totals {
         add_maps(&mut self.autovacuum, other.autovacuum);
         self.timeline.merge(other.timeline);
         self.unparsed_statements += other.unparsed_statements;
+        self.durations.merge(other.durations);
     }
 }
 
@@ -567,6 +586,8 @@ pub struct Accumulators {
     pub queries: BTreeMap<u64, QueryStats>,
     /// Statistics of fingerprints beyond the limit.
     pub overflow: QueryStats,
+    /// Statements, errors and sessions by database, user, application and host.
+    pub dims: Dimensions,
     limit: usize,
 }
 
@@ -577,7 +598,8 @@ impl Accumulators {
         Accumulators {
             totals: Totals::new(bucket_secs),
             queries: BTreeMap::new(),
-            overflow: QueryStats::new(0, true, "<overflow>".to_owned()),
+            overflow: QueryStats::new(0, true, "<overflow>".to_owned(), QueryKind::Other),
+            dims: Dimensions::default(),
             limit: limit.max(1),
         }
     }
@@ -586,6 +608,7 @@ impl Accumulators {
     pub fn add_record(&mut self, record: &LogRecord) {
         let event = classify(record);
         self.totals.add(record, &event);
+        self.tally(record, &event);
         let ts = record.ts;
         match &event {
             Event::Statement {
@@ -630,6 +653,31 @@ impl Accumulators {
         }
     }
 
+    /// Counts the record under its database, user, application and host.
+    fn tally(&mut self, record: &LogRecord, event: &Event) {
+        let attributes = Attributes {
+            database: record.database.as_deref(),
+            user: record.user.as_deref(),
+            application: record.application.as_deref(),
+            host: record.host.as_deref(),
+        };
+        if record.level.is_error() {
+            self.dims.add(&attributes, Tally::Error);
+        }
+        match event {
+            Event::Statement {
+                kind: StatementKind::Statement | StatementKind::Execute,
+                duration_ms,
+                ..
+            } => self.dims.add(&attributes, Tally::Statement(*duration_ms)),
+            Event::ConnectionAuthorized => self.dims.add(&attributes, Tally::Connection),
+            Event::Disconnection { session_ms } => {
+                self.dims.add(&attributes, Tally::Session(*session_ms));
+            }
+            _ => {}
+        }
+    }
+
     /// The statistics of `sql`'s fingerprint, creating them (or using the overflow bucket). The
     /// statement is offered as the representative sample of its fingerprint.
     fn query_for(&mut self, sql: &str, ts: Timestamp, query_id: Option<i64>) -> &mut QueryStats {
@@ -640,10 +688,9 @@ impl Accumulators {
         if !self.queries.contains_key(&found.id) && self.queries.len() >= self.limit {
             return &mut self.overflow;
         }
-        let query = self
-            .queries
-            .entry(found.id)
-            .or_insert_with(|| QueryStats::new(found.id, found.parsed, String::new()));
+        let query = self.queries.entry(found.id).or_insert_with(|| {
+            QueryStats::new(found.id, found.parsed, String::new(), statement_kind(sql))
+        });
         query.offer(ts, sql, query_id);
         query
     }
@@ -651,6 +698,7 @@ impl Accumulators {
     /// Lowers the limit to `limit`, folding the least called fingerprints into the overflow bucket
     /// (ties: the larger id goes first), so the result does not depend on arrival order.
     pub fn recap(&mut self, limit: usize) {
+        self.dims.recap(dimensions::LIMIT);
         self.limit = limit.max(1);
         if self.queries.len() <= self.limit {
             return;
@@ -676,6 +724,7 @@ impl Merge for Accumulators {
         self.totals.merge(other.totals);
         add_maps(&mut self.queries, other.queries);
         self.overflow.merge(other.overflow);
+        self.dims.merge(other.dims);
         let limit = self.limit.max(other.limit);
         self.recap(limit);
     }
@@ -1107,5 +1156,88 @@ mod tests {
         a.add_record(&log(2, "duration: 1 ms  execute S_1: SELECT 2"));
         let q = a.queries.values().next().unwrap();
         assert_eq!((q.calls, q.statement_calls, q.execute_calls), (3, 1, 2));
+    }
+
+    fn by(record: LogRecord, database: &str, user: &str, host: &str) -> LogRecord {
+        LogRecord {
+            database: Some(database.to_owned()),
+            user: Some(user.to_owned()),
+            host: Some(host.to_owned()),
+            ..record
+        }
+    }
+
+    #[test]
+    fn records_are_counted_by_database_user_and_host() {
+        let mut a = acc();
+        a.add_record(&by(
+            statement(1, 2.0, "SELECT 1"),
+            "shop",
+            "app",
+            "10.0.0.1",
+        ));
+        a.add_record(&by(
+            statement(2, 4.0, "SELECT 2"),
+            "shop",
+            "etl",
+            "10.0.0.2",
+        ));
+        a.add_record(&by(
+            LogRecord::new(at(3), Severity::Error, "boom"),
+            "crm",
+            "app",
+            "10.0.0.1",
+        ));
+        a.add_record(&by(
+            log(
+                4,
+                "disconnection: session time: 0:00:02.500 user=app database=shop host=10.0.0.1",
+            ),
+            "shop",
+            "app",
+            "10.0.0.1",
+        ));
+        assert_eq!(a.dims.databases["shop"].statements, 2);
+        assert_eq!(a.dims.databases["shop"].total_us, 6_000);
+        assert_eq!(a.dims.databases["crm"].errors, 1);
+        assert_eq!(a.dims.users["app"].statements, 1);
+        assert_eq!(a.dims.users["app"].sessions, 1);
+        assert_eq!(a.dims.users["app"].session_us, 2_500_000);
+        assert_eq!(a.dims.hosts["10.0.0.2"].statements, 1);
+        assert_eq!(a.dims.applications[dimensions::NONE].statements, 2);
+    }
+
+    #[test]
+    fn merged_accumulators_add_their_breakdowns() {
+        let mut left = acc();
+        let mut right = acc();
+        left.add_record(&by(statement(1, 1.0, "SELECT 1"), "shop", "app", "h"));
+        right.add_record(&by(statement(2, 1.0, "SELECT 1"), "shop", "app", "h"));
+        left.merge(right);
+        assert_eq!(left.dims.databases["shop"].statements, 2);
+    }
+
+    #[test]
+    fn statement_durations_feed_the_global_sketch() {
+        let mut a = acc();
+        a.add_record(&statement(1, 3.0, "SELECT 1"));
+        a.add_record(&statement(2, 30.0, "SELECT 2"));
+        a.add_record(&log(3, "duration: 300.000 ms"));
+        a.add_record(&log(4, "statement: SELECT 3"));
+        assert_eq!(a.totals.durations.count(), 3);
+        assert!(a.totals.durations.max().unwrap() >= 299.0);
+    }
+
+    #[test]
+    fn each_fingerprint_knows_what_kind_of_statement_it_is() {
+        let mut a = acc();
+        a.add_record(&statement(1, 1.0, "SELECT 1"));
+        a.add_record(&statement(2, 1.0, "INSERT INTO t VALUES (1)"));
+        a.add_record(&statement(3, 1.0, "CREATE TABLE x (a int)"));
+        let kinds: Vec<QueryKind> = a.queries.values().map(|q| q.kind).collect();
+        for kind in [QueryKind::Select, QueryKind::Insert, QueryKind::Ddl] {
+            assert!(kinds.contains(&kind), "{kinds:?}");
+        }
+        assert_eq!(a.overflow.kind, QueryKind::Other);
     }
 }

@@ -117,6 +117,22 @@ impl Sketch {
         self.count
     }
 
+    /// Observations at or below `limit`, to the sketch's accuracy: a bucket counts when the value
+    /// it stands for is at or below `limit`.
+    #[must_use]
+    pub fn count_at_most(&self, limit: f64) -> u64 {
+        if limit < 0.0 {
+            return 0;
+        }
+        let bucketed: u64 = self
+            .buckets
+            .iter()
+            .take_while(|(index, _)| value_of(**index) <= limit)
+            .map(|(_, n)| n)
+            .sum();
+        self.zeros + bucketed
+    }
+
     /// Smallest observation, if any.
     #[must_use]
     pub fn min(&self) -> Option<f64> {

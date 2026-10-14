@@ -4,6 +4,8 @@
 /// Display text longer than this is cut.
 const MAX_DISPLAY_CHARS: usize = 4_096;
 
+use super::kind::QueryKind;
+
 /// The grouping key of a statement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fingerprint {
@@ -207,6 +209,85 @@ fn scan_number(bytes: &[u8], start: usize) -> Option<(usize, &'static [u8])> {
     }
 }
 
+/// The class of `sql`. The first word settles the common cases; anything else (a `WITH` query,
+/// text that starts with a comment, utility statements) is parsed.
+#[must_use]
+pub fn statement_kind(sql: &str) -> QueryKind {
+    let trimmed = sql.trim_start();
+    let end = trimmed
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(trimmed.len());
+    let word = trimmed[..end].to_ascii_lowercase();
+    match word.as_str() {
+        "select" | "values" | "table" => QueryKind::Select,
+        "insert" => QueryKind::Insert,
+        "update" => QueryKind::Update,
+        "delete" => QueryKind::Delete,
+        "copy" => QueryKind::Copy,
+        "begin" | "commit" | "rollback" | "savepoint" | "release" | "abort" | "end" => {
+            QueryKind::Tcl
+        }
+        _ => parsed_kind(sql),
+    }
+}
+
+fn parsed_kind(sql: &str) -> QueryKind {
+    use pg_query::NodeEnum as N;
+    let Ok(parsed) = pg_query::parse(sql) else {
+        return QueryKind::Other;
+    };
+    let Some(node) = parsed
+        .protobuf
+        .stmts
+        .first()
+        .and_then(|stmt| stmt.stmt.as_ref())
+        .and_then(|stmt| stmt.node.as_ref())
+    else {
+        return QueryKind::Other;
+    };
+    match node {
+        N::SelectStmt(_) => QueryKind::Select,
+        N::InsertStmt(_) => QueryKind::Insert,
+        N::UpdateStmt(_) => QueryKind::Update,
+        N::DeleteStmt(_) => QueryKind::Delete,
+        N::CopyStmt(_) => QueryKind::Copy,
+        N::TransactionStmt(_) => QueryKind::Tcl,
+        N::MergeStmt(_) => QueryKind::Other,
+        N::CreateStmt(_)
+        | N::CreateTableAsStmt(_)
+        | N::AlterTableStmt(_)
+        | N::DropStmt(_)
+        | N::IndexStmt(_)
+        | N::ViewStmt(_)
+        | N::TruncateStmt(_)
+        | N::RenameStmt(_)
+        | N::CreateSchemaStmt(_)
+        | N::CreateSeqStmt(_)
+        | N::AlterSeqStmt(_)
+        | N::CreateFunctionStmt(_)
+        | N::AlterFunctionStmt(_)
+        | N::CreateTrigStmt(_)
+        | N::CreateExtensionStmt(_)
+        | N::AlterExtensionStmt(_)
+        | N::AlterOwnerStmt(_)
+        | N::CommentStmt(_)
+        | N::CreateEnumStmt(_)
+        | N::CreateDomainStmt(_)
+        | N::CreatedbStmt(_)
+        | N::DropdbStmt(_)
+        | N::CreateRoleStmt(_)
+        | N::AlterRoleStmt(_)
+        | N::DropRoleStmt(_)
+        | N::GrantStmt(_)
+        | N::GrantRoleStmt(_)
+        | N::CreatePolicyStmt(_)
+        | N::AlterPolicyStmt(_)
+        | N::ReindexStmt(_)
+        | N::ClusterStmt(_) => QueryKind::Ddl,
+        _ => QueryKind::Utility,
+    }
+}
+
 /// The text shown for a fingerprint: Postgres's normalized form (`$1` placeholders) when the
 /// statement parsed, else its whitespace-collapsed text.
 #[must_use]
@@ -248,6 +329,46 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn statements_are_classified() {
+        let kind = |sql: &str| statement_kind(sql);
+        assert_eq!(kind("SELECT 1"), QueryKind::Select);
+        assert_eq!(kind("  select * from t"), QueryKind::Select);
+        assert_eq!(kind("INSERT INTO t VALUES (1)"), QueryKind::Insert);
+        assert_eq!(kind("update t set a = 1"), QueryKind::Update);
+        assert_eq!(kind("DELETE FROM t"), QueryKind::Delete);
+        assert_eq!(kind("COPY t FROM STDIN"), QueryKind::Copy);
+        assert_eq!(kind("BEGIN"), QueryKind::Tcl);
+        assert_eq!(kind("commit"), QueryKind::Tcl);
+        assert_eq!(kind("CREATE TABLE t (a int)"), QueryKind::Ddl);
+        assert_eq!(kind("ALTER TABLE t ADD COLUMN b int"), QueryKind::Ddl);
+        assert_eq!(kind("DROP INDEX i"), QueryKind::Ddl);
+        assert_eq!(kind("TRUNCATE t"), QueryKind::Ddl);
+        assert_eq!(kind("VACUUM t"), QueryKind::Utility);
+        assert_eq!(kind("SET work_mem = '1MB'"), QueryKind::Utility);
+        assert_eq!(kind("EXPLAIN SELECT 1"), QueryKind::Utility);
+        assert_eq!(kind("SELEC 1"), QueryKind::Other);
+        assert_eq!(kind(""), QueryKind::Other);
+    }
+
+    #[test]
+    fn a_with_query_is_classified_by_its_main_statement() {
+        let kind = |sql: &str| statement_kind(sql);
+        assert_eq!(
+            kind("WITH x AS (SELECT 1) SELECT * FROM x"),
+            QueryKind::Select
+        );
+        assert_eq!(
+            kind("WITH x AS (SELECT 1 AS a) INSERT INTO t SELECT a FROM x"),
+            QueryKind::Insert
+        );
+        assert_eq!(
+            kind("WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d"),
+            QueryKind::Select
+        );
+        assert_eq!(kind("/* tag */ UPDATE t SET a = 1"), QueryKind::Update);
+    }
 
     #[test]
     fn literals_case_and_whitespace_do_not_change_the_fingerprint() {

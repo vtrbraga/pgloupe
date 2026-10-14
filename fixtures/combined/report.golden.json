@@ -70,6 +70,60 @@
         "not seen: connections (log_connections / log_disconnections), checkpoints (log_checkpoints), temp files (log_temp_files), lock waits (log_lock_waits) — the setting may be off, or none happened"
       ]
     },
+    "dimensions": {
+      "application": [
+        {
+          "connections": 0,
+          "errors": 1,
+          "mean_ms": 28.6625,
+          "mean_session_ms": null,
+          "sessions": 0,
+          "statements": 8,
+          "timed_calls": 8,
+          "total_ms": 229.3,
+          "value": "synth:demo"
+        }
+      ],
+      "database": [
+        {
+          "connections": 0,
+          "errors": 1,
+          "mean_ms": 28.6625,
+          "mean_session_ms": null,
+          "sessions": 0,
+          "statements": 8,
+          "timed_calls": 8,
+          "total_ms": 229.3,
+          "value": "pagila"
+        }
+      ],
+      "host": [
+        {
+          "connections": 0,
+          "errors": 1,
+          "mean_ms": 28.6625,
+          "mean_session_ms": null,
+          "sessions": 0,
+          "statements": 8,
+          "timed_calls": 8,
+          "total_ms": 229.3,
+          "value": "(none)"
+        }
+      ],
+      "user": [
+        {
+          "connections": 0,
+          "errors": 1,
+          "mean_ms": 28.6625,
+          "mean_session_ms": null,
+          "sessions": 0,
+          "statements": 8,
+          "timed_calls": 8,
+          "total_ms": 229.3,
+          "value": "postgres"
+        }
+      ]
+    },
     "errors": [
       {
         "count": 1,
@@ -91,6 +145,122 @@
         "prefix_source": "n/a",
         "records": 9,
         "skipped": 0
+      }
+    ],
+    "histograms": {
+      "sessions": [
+        {
+          "count": 0,
+          "le_ms": 1000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 10000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 30000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 60000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 300000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 600000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 1800000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 3600000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 10800000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 43200000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 86400000.0
+        },
+        {
+          "count": 0,
+          "le_ms": null
+        }
+      ],
+      "statements": [
+        {
+          "count": 4,
+          "le_ms": 1.0
+        },
+        {
+          "count": 2,
+          "le_ms": 5.0
+        },
+        {
+          "count": 0,
+          "le_ms": 10.0
+        },
+        {
+          "count": 0,
+          "le_ms": 25.0
+        },
+        {
+          "count": 0,
+          "le_ms": 50.0
+        },
+        {
+          "count": 0,
+          "le_ms": 100.0
+        },
+        {
+          "count": 2,
+          "le_ms": 500.0
+        },
+        {
+          "count": 0,
+          "le_ms": 1000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 5000.0
+        },
+        {
+          "count": 0,
+          "le_ms": 10000.0
+        },
+        {
+          "count": 0,
+          "le_ms": null
+        }
+      ]
+    },
+    "kinds": [
+      {
+        "calls": 2,
+        "kind": "update",
+        "mean_ms": 110.0,
+        "share_pct": 95.94417793283908,
+        "timed_calls": 2,
+        "total_ms": 220.0
+      },
+      {
+        "calls": 6,
+        "kind": "select",
+        "mean_ms": 1.55,
+        "share_pct": 4.055822067160925,
+        "timed_calls": 6,
+        "total_ms": 9.3
       }
     ],
     "locks": {

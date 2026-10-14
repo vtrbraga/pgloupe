@@ -42,6 +42,55 @@ checkpoints
 autovacuum
   shop.public.orders  vacuums 1, analyzes 1, total 600.00 ms, longest 500.00 ms
 
+query types
+  kind    calls  total_ms  mean_ms  share%
+  select      4    542.00   135.50    99.8
+  other       1      1.00     1.00     0.2
+
+statement durations
+  <= 1 ms                 1   20.0%  ##############################
+  1 ms - 5 ms             1   20.0%  ##############################
+  5 ms - 10 ms            0    0.0%
+  10 ms - 25 ms           1   20.0%  ##############################
+  25 ms - 50 ms           1   20.0%  ##############################
+  50 ms - 100 ms          0    0.0%
+  100 ms - 500 ms         1   20.0%  ##############################
+  500 ms - 1 s            0    0.0%
+  1 s - 5 s               0    0.0%
+  5 s - 10 s              0    0.0%
+  > 10 s                  0    0.0%
+
+session durations
+  <= 1 s                  0    0.0%
+  1 s - 10 s              0    0.0%
+  10 s - 30 s             0    0.0%
+  30 s - 1 min            0    0.0%
+  1 min - 5 min           1  100.0%  ##############################
+  5 min - 10 min          0    0.0%
+  10 min - 30 min         0    0.0%
+  30 min - 1 h            0    0.0%
+  1 h - 3 h               0    0.0%
+  3 h - 12 h              0    0.0%
+  12 h - 24 h             0    0.0%
+  > 24 h                  0    0.0%
+
+by database
+  value  statements  total_ms  mean_ms  errors  conns  sessions  session_ms
+  shop            5    543.00   108.60       3      1         1   149000.00
+
+by user
+  value  statements  total_ms  mean_ms  errors  conns  sessions  session_ms
+  app             5    543.00   108.60       3      1         1   149000.00
+
+by application
+  value   statements  total_ms  mean_ms  errors  conns  sessions  session_ms
+  web              5    543.00   108.60       2      1         0           -
+  (none)           0      0.00        -       1      0         1   149000.00
+
+by host
+  value   statements  total_ms  mean_ms  errors  conns  sessions  session_ms
+  (none)           5    543.00   108.60       3      1         1   149000.00
+
 timeline (bucket 1m)
   busiest statements: 2026-10-14T10:00:00Z (5)
   busiest errors: 2026-10-14T10:00:00Z (3)

@@ -2,8 +2,12 @@
 
 use std::time::Duration;
 
-use super::report::{
-    CheckpointRow, ErrorRow, Quantiles, Report, StatementRow, TableRow, TimelineRow,
+use super::{
+    histogram::HistogramBucket,
+    report::{
+        CheckpointRow, DimensionRow, ErrorRow, KindRow, Quantiles, Report, StatementRow, TableRow,
+        TimelineRow,
+    },
 };
 
 /// Longest query or message text shown.
@@ -48,6 +52,25 @@ pub fn sections(report: &Report, statements_table: bool) -> Vec<String> {
     section(&mut lines, "connections", connections(report));
     section(&mut lines, "checkpoints", checkpoints(&report.checkpoints));
     section(&mut lines, "autovacuum", autovacuum(&report.autovacuum));
+    section(&mut lines, "query types", kinds(&report.kinds));
+    section(
+        &mut lines,
+        "statement durations",
+        histogram(&report.histograms.statements),
+    );
+    section(
+        &mut lines,
+        "session durations",
+        histogram(&report.histograms.sessions),
+    );
+    for (title, rows) in [
+        ("by database", &report.dimensions.database),
+        ("by user", &report.dimensions.user),
+        ("by application", &report.dimensions.application),
+        ("by host", &report.dimensions.host),
+    ] {
+        section(&mut lines, title, dimension(rows));
+    }
     section(
         &mut lines,
         &format!(
@@ -308,6 +331,107 @@ fn autovacuum(rows: &[TableRow]) -> Vec<String> {
             )
         })
         .collect()
+}
+
+fn kinds(rows: &[KindRow]) -> Vec<String> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut cells = vec![
+        ["kind", "calls", "total_ms", "mean_ms", "share%"]
+            .map(str::to_owned)
+            .to_vec(),
+    ];
+    for row in rows {
+        cells.push(vec![
+            row.kind.to_owned(),
+            row.calls.to_string(),
+            num(row.total_ms),
+            opt(row.mean_ms),
+            format!("{:.1}", row.share_pct),
+        ]);
+    }
+    align(&cells, &[false, true, true, true, true])
+}
+
+/// A label for the range ending at `le_ms`, in the unit that reads best.
+fn edge_label(le_ms: f64) -> String {
+    if le_ms >= 3_600_000.0 {
+        format!("{} h", le_ms / 3_600_000.0)
+    } else if le_ms >= 60_000.0 {
+        format!("{} min", le_ms / 60_000.0)
+    } else if le_ms >= 1_000.0 {
+        format!("{} s", le_ms / 1_000.0)
+    } else {
+        format!("{le_ms} ms")
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "a bar of at most 30 cells"
+)]
+fn histogram(rows: &[HistogramBucket]) -> Vec<String> {
+    let total: u64 = rows.iter().map(|row| row.count).sum();
+    if total == 0 {
+        return Vec::new();
+    }
+    let busiest = rows.iter().map(|row| row.count).max().unwrap_or(1).max(1);
+    let mut previous = None;
+    rows.iter()
+        .map(|row| {
+            let range = match (previous, row.le_ms) {
+                (None, Some(hi)) => format!("<= {}", edge_label(hi)),
+                (Some(lo), Some(hi)) => format!("{} - {}", edge_label(lo), edge_label(hi)),
+                (Some(lo), None) => format!("> {}", edge_label(lo)),
+                (None, None) => "all".to_owned(),
+            };
+            previous = row.le_ms.or(previous);
+            let bar = "#".repeat((row.count as f64 * 30.0 / busiest as f64).ceil() as usize);
+            format!(
+                "{range:<16} {:>8}  {:>5.1}%  {bar}",
+                row.count,
+                row.count as f64 * 100.0 / total as f64
+            )
+            .trim_end()
+            .to_owned()
+        })
+        .collect()
+}
+
+fn dimension(rows: &[DimensionRow]) -> Vec<String> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut cells = vec![
+        [
+            "value",
+            "statements",
+            "total_ms",
+            "mean_ms",
+            "errors",
+            "conns",
+            "sessions",
+            "session_ms",
+        ]
+        .map(str::to_owned)
+        .to_vec(),
+    ];
+    for row in rows {
+        cells.push(vec![
+            row.value.clone(),
+            row.statements.to_string(),
+            num(row.total_ms),
+            opt(row.mean_ms),
+            row.errors.to_string(),
+            row.connections.to_string(),
+            row.sessions.to_string(),
+            opt(row.mean_session_ms),
+        ]);
+    }
+    align(&cells, &[false, true, true, true, true, true, true, true])
 }
 
 /// Picks one counter out of a timeline row.
