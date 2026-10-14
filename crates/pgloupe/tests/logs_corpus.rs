@@ -6,6 +6,18 @@ use pgloupe::log::{DecodeStats, Format, LogRecord, Options, decoder_for, source}
 
 const PREFIX: &str = "%m [%p] %q%u@%d/%a %Q ";
 
+/// Whether the corpus has this log (Postgres 14 has no jsonlog).
+fn present(name: &str) -> bool {
+    corpus_dir().join(name).exists()
+}
+
+fn corpus_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../data/synth/{}-42/log",
+        std::env::var("PGLOUPE_PG").unwrap_or_else(|_| "17".to_owned())
+    ))
+}
+
 fn decode(name: &str, format: Format) -> io::Result<(Vec<LogRecord>, DecodeStats)> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join(format!(
@@ -53,28 +65,31 @@ fn assert_same(left: &[String], right: &[String], what: &str) {
 #[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
 fn the_three_formats_decode_to_the_same_events() -> io::Result<()> {
     let (csv, csv_stats) = decode("postgresql.csv", Format::Csv)?;
-    let (json, json_stats) = decode("postgresql.json", Format::Json)?;
+    let json = present("postgresql.json")
+        .then(|| decode("postgresql.json", Format::Json))
+        .transpose()?;
     let (stderr, stderr_stats) = decode("postgresql.log", Format::Stderr)?;
 
-    for (name, stats) in [
-        ("csv", &csv_stats),
-        ("json", &json_stats),
-        ("stderr", &stderr_stats),
-    ] {
+    for (name, stats) in [("csv", &csv_stats), ("stderr", &stderr_stats)] {
         assert_eq!(stats.skipped, 0, "{name}: {:?}", stats.first_skipped);
     }
-    assert_eq!(csv.len(), 1741);
-    assert_eq!(json.len(), 1741);
-    assert_eq!(stderr.len(), 1741);
+    if let Some((_, stats)) = &json {
+        assert_eq!(stats.skipped, 0, "json: {:?}", stats.first_skipped);
+    }
+    assert!(csv.len() > 1_000, "{} records", csv.len());
+    assert_eq!(csv.len(), stderr.len());
 
     // Concurrent backends log in the same millisecond, and each format is its own log stream,
     // so the order of such lines differs between files: compare the events as sorted sets.
     // csv and json carry the same fields.
-    assert_same(
-        &sorted(&csv, |r| format!("{r:?}")),
-        &sorted(&json, |r| format!("{r:?}")),
-        "csv vs json",
-    );
+    if let Some((json, _)) = &json {
+        assert_eq!(csv.len(), json.len());
+        assert_same(
+            &sorted(&csv, |r| format!("{r:?}")),
+            &sorted(json, |r| format!("{r:?}")),
+            "csv vs json",
+        );
+    }
 
     // stderr carries only what the prefix has: compare those fields with csv.
     let shared = |r: &LogRecord| {

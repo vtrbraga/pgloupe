@@ -19,6 +19,15 @@ fn corpus() -> PathBuf {
     ))
 }
 
+/// The structured log to use when one will do: jsonlog, else csvlog (Postgres 14 has no jsonlog).
+fn reference() -> &'static str {
+    if corpus().join("log/postgresql.json").exists() {
+        "postgresql.json"
+    } else {
+        "postgresql.csv"
+    }
+}
+
 fn pgloupe(args: &[&str]) -> io::Result<Output> {
     Command::new(env!("CARGO_BIN_EXE_pgloupe"))
         .args(args)
@@ -80,7 +89,7 @@ fn shape(report: &Value) -> BTreeSet<(String, String, u64)> {
 #[test]
 #[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
 fn the_corpus_logs_join_with_their_snapshots_in_every_format() -> io::Result<()> {
-    let json = report("postgresql.json", &[])?;
+    let json = report(reference(), &[])?;
     let csv = report("postgresql.csv", &[])?;
     let stderr = report("postgresql.log", &["--prefix", PREFIX])?;
     let rows = json["statements"].as_array().unwrap();

@@ -60,6 +60,9 @@ fn the_store_agrees_with_analyze_in_every_format() -> io::Result<()> {
         ("postgresql.log", vec!["--prefix", PREFIX]),
     ] {
         let log = corpus().join("log").join(file);
+        if !log.exists() {
+            continue;
+        }
         let store =
             std::env::temp_dir().join(format!("pgloupe-corpus-{}-{file}.db", std::process::id()));
         let _ = fs::remove_file(&store);
@@ -85,8 +88,13 @@ fn the_store_agrees_with_analyze_in_every_format() -> io::Result<()> {
 #[test]
 #[ignore = "needs data/synth/17-42 and prints timings; run with --release"]
 fn ingest_and_report_speed_on_the_repeated_corpus() -> io::Result<()> {
-    let one = fs::read(corpus().join("log/postgresql.json"))?;
-    let log = std::env::temp_dir().join(format!("pgloupe-store-perf-{}.json", std::process::id()));
+    let reference = if corpus().join("log/postgresql.json").exists() {
+        "postgresql.json"
+    } else {
+        "postgresql.csv"
+    };
+    let one = fs::read(corpus().join("log").join(reference))?;
+    let log = std::env::temp_dir().join(format!("pgloupe-store-perf-{}.log", std::process::id()));
     let store = std::env::temp_dir().join(format!("pgloupe-store-perf-{}.db", std::process::id()));
     let _ = fs::remove_file(&store);
     let mut big = Vec::with_capacity(one.len() * 100);

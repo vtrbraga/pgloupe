@@ -20,6 +20,20 @@ fn corpus() -> PathBuf {
     ))
 }
 
+/// Whether the corpus has this log (Postgres 14 has no jsonlog).
+fn present(name: &str) -> bool {
+    corpus().join("log").join(name).exists()
+}
+
+/// The structured log to use when one will do: jsonlog, else csvlog.
+fn reference() -> &'static str {
+    if present("postgresql.json") {
+        "postgresql.json"
+    } else {
+        "postgresql.csv"
+    }
+}
+
 fn io_err(err: impl std::fmt::Display) -> io::Error {
     io::Error::other(err.to_string())
 }
@@ -29,7 +43,19 @@ fn io_err(err: impl std::fmt::Display) -> io::Error {
 /// Event counts keyed by (application, event kind).
 type Counts = BTreeMap<(String, String), u64>;
 
+/// When the dataset finished loading. Before that the server logs checkpoints of its own (Postgres
+/// 14 checkpoints for `CREATE DATABASE`), which no scenario asked for.
+fn load_finished_at() -> io::Result<jiff::Timestamp> {
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(corpus().join("manifest.json"))?)?;
+    let text = manifest["load_finished_at"].as_str().unwrap_or_default();
+    // `2026-10-14 23:23:03.580655+00` -> RFC 3339.
+    let rfc3339 = format!("{}:00", text.replacen(' ', "T", 1));
+    rfc3339.parse().map_err(io_err)
+}
+
 fn counts(file: &str, format: Format) -> io::Result<(Counts, u64)> {
+    let loaded = load_finished_at()?;
     let reader = source::open(&corpus().join("log").join(file))?;
     let options = LogOptions {
         prefix: Some(PREFIX.to_owned()),
@@ -55,6 +81,7 @@ fn counts(file: &str, format: Format) -> io::Result<(Counts, u64)> {
         };
         if let Event::CheckpointStart { reason, .. } = &event
             && reason == "immediate force wait"
+            && record.ts > loaded
         {
             forced += 1;
         }
@@ -76,6 +103,9 @@ fn the_manifest_expectations_hold_in_every_format() -> io::Result<()> {
         ("postgresql.json", Format::Json),
         ("postgresql.log", Format::Stderr),
     ] {
+        if !present(file) {
+            continue;
+        }
         let (counts, forced_checkpoints) = counts(file, format)?;
         for expect in expectations {
             let app = expect["app"].as_str().unwrap_or_default().to_owned();
@@ -129,26 +159,36 @@ fn the_three_formats_give_the_same_report_numbers() -> io::Result<()> {
         };
         pipeline::run(&[corpus().join("log").join(file)], &options).map_err(io_err)
     };
-    let csv = run("postgresql.csv", None)?;
-    let json = run("postgresql.json", None)?;
-    let stderr = run("postgresql.log", Some(PREFIX))?;
-    assert_eq!(csv.acc.totals.records, 1741);
-    assert_eq!(csv.acc.totals.events, json.acc.totals.events);
-    assert_eq!(csv.acc.totals.events, stderr.acc.totals.events);
-    assert_eq!(csv.acc.queries.len(), json.acc.queries.len());
-    assert_eq!(csv.acc.queries.len(), stderr.acc.queries.len());
+    let mut outputs = vec![("csv", run("postgresql.csv", None)?)];
+    if present("postgresql.json") {
+        outputs.push(("json", run("postgresql.json", None)?));
+    }
+    outputs.push(("stderr", run("postgresql.log", Some(PREFIX))?));
+    let (first_name, first) = &outputs[0];
+    assert!(
+        first.acc.totals.records > 1_000,
+        "{}",
+        first.acc.totals.records
+    );
     let statements =
         |o: &pipeline::Output| -> u64 { o.acc.queries.values().map(|q| q.calls).sum() };
-    assert_eq!(statements(&csv), statements(&json));
-    assert_eq!(statements(&csv), statements(&stderr));
+    for (name, other) in &outputs[1..] {
+        assert_eq!(
+            first.acc.totals.records, other.acc.totals.records,
+            "{first_name} vs {name}"
+        );
+        assert_eq!(first.acc.totals.events, other.acc.totals.events, "{name}");
+        assert_eq!(first.acc.queries.len(), other.acc.queries.len(), "{name}");
+        assert_eq!(statements(first), statements(other), "{name}");
+    }
     Ok(())
 }
 
 #[test]
 #[ignore = "needs data/synth/17-42 and prints timings"]
 fn end_to_end_speed_on_the_repeated_corpus() -> io::Result<()> {
-    let one = std::fs::read(corpus().join("log/postgresql.json"))?;
-    let path = std::env::temp_dir().join(format!("pgloupe-perf-{}.json", std::process::id()));
+    let one = std::fs::read(corpus().join("log").join(reference()))?;
+    let path = std::env::temp_dir().join(format!("pgloupe-perf-{}.log", std::process::id()));
     let mut big = Vec::with_capacity(one.len() * 100);
     for _ in 0..100 {
         big.extend_from_slice(&one);
@@ -181,7 +221,7 @@ fn end_to_end_speed_on_the_repeated_corpus() -> io::Result<()> {
 #[test]
 #[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
 fn results_do_not_depend_on_threads_or_batches_on_the_real_corpus() -> io::Result<()> {
-    let path = corpus().join("log/postgresql.json");
+    let path = corpus().join("log").join(reference());
     let run = |threads: usize, batch_size: usize| {
         pipeline::run(
             std::slice::from_ref(&path),
@@ -213,6 +253,9 @@ fn the_fingerprint_cache_agrees_with_pg_query_on_every_statement() -> io::Result
         ("postgresql.json", Format::Json),
         ("postgresql.log", Format::Stderr),
     ] {
+        if !present(file) {
+            continue;
+        }
         let reader = source::open(&corpus().join("log").join(file))?;
         let options = LogOptions {
             prefix: Some(PREFIX.to_owned()),

@@ -778,4 +778,37 @@ mod tests {
             Event::Other
         );
     }
+
+    #[test]
+    fn autovacuum_wording_of_postgres_14_to_18() {
+        let table = |message: &str| match log(message) {
+            Event::Autovacuum {
+                analyze,
+                table,
+                elapsed_ms,
+            } => (analyze, table, elapsed_ms),
+            other => panic!("not an autovacuum event: {other:?}"),
+        };
+        // 14: aggressive vacuums are named as such.
+        assert_eq!(
+            table(
+                "automatic aggressive vacuum of table \"pagila.public.film\": index scans: 0\npages: 0 removed, 10 remain\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.02 s"
+            ),
+            (false, "pagila.public.film".to_owned(), Some(20.0))
+        );
+        // 15 and 16: I/O timings join the report when track_io_timing is on.
+        assert_eq!(
+            table(
+                "automatic vacuum of table \"pagila.public.rental\": index scans: 1\nI/O timings: read: 0.123 ms, write: 0.000 ms\navg read rate: 1.5 MB/s, avg write rate: 0.0 MB/s\nsystem usage: CPU: user: 0.01 s, system: 0.00 s, elapsed: 1.50 s"
+            ),
+            (false, "pagila.public.rental".to_owned(), Some(1500.0))
+        );
+        // 17 and 18: new lines (visibility map, delay time, WAL) before the usual footer.
+        assert_eq!(
+            table(
+                "automatic analyze of table \"pagila.public.film\"\ndelay time: 0.000 ms\nI/O timings: read: 0.100 ms, write: 0.000 ms\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.03 s"
+            ),
+            (true, "pagila.public.film".to_owned(), Some(30.0))
+        );
+    }
 }
