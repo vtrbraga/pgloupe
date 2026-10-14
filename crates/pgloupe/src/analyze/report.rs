@@ -344,7 +344,7 @@ fn statements(acc: &Accumulators, options: &ReportOptions) -> Vec<StatementRow> 
     {
         rows.push(overflow);
     }
-    let total_us: u64 = rows.iter().map(|query| query.total_us).sum();
+    let total_us = total_us(acc);
     rows.sort_by(|a, b| {
         sort_key(b, options.by)
             .cmp(&sort_key(a, options.by))
@@ -352,6 +352,26 @@ fn statements(acc: &Accumulators, options: &ReportOptions) -> Vec<StatementRow> 
     });
     rows.truncate(options.top);
     rows.into_iter()
+        .map(|query| statement_row(query, total_us))
+        .collect()
+}
+
+/// Execution time of every statement, overflow bucket included: the base of the shares.
+fn total_us(acc: &Accumulators) -> u64 {
+    acc.queries
+        .values()
+        .chain(std::iter::once(&acc.overflow))
+        .map(|query| query.total_us)
+        .sum()
+}
+
+/// One row per fingerprint, in fingerprint order, with the same shares [`Report::build`] shows.
+/// The overflow bucket is not a statement and gets no row.
+#[must_use]
+pub fn all_statements(acc: &Accumulators) -> Vec<StatementRow> {
+    let total_us = total_us(acc);
+    acc.queries
+        .values()
         .map(|query| statement_row(query, total_us))
         .collect()
 }
@@ -704,5 +724,29 @@ mod tests {
             (row.calls, row.statement_calls, row.execute_calls),
             (2, 1, 1)
         );
+    }
+
+    #[test]
+    fn all_statements_covers_every_fingerprint_with_matching_shares() {
+        let out = output();
+        let report = Report::build(
+            &out,
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 2,
+            },
+        );
+        let all = all_statements(&out.acc);
+        assert_eq!(report.statements.len(), 2);
+        assert_eq!(all.len(), out.acc.queries.len());
+        assert!(all.len() > 2);
+        for shown in &report.statements {
+            let same = all
+                .iter()
+                .find(|row| row.fingerprint == shown.fingerprint)
+                .unwrap();
+            assert_eq!(same.calls, shown.calls);
+            assert!(approx_eq(same.share_pct, shown.share_pct));
+        }
     }
 }

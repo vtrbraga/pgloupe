@@ -94,6 +94,22 @@ pub fn build(
     options: &ReportOptions,
     bucket_secs: i64,
 ) -> Result<Report, ReportError> {
+    build_parts(store, path, since, until, options, bucket_secs).map(|(report, _acc)| report)
+}
+
+/// Like [`build`], and also returns the merged statistics the report was made from.
+///
+/// # Errors
+///
+/// Fails like [`build`].
+pub fn build_parts(
+    store: &Store,
+    path: &Path,
+    since: Option<Timestamp>,
+    until: Option<Timestamp>,
+    options: &ReportOptions,
+    bucket_secs: i64,
+) -> Result<(Report, Accumulators), ReportError> {
     if bucket_secs < 60 || bucket_secs % 60 != 0 {
         return Err(ReportError::Bucket);
     }
@@ -114,13 +130,11 @@ pub fn build(
     )
     .rebucket(bucket_secs);
     let inputs = store.inputs_in(lo, hi)?;
-    let mut report = Report::build(
-        &Output {
-            acc,
-            files: Vec::new(),
-        },
-        options,
-    );
+    let output = Output {
+        acc,
+        files: Vec::new(),
+    };
+    let mut report = Report::build(&output, options);
     report.files = inputs.iter().map(|input| input.summary.clone()).collect();
     report.diagnostics = stored_diagnostics(&inputs, report.diagnostics);
     let edge = |bound: Option<Timestamp>, value: i64| {
@@ -134,7 +148,7 @@ pub fn build(
         until: edge(until, hi),
         inputs: inputs.len(),
     });
-    Ok(report)
+    Ok((report, output.acc))
 }
 
 /// The diagnostics a report over `inputs` shows: what each file recorded at ingest, followed by
@@ -432,5 +446,24 @@ mod tests {
         whole.recap(2);
         assert_eq!(merged.queries, whole.queries);
         assert_eq!(merged.overflow, whole.overflow);
+    }
+
+    #[test]
+    fn build_parts_returns_what_build_reports() {
+        let d = dir("parts");
+        let fixture =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/logs/sample.json");
+        let mut store = Store::create(&d.join("s.db")).unwrap();
+        ingest(
+            &mut store,
+            std::slice::from_ref(&fixture),
+            &pipeline::Options::new(),
+            false,
+        );
+        let path = d.join("s.db");
+        let built = build(&store, &path, None, None, &OPTIONS, 60).unwrap();
+        let (report, acc) = build_parts(&store, &path, None, None, &OPTIONS, 60).unwrap();
+        assert_eq!(report.to_json().unwrap(), built.to_json().unwrap());
+        assert_eq!(acc.totals.records, report.overview.records);
     }
 }
