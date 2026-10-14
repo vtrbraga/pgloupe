@@ -1,0 +1,11 @@
+2026-10-14 10:20:09.302 UTC,,,42,,6acf5759.2a,3,,2026-10-14 10:20:09 UTC,,0,LOG,00000,"database system is ready to accept connections",,,,,,,,,"","postmaster",,0
+2026-10-14 10:20:09.410 UTC,"postgres","pagila",96,"172.17.0.1:38590",6acf5759.60,3,"authentication",2026-10-14 10:20:09 UTC,,0,LOG,00000,"connection authorized: user=postgres database=pagila application_name=synth:demo",,,,,,,,,"synth:demo","client backend",,0
+2026-10-14 10:20:10.100 UTC,"postgres","pagila",96,"172.17.0.1:38590",6acf5759.60,4,"SELECT",2026-10-14 10:20:09 UTC,3/7,0,LOG,00000,"duration: 12.345 ms  statement: SELECT 1",,,,,,,,,"synth:demo","client backend",,7567370182540008004
+2026-10-14 10:20:10.200 UTC,"postgres","pagila",96,"172.17.0.1:38590",6acf5759.60,5,"SELECT",2026-10-14 10:20:09 UTC,3/8,0,LOG,00000,"duration: 3.500 ms  statement: SELECT title
+    FROM film
+    WHERE film_id = 1",,,,,,,,,"synth:demo","client backend",,-4527843874584415720
+2026-10-14 10:20:10.300 UTC,"postgres","pagila",96,"172.17.0.1:38590",6acf5759.60,6,"SELECT",2026-10-14 10:20:09 UTC,3/9,0,ERROR,42703,"column ""titel"" does not exist",,"Perhaps you meant to reference the column ""film.title"".",,,,"SELECT titel FROM film",8,,"synth:demo","client backend",,0
+2026-10-14 10:20:12.500 UTC,"postgres","pagila",103,"172.17.0.1:38592",6acf5759.67,7,"UPDATE",2026-10-14 10:20:12 UTC,4/4,1104,ERROR,40P01,"deadlock detected","Process 103 waits for ShareLock on transaction 1104; blocked by process 102.
+Process 102 waits for ShareLock on transaction 1105; blocked by process 103.","See server log for query details.",,,"while locking tuple (0,10) in relation ""film""","UPDATE film SET rental_rate = rental_rate WHERE film_id = 20",,,"synth:deadlock","client backend",,0
+2026-10-14 10:20:13.000 UTC,,,44,,6acf5759.2c,1,,2026-10-14 10:20:09 UTC,,0,LOG,00000,"checkpoint starting: time",,,,,,,,,"","checkpointer",,0
+2026-10-14 10:20:13.200 UTC,"postgres","pagila",96,"172.17.0.1:38590",6acf5759.60,8,"SELECT",2026-10-14 10:20:09 UTC,3/10,0,LOG,00000,"temporary file: path ""base/pgsql_tmp/pgsql_tmp96.0"", size 1000000",,,,,,"SELECT count(*) FROM (SELECT g FROM generate_series(1, 100000) g ORDER BY g DESC) s",,,"synth:demo","client backend",,1234567890123456789
