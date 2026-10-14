@@ -5,12 +5,21 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 repository = "https://github.com/vtrbraga/pgloupe"
 publish = false
 
 [workspace.dependencies]
+anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+csv = "1"
+postgres = "0.19"
+rand = "0.10"
+rand_chacha = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+ureq = "3"
 
 # Based on Microsoft Pragmatic Rust Guidelines (M-STATIC-VERIFICATION), 2026.6.
 [workspace.lints.rust]
@@ -62,3 +71,5 @@ unused_result_ok = "warn"
 unwrap_used = "warn"
 
 literal_string_with_formatting_args = "allow"
+# Transitive duplicates (base64, getrandom, syn, ...) are not actionable here.
+multiple_crate_versions = "allow"
