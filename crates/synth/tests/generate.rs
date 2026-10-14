@@ -27,9 +27,15 @@ const QUERY: usize = 19;
 const APP: usize = 22;
 
 /// Args writing into a fresh temp dir, sharing the repo's download cache.
+///
+/// `SYNTH_TEST_PG=16|18` selects another Postgres major (default 17).
 fn args(only: &[&str]) -> GenerateArgs {
     GenerateArgs {
-        pg: PgMajor::V17,
+        pg: match std::env::var("SYNTH_TEST_PG").as_deref() {
+            Ok("16") => PgMajor::V16,
+            Ok("18") => PgMajor::V18,
+            _ => PgMajor::V17,
+        },
         seed: 42,
         only: only.iter().map(|s| (*s).to_owned()).collect(),
         force: false,
@@ -78,7 +84,8 @@ fn matches(row: &StringRecord, expect: &Expect) -> bool {
     let app_matches = row[APP] == expect.app;
     let duration_line =
         |kind: &str| app_matches && message.starts_with("duration: ") && message.contains(kind);
-    let bound_parameters = || row[DETAIL].starts_with("Parameters: ");
+    // PG17 logs "Parameters: …", PG16 logs "parameters: …".
+    let bound_parameters = || row[DETAIL].to_lowercase().starts_with("parameters: ");
     match expect.event {
         EventKind::Statement => duration_line(" statement: "),
         EventKind::Parse => duration_line("  parse "),
@@ -148,8 +155,8 @@ fn empty_run_writes_layout_snapshots_and_manifest() {
     }
     assert!(!dir.with_extension("tmp").exists());
     let manifest = Manifest::read(&dir).unwrap();
-    assert_eq!(manifest.pg_major, 17);
-    assert!(manifest.server_version_num >= 170_000);
+    assert_eq!(manifest.pg_major, args.pg.number());
+    assert!(manifest.server_version_num >= i32::try_from(args.pg.number() * 10_000).unwrap());
     assert_eq!(manifest.snapshots_at.len(), 3);
     assert!(manifest.image_digest.contains("sha256:"));
 }
@@ -321,4 +328,19 @@ fn pgss_churn_evicts_and_resets_between_snapshots_1_and_2() {
     );
     let (_, info_1) = read_csv_with_headers(&dir.join("pgss_info_1.csv"));
     assert_eq!(&info_1[0][column(&headers, "dealloc")], "0");
+}
+
+#[test]
+#[ignore = "needs docker"]
+fn full_run_matches_manifest_with_no_eviction_before_snapshot_1() {
+    let dir = generate_corpus(&[]);
+    assert_log_matches_manifest(&dir);
+    let manifest = Manifest::read(&dir).unwrap();
+    assert_eq!(manifest.scenarios.len(), scenario::ALL.len());
+    let (headers, rows) = read_csv_with_headers(&dir.join("pgss_info_1.csv"));
+    assert_eq!(
+        &rows[0][column(&headers, "dealloc")],
+        "0",
+        "snapshot 1 must precede any eviction so the 0->1 delta is clean"
+    );
 }
