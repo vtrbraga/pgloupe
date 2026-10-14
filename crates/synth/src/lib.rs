@@ -2,4 +2,5 @@
 
 pub mod cli;
 pub mod container;
+pub mod dataset;
 pub mod manifest;
