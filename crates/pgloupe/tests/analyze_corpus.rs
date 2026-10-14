@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, io, path::PathBuf, time::Instant};
 use pgloupe::{
     analyze::{
         event::{Event, classify},
+        fingerprint::{fingerprint, fingerprint_uncached},
         pipeline::{self, Options},
     },
     log::{Format, Options as LogOptions, decoder_for, source},
@@ -197,5 +198,42 @@ fn results_do_not_depend_on_threads_or_batches_on_the_real_corpus() -> io::Resul
             "threads {threads}, batch {batch}"
         );
     }
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
+fn the_fingerprint_cache_agrees_with_pg_query_on_every_statement() -> io::Result<()> {
+    let mut checked = 0;
+    for (file, format) in [
+        ("postgresql.csv", Format::Csv),
+        ("postgresql.json", Format::Json),
+        ("postgresql.log", Format::Stderr),
+    ] {
+        let reader = source::open(&corpus().join("log").join(file))?;
+        let options = LogOptions {
+            prefix: Some(PREFIX.to_owned()),
+            log_tz: None,
+        };
+        let mut decoder = decoder_for(format, reader, &options).map_err(io_err)?;
+        // Two passes over the statements, so the second one is served from the cache.
+        let mut statements = Vec::new();
+        while let Some(record) = decoder.next_record().map_err(io_err)? {
+            if let Event::Statement { text, .. } = classify(&record) {
+                statements.push(text);
+            }
+        }
+        for pass in 0..2 {
+            for text in &statements {
+                assert_eq!(
+                    fingerprint(text),
+                    fingerprint_uncached(text),
+                    "{file}, pass {pass}: {text}"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 1_000, "only {checked} statements checked");
     Ok(())
 }

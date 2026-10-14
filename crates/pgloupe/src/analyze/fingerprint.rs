@@ -12,10 +12,45 @@ pub struct Fingerprint {
     pub parsed: bool,
 }
 
+/// Statement shapes remembered per thread. Real workloads repeat a few thousand shapes.
+const CACHE_LIMIT: usize = 65_536;
+
+thread_local! {
+    static CACHE: std::cell::RefCell<std::collections::HashMap<String, Fingerprint>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 /// Fingerprints `sql`: equal for statements that differ only in literals, case, whitespace or the
 /// length of `IN` lists.
+///
+/// Parsing is the dominant cost of a run, and nearly every log line repeats a statement shape with
+/// different literals, so a per-thread cache remembers the fingerprint of each
+/// [`shape_key`]. Statements the key cannot describe safely are parsed every time.
 #[must_use]
 pub fn fingerprint(sql: &str) -> Fingerprint {
+    let Some(key) = shape_key(sql) else {
+        return fingerprint_uncached(sql);
+    };
+    if let Some(found) = CACHE.with(|cache| cache.borrow().get(&key).copied()) {
+        return found;
+    }
+    let found = fingerprint_uncached(sql);
+    // An unparsed statement's id hashes its literals, so it cannot stand for its shape.
+    if found.parsed {
+        CACHE.with(|cache| {
+            let mut cache = cache.borrow_mut();
+            if cache.len() >= CACHE_LIMIT {
+                cache.clear();
+            }
+            cache.insert(key, found);
+        });
+    }
+    found
+}
+
+/// The fingerprint straight from `pg_query`, the reference the cache must agree with.
+#[must_use]
+pub fn fingerprint_uncached(sql: &str) -> Fingerprint {
     match pg_query::fingerprint(sql) {
         Ok(found) => Fingerprint {
             id: found.value,
@@ -25,6 +60,150 @@ pub fn fingerprint(sql: &str) -> Fingerprint {
             id: fnv1a(collapse(sql).as_bytes()),
             parsed: false,
         },
+    }
+}
+
+/// `sql` with plain literals replaced by typed placeholders (`?i` integer, `?f` decimal, `?s`
+/// string), or `None` when the text holds anything whose meaning a simple scan could get wrong.
+///
+/// Two statements with the same key differ only in the values of those literals, which
+/// `pg_query`'s fingerprint ignores. Only data-manipulation statements are keyed: utility
+/// statements can carry numbers that do matter (`WITH (fillfactor = 70)`).
+fn shape_key(sql: &str) -> Option<String> {
+    let bytes = sql.as_bytes();
+    let word: &[u8] = {
+        let trimmed = sql.trim_start().as_bytes();
+        let end = trimmed
+            .iter()
+            .position(|b| !b.is_ascii_alphabetic())
+            .unwrap_or(trimmed.len());
+        &trimmed[..end]
+    };
+    let dml = ["select", "insert", "update", "delete", "with", "values"];
+    if !dml
+        .iter()
+        .any(|kw| word.eq_ignore_ascii_case(kw.as_bytes()))
+    {
+        return None;
+    }
+    let mut key = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        let prev = i.checked_sub(1).map(|p| bytes[p]);
+        let after_word = prev.is_some_and(|p| p.is_ascii_alphanumeric() || p == b'_');
+        match b {
+            b'\'' => {
+                // `E'..'`, `B'..'`, `X'..'`, `U&'..'` and `type'..'` have their own rules.
+                if after_word || prev == Some(b'&') {
+                    return None;
+                }
+                i = skip_quoted(bytes, i, b'\'')?;
+                key.extend_from_slice(b"?s");
+            }
+            b'"' => {
+                let end = skip_quoted(bytes, i, b'"')?;
+                key.extend_from_slice(&bytes[i..end]);
+                i = end;
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => return None,
+            b'/' if bytes.get(i + 1) == Some(&b'*') => return None,
+            b'$' => {
+                // `$1` is a parameter; anything else is dollar quoting.
+                if !bytes.get(i + 1).is_some_and(u8::is_ascii_digit) {
+                    return None;
+                }
+                key.push(b'$');
+                i += 1;
+                while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+                    key.push(bytes[i]);
+                    i += 1;
+                }
+            }
+            b'0'..=b'9' if !after_word => {
+                let (end, class) = scan_number(bytes, i)?;
+                key.extend_from_slice(class);
+                i = end;
+            }
+            b'.' if !after_word
+                && prev != Some(b')')
+                && prev != Some(b'"')
+                && bytes.get(i + 1).is_some_and(u8::is_ascii_digit) =>
+            {
+                let (end, _) = scan_number(bytes, i)?;
+                key.extend_from_slice(b"?f");
+                i = end;
+            }
+            _ => {
+                key.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(key).ok()
+}
+
+/// The index just past the quote that closes the one at `start` (a doubled quote is an escape).
+fn skip_quoted(bytes: &[u8], start: usize, quote: u8) -> Option<usize> {
+    let mut i = start + 1;
+    while i < bytes.len() {
+        if bytes[i] == quote {
+            if bytes.get(i + 1) == Some(&quote) {
+                i += 2;
+                continue;
+            }
+            return Some(i + 1);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Scans a decimal number starting at `start`; returns where it ends and its placeholder.
+/// `None` for forms with other rules (hex, underscores, huge integers, trailing letters).
+fn scan_number(bytes: &[u8], start: usize) -> Option<(usize, &'static [u8])> {
+    let digits = |from: usize| {
+        bytes[from..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count()
+    };
+    let mut i = start;
+    let whole = digits(i);
+    i += whole;
+    let mut decimal = whole == 0;
+    if bytes.get(i) == Some(&b'.') {
+        let fraction = digits(i + 1);
+        if fraction == 0 {
+            return None;
+        }
+        i += 1 + fraction;
+        decimal = true;
+    }
+    if matches!(bytes.get(i), Some(b'e' | b'E')) {
+        let mut j = i + 1;
+        if matches!(bytes.get(j), Some(b'+' | b'-')) {
+            j += 1;
+        }
+        let exponent = digits(j);
+        if exponent == 0 {
+            return None;
+        }
+        i = j + exponent;
+        decimal = true;
+    }
+    if bytes
+        .get(i)
+        .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'.')
+    {
+        return None;
+    }
+    if decimal {
+        Some((i, b"?f"))
+    } else if whole <= 9 {
+        Some((i, b"?i"))
+    } else {
+        None
     }
 }
 
@@ -132,5 +311,142 @@ mod tests {
         let f = fingerprint(&sql);
         assert!(f.parsed);
         assert!(display_text(&sql, true).chars().count() <= 4_096);
+    }
+
+    #[test]
+    fn shape_keys_strip_only_plain_literals() {
+        let key = |sql: &str| shape_key(sql);
+        assert_eq!(
+            key("SELECT * FROM t WHERE id = 5").as_deref(),
+            Some("SELECT * FROM t WHERE id = ?i")
+        );
+        assert_eq!(
+            key("select a from t where n = 'it''s' and m > 1.5e-3 and k < -7").as_deref(),
+            Some("select a from t where n = ?s and m > ?f and k < -?i")
+        );
+        // Digits inside identifiers, parameters and quoted identifiers are not literals.
+        assert_eq!(
+            key("SELECT c2 FROM t1 WHERE \"X 1\" = $1 AND d = 3").as_deref(),
+            Some("SELECT c2 FROM t1 WHERE \"X 1\" = $1 AND d = ?i")
+        );
+        assert_eq!(
+            key("INSERT INTO t VALUES (1, 'a', 2.5)").as_deref(),
+            Some("INSERT INTO t VALUES (?i, ?s, ?f)")
+        );
+        assert_eq!(
+            key("  WITH x AS (SELECT 1) SELECT * FROM x").as_deref(),
+            Some("  WITH x AS (SELECT ?i) SELECT * FROM x")
+        );
+    }
+
+    #[test]
+    fn shape_keys_give_up_on_anything_unusual() {
+        for sql in [
+            "SELECT 1 -- comment",
+            "SELECT /* c */ 1",
+            "SELECT $$text$$",
+            "SELECT $tag$text$tag$",
+            "SELECT E'a\\nb'",
+            "SELECT B'101'",
+            "SELECT X'1F'",
+            "SELECT U&'d\\0061t\\+000061'",
+            "SELECT date'2020-01-01'",
+            "SELECT 0x1F",
+            "SELECT 1_000",
+            "SELECT 3000000000",
+            "SELECT 1abc",
+            "SELECT 'unterminated",
+            "SELECT \"unterminated",
+            "CREATE INDEX i ON t (a) WITH (fillfactor = 70)",
+            "SET work_mem = 64",
+            "EXPLAIN SELECT 1",
+            "",
+        ] {
+            assert_eq!(shape_key(sql), None, "{sql}");
+        }
+    }
+
+    #[test]
+    fn statements_with_equal_keys_have_equal_fingerprints() {
+        let groups: [&[&str]; 5] = [
+            &[
+                "SELECT * FROM t WHERE id = 1",
+                "SELECT * FROM t WHERE id = 999999",
+            ],
+            &[
+                "SELECT * FROM t WHERE n = 'a'",
+                "SELECT * FROM t WHERE n = 'it''s ok'",
+            ],
+            &[
+                "SELECT * FROM t WHERE x > 1.5",
+                "SELECT * FROM t WHERE x > 2e10",
+            ],
+            &[
+                "UPDATE t SET a = 1, b = 'x' WHERE id = 3",
+                "UPDATE t SET a = 2, b = 'y' WHERE id = 4",
+            ],
+            &[
+                "INSERT INTO t VALUES (1, 'a')",
+                "INSERT INTO t VALUES (22, 'bb')",
+            ],
+        ];
+        for group in groups {
+            let keys: Vec<_> = group.iter().map(|sql| shape_key(sql)).collect();
+            assert!(
+                keys.iter().all(|k| k.is_some() && *k == keys[0]),
+                "{group:?}: {keys:?}"
+            );
+            let ids: Vec<_> = group.iter().map(|sql| fingerprint_uncached(sql)).collect();
+            assert!(ids.iter().all(|f| *f == ids[0]), "{group:?}: {ids:?}");
+        }
+    }
+
+    #[test]
+    fn the_cache_never_changes_a_fingerprint() {
+        let statements = [
+            "SELECT * FROM film WHERE film_id = 1",
+            "SELECT * FROM film WHERE film_id = 2",
+            "select * from film where film_id = 3",
+            "SELECT a FROM t WHERE x IN (1,2,3)",
+            "SELECT a FROM t WHERE x IN (1,2,3,4,5)",
+            "SELECT a FROM t WHERE x IN ('a','b')",
+            "SELECT * FROM events_p0001 WHERE id = 1",
+            "SELECT * FROM events_p0002 WHERE id = 2",
+            "SELECT * FROM tenant_01.t WHERE id = 1",
+            "SELECT * FROM tenant_02.t WHERE id = 1",
+            "UPDATE film SET rental_rate = $1 WHERE film_id = $2",
+            "UPDATE film SET rental_rate = 2.99 WHERE film_id = 7",
+            "INSERT INTO t (a, b) VALUES (1, 'x'), (2, 'y')",
+            "DELETE FROM t WHERE a = 'x' AND b < 10",
+            "SELECT 1",
+            "SELECT 'a'",
+            "SELECT 1.5",
+            "SELECT NULL",
+            "SELECT * FROM t ORDER BY 1",
+            "SELECT * FROM t ORDER BY 2",
+            "SELECT * FROM t LIMIT 5",
+            "SELECT * FROM t LIMIT 50",
+            "SELECT * FROM t WHERE a = 1 -- trailing",
+            "SELEC 1",
+            "SELEC 2",
+            "SELECT '2020-01-01'::date",
+            "SELECT interval '1 day'",
+            "SELECT * FROM t1, t2 WHERE t1.c1 = t2.c2 AND t1.c1 = 5",
+        ];
+        for round in 0..3 {
+            for sql in statements {
+                assert_eq!(
+                    fingerprint(sql),
+                    fingerprint_uncached(sql),
+                    "round {round}: {sql}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unparsable_statements_are_not_cached_across_literals() {
+        assert_ne!(fingerprint("SELEC 1").id, fingerprint("SELEC 2").id);
+        assert_ne!(fingerprint("SELEC 1").id, fingerprint("SELEC 2").id);
     }
 }
