@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context as _, bail};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use jiff::tz::Offset;
+use jiff::{Timestamp, tz::Offset};
 
 use crate::{
     analyze::{
@@ -21,6 +21,7 @@ use crate::{
         render::{self, View},
         snapshot::{Info, Snapshot},
     },
+    store::{self, Status, Store, report as store_report},
 };
 
 /// A close look at your Postgres logs and query stats.
@@ -58,6 +59,11 @@ enum LogsCommand {
     /// Summarize one or more logs: statements with percentiles, errors, locks, temp files,
     /// connections, checkpoints and autovacuum.
     Analyze(AnalyzeArgs),
+    /// Add logs to a store; files already ingested are skipped and grown ones replace their old
+    /// version.
+    Ingest(IngestArgs),
+    /// Report on a time window of a store.
+    Report(StoreReportArgs),
 }
 
 #[derive(Debug, Args)]
@@ -118,6 +124,59 @@ struct AnalyzeArgs {
     /// Worker threads (default: all cores).
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     threads: Option<u64>,
+    /// Report format.
+    #[arg(long = "output", value_enum, default_value_t = OutputFormat::Text)]
+    output: OutputFormat,
+}
+
+#[derive(Debug, Args)]
+struct IngestArgs {
+    /// Log files (csvlog, jsonlog or stderr; gzip is detected automatically).
+    #[arg(required = true)]
+    files: Vec<PathBuf>,
+    /// The store file; created when missing.
+    #[arg(long)]
+    store: PathBuf,
+    /// Log format; `auto` looks at each file's first line.
+    #[arg(long, value_enum, default_value_t = LogFormat::Auto)]
+    format: LogFormat,
+    /// The server's `log_line_prefix`; inferred when omitted.
+    #[arg(long)]
+    prefix: Option<String>,
+    /// Offset for timezone abbreviations the log does not spell out, e.g. `-03` or `+05:30`.
+    #[arg(long, value_parser = parse_offset_arg, allow_hyphen_values = true)]
+    log_tz: Option<Offset>,
+    /// Distinct statements kept per hour before the rest fold into one overflow row.
+    #[arg(long, default_value_t = 50_000)]
+    max_fingerprints: usize,
+    /// Worker threads (default: all cores).
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    threads: Option<u64>,
+    /// Read and store files even when their content is already in the store.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Debug, Args)]
+struct StoreReportArgs {
+    /// The store file written by `logs ingest`.
+    #[arg(long)]
+    store: PathBuf,
+    /// Start of the window (RFC 3339 or `YYYY-MM-DD`, UTC); rounded down to the hour.
+    #[arg(long, value_parser = store_report::parse_time)]
+    since: Option<Timestamp>,
+    /// End of the window; rounded up to the hour.
+    #[arg(long, value_parser = store_report::parse_time)]
+    until: Option<Timestamp>,
+    /// Metric that orders the statement table.
+    #[arg(long, value_enum, default_value_t = AnalyzeBy::Total)]
+    by: AnalyzeBy,
+    /// Statements to list.
+    #[arg(long, default_value_t = 20)]
+    top: usize,
+    /// Timeline resolution: a multiple of one minute.
+    #[arg(long, default_value = "1m", value_parser = parse_bucket)]
+    bucket: i64,
     /// Report format.
     #[arg(long = "output", value_enum, default_value_t = OutputFormat::Text)]
     output: OutputFormat,
@@ -240,6 +299,12 @@ pub fn run(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Resul
         Command::Logs {
             command: LogsCommand::Analyze(args),
         } => logs_analyze(args, out, err),
+        Command::Logs {
+            command: LogsCommand::Ingest(args),
+        } => logs_ingest(args, out, err),
+        Command::Logs {
+            command: LogsCommand::Report(args),
+        } => logs_report(args, out),
     }
 }
 
@@ -335,6 +400,88 @@ fn logs_dump(args: &DumpArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyho
     })
 }
 
+fn render_report(
+    report: &Report,
+    output: OutputFormat,
+    elapsed: std::time::Duration,
+) -> anyhow::Result<String> {
+    Ok(match output {
+        OutputFormat::Text => analyze_render::text(report, Some(elapsed)),
+        OutputFormat::Json => {
+            let mut json = report.to_json()?;
+            json.push('\n');
+            json
+        }
+    })
+}
+
+fn logs_ingest(
+    args: &IngestArgs,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> anyhow::Result<Exit> {
+    let mut store = Store::create(&args.store)?;
+    let options = pipeline::Options {
+        format: match args.format {
+            LogFormat::Auto => None,
+            LogFormat::Csv => Some(Format::Csv),
+            LogFormat::Json => Some(Format::Json),
+            LogFormat::Stderr => Some(Format::Stderr),
+        },
+        prefix: args.prefix.clone(),
+        log_tz: args.log_tz,
+        max_fingerprints: args.max_fingerprints,
+        bucket_secs: 60,
+        threads: args.threads.map(usize::try_from).transpose()?,
+        batch_size: pipeline::Options::new().batch_size,
+        hash_marks: None,
+    };
+    let mut failed = false;
+    for outcome in store::ingest(&mut store, &args.files, &options, args.force) {
+        let path = outcome.path.display();
+        match &outcome.status {
+            Status::Ingested => {
+                writeln!(out, "ingested   {path}  ({} records)", outcome.records)
+            }
+            Status::Unchanged => writeln!(out, "unchanged  {path}"),
+            Status::Replaced(earlier) => writeln!(
+                out,
+                "replaced   {path}  ({} records, replaces {earlier} earlier)",
+                outcome.records
+            ),
+            Status::Failed(reason) => {
+                failed = true;
+                writeln!(out, "failed     {path}: {reason}")
+            }
+        }
+        .context("writing output")?;
+        for warning in outcome.diag.iter().flat_map(|diag| &diag.warnings) {
+            let _ = writeln!(err, "warning: {path}: {warning}");
+        }
+    }
+    Ok(if failed { Exit::Failed } else { Exit::Ok })
+}
+
+fn logs_report(args: &StoreReportArgs, out: &mut dyn Write) -> anyhow::Result<Exit> {
+    let started = std::time::Instant::now();
+    let store = Store::open_existing(&args.store)?;
+    let report = store_report::build(
+        &store,
+        &args.store,
+        args.since,
+        args.until,
+        &ReportOptions {
+            by: args.by.into(),
+            top: args.top,
+        },
+        args.bucket,
+    )?;
+    let rendered = render_report(&report, args.output, started.elapsed())?;
+    out.write_all(rendered.as_bytes())
+        .context("writing output")?;
+    Ok(Exit::Ok)
+}
+
 fn logs_analyze(
     args: &AnalyzeArgs,
     out: &mut dyn Write,
@@ -382,14 +529,7 @@ fn logs_analyze(
             top: args.top,
         },
     );
-    let rendered = match args.output {
-        OutputFormat::Text => analyze_render::text(&report, Some(started.elapsed())),
-        OutputFormat::Json => {
-            let mut json = report.to_json()?;
-            json.push('\n');
-            json
-        }
-    };
+    let rendered = render_report(&report, args.output, started.elapsed())?;
     out.write_all(rendered.as_bytes())
         .context("writing output")?;
     // Non-empty input that decoded to nothing: the report above says why, but it is a failure.
@@ -476,5 +616,56 @@ mod tests {
         assert_eq!(args.bucket, 60);
         assert_eq!(args.max_fingerprints, 50_000);
         assert!(args.threads.is_none());
+    }
+
+    #[test]
+    fn ingest_requires_a_store_and_files() {
+        Cli::try_parse_from(["pgloupe", "logs", "ingest", "a.log"]).unwrap_err();
+        Cli::try_parse_from(["pgloupe", "logs", "ingest", "--store", "s.db"]).unwrap_err();
+        let cli = Cli::try_parse_from([
+            "pgloupe", "logs", "ingest", "--store", "s.db", "a.log", "b.log", "--force",
+        ])
+        .unwrap();
+        let Command::Logs {
+            command: LogsCommand::Ingest(args),
+        } = cli.command
+        else {
+            panic!("expected logs ingest");
+        };
+        assert_eq!(args.store, PathBuf::from("s.db"));
+        assert_eq!(args.files.len(), 2);
+        assert!(args.force);
+        assert_eq!(args.max_fingerprints, 50_000);
+    }
+
+    #[test]
+    fn report_parses_times_and_defaults() {
+        let cli = Cli::try_parse_from([
+            "pgloupe",
+            "logs",
+            "report",
+            "--store",
+            "s.db",
+            "--since",
+            "2026-10-14",
+            "--until",
+            "2026-10-15T00:00:00Z",
+        ])
+        .unwrap();
+        let Command::Logs {
+            command: LogsCommand::Report(args),
+        } = cli.command
+        else {
+            panic!("expected logs report");
+        };
+        assert_eq!(args.since.unwrap().to_string(), "2026-10-14T00:00:00Z");
+        assert_eq!(args.until.unwrap().to_string(), "2026-10-15T00:00:00Z");
+        assert_eq!(args.bucket, 60);
+        assert_eq!(args.top, 20);
+        Cli::try_parse_from(["pgloupe", "logs", "report"]).unwrap_err();
+        Cli::try_parse_from([
+            "pgloupe", "logs", "report", "--store", "s", "--since", "never",
+        ])
+        .unwrap_err();
     }
 }
