@@ -68,6 +68,7 @@ pub fn run_with(args: &GenerateArgs, scenarios: &[&Scenario]) -> anyhow::Result<
     let pg = PgContainer::start(&RunSpec {
         name: &name,
         image: &image,
+        pg_major: args.pg.number(),
         label: LABEL,
         uid: owner.uid(),
         gid: owner.gid(),
@@ -99,9 +100,9 @@ pub fn run_with(args: &GenerateArgs, scenarios: &[&Scenario]) -> anyhow::Result<
         image,
         seed: args.seed,
         pagila_commit: PAGILA_COMMIT.to_owned(),
-        settings: container::SETTINGS
-            .iter()
-            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+        settings: container::settings(args.pg.number())
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
             .collect(),
         load_finished_at,
         snapshots_at,

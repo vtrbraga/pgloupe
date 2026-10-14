@@ -23,6 +23,12 @@ pub enum Command {
 /// Postgres major versions the generator can target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PgMajor {
+    /// Postgres 14.
+    #[value(name = "14")]
+    V14,
+    /// Postgres 15.
+    #[value(name = "15")]
+    V15,
     /// Postgres 16.
     #[value(name = "16")]
     V16,
@@ -39,6 +45,8 @@ impl PgMajor {
     #[must_use]
     pub fn number(self) -> u32 {
         match self {
+            Self::V14 => 14,
+            Self::V15 => 15,
             Self::V16 => 16,
             Self::V17 => 17,
             Self::V18 => 18,
@@ -111,6 +119,6 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_pg_version() {
-        Cli::try_parse_from(["synth", "generate", "--pg", "15"]).unwrap_err();
+        Cli::try_parse_from(["synth", "generate", "--pg", "13"]).unwrap_err();
     }
 }

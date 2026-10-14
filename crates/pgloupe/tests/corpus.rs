@@ -8,7 +8,10 @@ use std::{
 
 fn corpus(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../data/synth/17-42")
+        .join(format!(
+            "../../data/synth/{}-42",
+            std::env::var("PGLOUPE_PG").unwrap_or_else(|_| "17".to_owned())
+        ))
         .join(name)
 }
 

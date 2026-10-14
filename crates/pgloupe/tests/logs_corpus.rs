@@ -8,7 +8,10 @@ const PREFIX: &str = "%m [%p] %q%u@%d/%a %Q ";
 
 fn decode(name: &str, format: Format) -> io::Result<(Vec<LogRecord>, DecodeStats)> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../data/synth/17-42/log")
+        .join(format!(
+            "../../data/synth/{}-42/log",
+            std::env::var("PGLOUPE_PG").unwrap_or_else(|_| "17".to_owned())
+        ))
         .join(name);
     let reader = source::open(&path)?;
     let options = Options {

@@ -25,6 +25,7 @@ fn start(name: &str, label: &str) -> PgContainer {
     PgContainer::start(&RunSpec {
         name: &container_name,
         image: "postgres:17",
+        pg_major: 17,
         label,
         uid: meta.uid(),
         gid: meta.gid(),
@@ -188,6 +189,7 @@ fn failed_startup_reports_container_logs_quickly() {
     let err = PgContainer::start(&RunSpec {
         name: &name,
         image: "postgres:17",
+        pg_major: 17,
         label: "pgloupe.synth.test=failstart",
         uid: 54321,
         gid: 54321,

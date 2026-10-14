@@ -13,7 +13,10 @@ use serde_json::Value;
 const PREFIX: &str = "%m [%p] %q%u@%d/%a %Q ";
 
 fn corpus() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../data/synth/17-42")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
+        "../../data/synth/{}-42",
+        std::env::var("PGLOUPE_PG").unwrap_or_else(|_| "17".to_owned())
+    ))
 }
 
 fn pgloupe(args: &[&str]) -> io::Result<Output> {

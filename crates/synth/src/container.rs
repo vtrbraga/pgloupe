@@ -42,6 +42,20 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("log_timezone", "UTC"),
 ];
 
+/// Settings for one Postgres major version.
+///
+/// `jsonlog` exists from 15; version 14 logs to stderr and csvlog only.
+#[must_use]
+pub fn settings(pg_major: u32) -> Vec<(&'static str, &'static str)> {
+    SETTINGS
+        .iter()
+        .map(|&(name, value)| match name {
+            "log_destination" if pg_major < 15 => (name, "stderr,csvlog"),
+            _ => (name, value),
+        })
+        .collect()
+}
+
 /// Label on generator containers, used to find stale ones.
 pub const LABEL: &str = "pgloupe.synth=1";
 
@@ -55,6 +69,8 @@ pub struct RunSpec<'a> {
     pub name: &'a str,
     /// Image tag, e.g. `postgres:17`.
     pub image: &'a str,
+    /// Postgres major version of the image.
+    pub pg_major: u32,
     /// `key=value` label for stale cleanup.
     pub label: &'a str,
     /// Host uid the server runs as.
@@ -99,7 +115,7 @@ pub fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         format!("{}:/dataset:ro", spec.dataset_dir.display()),
         spec.image.to_owned(),
     ]);
-    for (name, value) in SETTINGS {
+    for (name, value) in settings(spec.pg_major) {
         args.push("-c".to_owned());
         args.push(format!("{name}={value}"));
     }
@@ -307,6 +323,7 @@ mod tests {
         RunSpec {
             name: "pgloupe-synth-test",
             image: "postgres:17",
+            pg_major: 17,
             label: LABEL,
             uid: 1000,
             gid: 1001,
@@ -352,6 +369,19 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing -c {name}={value}"));
             assert!(pos > image_at, "{name} must come after the image");
         }
+    }
+
+    #[test]
+    fn postgres_14_has_no_jsonlog() {
+        let log_destination = |major| {
+            settings(major)
+                .into_iter()
+                .find(|(name, _)| *name == "log_destination")
+                .map(|(_, value)| value)
+        };
+        assert_eq!(log_destination(14), Some("stderr,csvlog"));
+        assert_eq!(log_destination(15), Some("stderr,csvlog,jsonlog"));
+        assert_eq!(log_destination(18), Some("stderr,csvlog,jsonlog"));
     }
 
     #[test]
