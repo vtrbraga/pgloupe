@@ -196,6 +196,55 @@ fn check_window(before: &Snapshot, after: &Snapshot) -> Result<(), DeltaError> {
             after: after.taken_at,
         });
     }
+    if let Some(&column) = before
+        .optional_columns
+        .symmetric_difference(&after.optional_columns)
+        .next()
+    {
+        return Err(DeltaError::ColumnMismatch { column });
+    }
+    if let Some((before_info, after_info)) = before.info.zip(after.info) {
+        check_infos(before.taken_at, after.taken_at, before_info, after_info)?;
+    }
+    Ok(())
+}
+
+/// Refuses info files that contradict the snapshots they came with (wrong pairing, swapped).
+fn check_infos(
+    before_at: Timestamp,
+    after_at: Timestamp,
+    before: Info,
+    after: Info,
+) -> Result<(), DeltaError> {
+    let refuse = |reason: String| Err(DeltaError::InconsistentInfo { reason });
+    if let Some(reset) = before.stats_reset.filter(|reset| *reset > before_at) {
+        return refuse(format!(
+            "before info says stats_reset {reset}, later than the before snapshot ({before_at})"
+        ));
+    }
+    if let Some(reset) = after.stats_reset.filter(|reset| *reset > after_at) {
+        return refuse(format!(
+            "after info says stats_reset {reset}, later than the after snapshot ({after_at})"
+        ));
+    }
+    if let (Some(b), Some(a)) = (before.stats_reset, after.stats_reset) {
+        if a < b {
+            return refuse(format!(
+                "stats_reset moved backwards ({b} then {a}); are the info files swapped?"
+            ));
+        }
+        if a != b && a <= before_at {
+            return refuse(format!(
+                "after info shows a reset at {a}, which is not inside the window (it starts at {before_at})"
+            ));
+        }
+        if a == b && after.dealloc < before.dealloc {
+            return refuse(format!(
+                "dealloc went from {} to {} without a reset",
+                before.dealloc, after.dealloc
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -230,6 +279,10 @@ fn judge_reset(infos: Option<(Info, Info)>, pairs: &[Paired<'_>]) -> Reset {
     });
     if proven {
         return Reset::Proven;
+    }
+    if infos.is_some() {
+        // The info files show the same stats_reset: restarted entries are evictions.
+        return Reset::None;
     }
     let shared = pairs.iter().filter(|p| p.before.is_some()).count();
     let restarted = pairs.iter().filter(|p| p.restarted).count();
@@ -726,5 +779,73 @@ mod tests {
     fn min_calls_does_not_filter_total_or_calls_rankings() {
         let delta = ranking_fixture();
         assert_eq!(ranked_ids(&delta, SortBy::Total, 10, 1000), [2, 3, 1, 5]);
+    }
+
+    #[test]
+    fn info_reset_later_than_its_snapshot_is_refused() {
+        // Off-by-one pairing: the info file was taken after the snapshot it is attached to.
+        let before = snap(T0, V17, vec![(1, entry(1, 1.0))]).with_info(info(0, SINCE_A));
+        let after =
+            snap(T1, V17, vec![(1, entry(2, 2.0))]).with_info(info(0, "2026-10-14 10:20:00+00"));
+        assert!(matches!(
+            diff(&before, &after).unwrap_err(),
+            DeltaError::InconsistentInfo { .. }
+        ));
+    }
+
+    #[test]
+    fn swapped_info_files_are_refused() {
+        let before = snap(T0, V17, vec![(1, entry(1, 1.0))]).with_info(info(0, SINCE_B));
+        let after = snap(T1, V17, vec![(1, entry(2, 2.0))]).with_info(info(0, SINCE_A));
+        assert!(matches!(
+            diff(&before, &after).unwrap_err(),
+            DeltaError::InconsistentInfo { .. }
+        ));
+    }
+
+    #[test]
+    fn dealloc_going_down_without_a_reset_is_refused() {
+        let before = snap(T0, V17, vec![(1, entry(1, 1.0))]).with_info(info(5, SINCE_A));
+        let after = snap(T1, V17, vec![(1, entry(2, 2.0))]).with_info(info(2, SINCE_A));
+        assert!(matches!(
+            diff(&before, &after).unwrap_err(),
+            DeltaError::InconsistentInfo { .. }
+        ));
+    }
+
+    #[test]
+    fn a_reset_that_predates_the_before_snapshot_is_refused() {
+        // The before info names a different reset time, yet the after info's reset is older
+        // than the before snapshot: the before snapshot would have to know about it.
+        let before =
+            snap(T0, V17, vec![(1, entry(1, 1.0))]).with_info(info(0, "2026-10-14 08:00:00+00"));
+        let after = snap(T1, V17, vec![(1, entry(2, 2.0))]).with_info(info(0, SINCE_A));
+        assert!(matches!(
+            diff(&before, &after).unwrap_err(),
+            DeltaError::InconsistentInfo { .. }
+        ));
+    }
+
+    #[test]
+    fn info_files_proving_no_reset_block_inference() {
+        let before = snap(T0, V17, vec![(1, entry(100, 50.0))]).with_info(info(0, SINCE_A));
+        let after = snap(T1, V17, vec![(1, entry(3, 1.5))]).with_info(info(1, SINCE_A));
+        let delta = diff(&before, &after).unwrap();
+        assert_eq!(delta.reset, Reset::None);
+        assert_eq!(row_for(&delta, 1).status, Status::Restarted);
+        assert!(!row_for(&delta, 1).partial);
+    }
+
+    #[test]
+    fn snapshots_with_different_optional_columns_are_refused() {
+        let before = snap(T0, V17, vec![(1, entry(1, 1.0))]);
+        let mut after = snap(T1, V17, vec![(1, entry(2, 2.0))]);
+        after.optional_columns.insert("wal_bytes");
+        assert_eq!(
+            diff(&before, &after).unwrap_err(),
+            DeltaError::ColumnMismatch {
+                column: "wal_bytes"
+            }
+        );
     }
 }

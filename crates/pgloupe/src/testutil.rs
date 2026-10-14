@@ -41,6 +41,7 @@ pub(crate) fn snap(at: &str, version: u32, entries: Vec<(i64, Entry)>) -> Snapsh
         server_version_num: version,
         entries: entries.into_iter().map(|(id, e)| (key(id), e)).collect(),
         skipped_no_queryid: 0,
+        optional_columns: std::collections::BTreeSet::new(),
         info: None,
     }
 }

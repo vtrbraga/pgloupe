@@ -62,4 +62,10 @@ pub enum DeltaError {
         "`after` ({after}) is not later than `before` ({before}); pass the older snapshot first"
     )]
     NotChronological { before: Timestamp, after: Timestamp },
+    #[error("the info files do not match the snapshots: {reason}")]
+    InconsistentInfo { reason: String },
+    #[error(
+        "the snapshots were exported with different columns (`{column}` is in only one); export both with the same query"
+    )]
+    ColumnMismatch { column: &'static str },
 }

@@ -1,6 +1,11 @@
 //! `pg_stat_statements` snapshots read from CSV exports.
 
-use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs::File,
+    io::Read,
+    path::Path,
+};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -17,6 +22,19 @@ const REQUIRED: [&str; 8] = [
     "calls",
     "rows",
     "total_exec_time",
+];
+
+/// Columns that may be absent from an export. Two snapshots must have the same ones to be compared.
+const OPTIONAL: [&str; 9] = [
+    "toplevel",
+    "stats_since",
+    "plans",
+    "total_plan_time",
+    "shared_blks_hit",
+    "shared_blks_read",
+    "temp_blks_read",
+    "temp_blks_written",
+    "wal_bytes",
 ];
 
 /// Identity of one `pg_stat_statements` entry.
@@ -109,6 +127,8 @@ pub struct Snapshot {
     pub entries: BTreeMap<Key, Entry>,
     /// Rows with an empty or zero `queryid`.
     pub skipped_no_queryid: usize,
+    /// Which of the optional columns the export had; absent ones read as zero.
+    pub optional_columns: BTreeSet<&'static str>,
     pub info: Option<Info>,
 }
 
@@ -166,6 +186,11 @@ impl Snapshot {
         }
         check_columns(&headers, file, &REQUIRED)?;
 
+        let optional_columns: BTreeSet<&'static str> = OPTIONAL
+            .iter()
+            .copied()
+            .filter(|column| has_column(&headers, column))
+            .collect();
         let mut seen: Option<(String, u32)> = None;
         let mut entries = BTreeMap::new();
         let mut skipped_no_queryid = 0;
@@ -219,6 +244,7 @@ impl Snapshot {
             server_version_num,
             entries,
             skipped_no_queryid,
+            optional_columns,
             info: None,
         })
     }
