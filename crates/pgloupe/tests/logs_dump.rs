@@ -2,9 +2,9 @@
 
 use std::{
     fs, io,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 use flate2::{Compression, write::GzEncoder};
@@ -235,6 +235,33 @@ fn missing_file_exits_one_with_the_path() -> io::Result<()> {
         stderr(&out).contains("/nonexistent/postgresql.log"),
         "{}",
         stderr(&out)
+    );
+    Ok(())
+}
+
+#[test]
+fn closing_stdout_early_is_not_an_error() -> io::Result<()> {
+    let text = fs::read_to_string(fixture("sample.json"))?.repeat(2_000);
+    let path = scratch("many.json", text.as_bytes())?;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args(["logs", "dump"])
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let Some(mut pipe) = child.stdout.take() else {
+        return Err(io::Error::other("no stdout pipe"));
+    };
+    let mut first = [0u8; 16];
+    pipe.read_exact(&mut first)?;
+    drop(pipe);
+    let output = child.wait_with_output()?;
+    fs::remove_file(&path)?;
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        !stderr(&output).contains("Broken pipe"),
+        "{}",
+        stderr(&output)
     );
     Ok(())
 }

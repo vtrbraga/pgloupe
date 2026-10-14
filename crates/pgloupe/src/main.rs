@@ -30,8 +30,14 @@ fn main() -> ExitCode {
 /// `pgloupe ... | head` closes the pipe early; that is not an error.
 fn is_broken_pipe(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
-        cause
+        let kind = cause
             .downcast_ref::<io::Error>()
-            .is_some_and(|io| io.kind() == io::ErrorKind::BrokenPipe)
+            .map(io::Error::kind)
+            .or_else(|| {
+                cause
+                    .downcast_ref::<serde_json::Error>()
+                    .and_then(serde_json::Error::io_error_kind)
+            });
+        kind == Some(io::ErrorKind::BrokenPipe)
     })
 }
