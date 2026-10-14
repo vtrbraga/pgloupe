@@ -4,6 +4,7 @@ pub mod acc;
 pub mod diagnostics;
 pub mod dimensions;
 pub mod event;
+pub mod filter;
 pub mod fingerprint;
 pub mod histogram;
 pub mod kind;

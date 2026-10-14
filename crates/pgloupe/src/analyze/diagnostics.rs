@@ -22,6 +22,8 @@ pub struct Diagnostics {
     pub lines: u64,
     pub records: u64,
     pub skipped: u64,
+    /// Records the `--database`, `--user`, `--application`, `--host` and query filters dropped.
+    pub filtered: u64,
     pub unparsed_statements: u64,
     /// Statements and attributions that landed in the fingerprint overflow bucket.
     pub overflow_calls: u64,
@@ -39,6 +41,7 @@ pub fn build(output: &Output) -> Diagnostics {
         lines,
         records: output.files.iter().map(|f| f.stats.records).sum(),
         skipped,
+        filtered: output.files.iter().map(|f| f.filtered).sum(),
         unparsed_statements: totals.unparsed_statements,
         overflow_calls: output.acc.overflow.calls,
         unmatched_shapes: unmatched_shapes(&output.files),
@@ -279,6 +282,7 @@ mod tests {
                 PrefixSource::NotApplicable
             },
             stats,
+            filtered: 0,
             content: None,
         }
     }

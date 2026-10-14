@@ -138,6 +138,12 @@ fn diagnostics(report: &Report) -> Vec<String> {
         "lines {}, records {}, skipped {}, unparsed statements {}",
         d.lines, d.records, d.skipped, d.unparsed_statements
     )];
+    if d.filtered > 0 {
+        lines.push(format!(
+            "filtered out {} records: this report covers only what the filters kept",
+            d.filtered
+        ));
+    }
     if !d.unmatched_shapes.is_empty() {
         lines.push("unmatched line shapes:".to_owned());
         for shape in &d.unmatched_shapes {
@@ -580,6 +586,7 @@ mod tests {
                 sampled: 100,
             },
             stats,
+            filtered: 0,
             content: None,
         }];
         Report::build(

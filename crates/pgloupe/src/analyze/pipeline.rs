@@ -14,7 +14,7 @@ use std::{
 use rayon::prelude::*;
 use thiserror::Error;
 
-use super::{Merge, acc::Accumulators, slice::Slices};
+use super::{Merge, acc::Accumulators, filter::Filter, slice::Slices};
 use crate::log::{
     DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions, SetupError,
     Severity, decoder_for,
@@ -48,6 +48,8 @@ pub struct Options {
     pub slowest: usize,
     /// Keep bind parameters with the slowest executions.
     pub params: bool,
+    /// Which records take part.
+    pub filter: Filter,
 }
 
 impl Options {
@@ -65,6 +67,7 @@ impl Options {
             hash_marks: None,
             slowest: super::slowest::DEFAULT_KEPT,
             params: false,
+            filter: Filter::default(),
         }
     }
 }
@@ -92,6 +95,8 @@ pub struct FileSummary {
     pub prefix: Option<String>,
     pub prefix_source: PrefixSource,
     pub stats: DecodeStats,
+    /// Records the filter dropped.
+    pub filtered: u64,
     /// Identity of the decompressed bytes; only when `Options::hash_marks` is set.
     pub content: Option<Content>,
 }
@@ -253,6 +258,8 @@ struct Current {
     prefix_source: PrefixSource,
     decoder: Box<dyn Decoder + Send>,
     tee: Option<TeeHandle>,
+    /// Records the filter dropped so far.
+    filtered: u64,
 }
 
 /// Yields batches of records, file after file.
@@ -281,6 +288,7 @@ impl Batches {
                     prefix: current.prefix,
                     prefix_source: current.prefix_source,
                     stats,
+                    filtered: current.filtered,
                     content: current.tee.as_ref().map(TeeHandle::finish),
                 },
             ));
@@ -319,7 +327,13 @@ impl Iterator for Batches {
             if let Some(current) = self.current.as_mut() {
                 while batch.len() < self.options.batch_size.max(1) {
                     match current.decoder.next_record() {
-                        Ok(Some(record)) => batch.push(record),
+                        Ok(Some(record)) => {
+                            if self.options.filter.keeps(&record) {
+                                batch.push(record);
+                            } else {
+                                current.filtered += 1;
+                            }
+                        }
                         Ok(None) => {
                             finished = true;
                             break;
@@ -414,6 +428,7 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
         prefix_source,
         decoder,
         tee,
+        filtered: 0,
     })
 }
 

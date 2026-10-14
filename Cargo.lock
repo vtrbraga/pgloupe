@@ -968,6 +968,7 @@ dependencies = [
  "minijinja",
  "pg_query",
  "rayon",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

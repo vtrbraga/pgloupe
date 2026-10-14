@@ -65,6 +65,7 @@
       }
     },
     "diagnostics": {
+      "filtered": 0,
       "lines": 9,
       "overflow_calls": 0,
       "records": 9,

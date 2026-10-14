@@ -420,3 +420,77 @@ fn slowest_executions_and_cancellations_are_listed_and_parameters_are_opt_in() -
     );
     Ok(())
 }
+
+fn two_databases() -> String {
+    let line = |second: u32, db: &str, user: &str, sql: &str| {
+        format!(
+            r#"{{"timestamp":"2026-10-14 10:00:{second:02}.000 UTC","user":"{user}","dbname":"{db}","pid":1,"session_id":"a.1","line_num":{second},"error_severity":"LOG","message":"duration: 3 ms  statement: {sql}","application_name":"app","backend_type":"client backend"}}"#
+        ) + "\n"
+    };
+    line(1, "shop", "app", "SELECT * FROM film")
+        + &line(2, "shop", "monitor", "SELECT 1")
+        + &line(3, "crm", "app", "SELECT * FROM actor")
+}
+
+fn statement_count(output: &Output) -> Result<u64, serde_json::Error> {
+    let value: serde_json::Value = serde_json::from_str(&stdout(output))?;
+    Ok(value["statements"].as_array().map_or(0, |rows| {
+        rows.iter().filter_map(|r| r["calls"].as_u64()).sum()
+    }))
+}
+
+#[test]
+fn filters_choose_the_records_and_say_how_many_they_dropped() -> io::Result<()> {
+    let log = scratch("filters.json", two_databases().as_bytes())?;
+    let files = std::slice::from_ref(&log);
+    let run = |extra: &[&str]| -> io::Result<Output> {
+        let mut args = vec!["--output", "json"];
+        args.extend(extra);
+        analyze(&args, files)
+    };
+    let count = |extra: &[&str]| -> io::Result<u64> {
+        let out = run(extra)?;
+        assert!(out.status.success(), "{extra:?}: {}", stderr(&out));
+        statement_count(&out).map_err(io::Error::other)
+    };
+    assert_eq!(count(&[])?, 3);
+    assert_eq!(count(&["--database", "shop"])?, 2);
+    assert_eq!(count(&["--database", "shop,crm"])?, 3);
+    assert_eq!(count(&["--exclude-user", "monitor"])?, 2);
+    assert_eq!(count(&["--database", "shop", "--user", "app"])?, 1);
+    assert_eq!(count(&["--include-query", "(?i)from film"])?, 1);
+    assert_eq!(count(&["--exclude-query", "film|actor"])?, 1);
+    assert_eq!(
+        count(&["--database", "shop", "--exclude-database", "shop"])?,
+        0
+    );
+
+    let out = run(&["--database", "shop"])?;
+    let value: serde_json::Value = serde_json::from_str(&stdout(&out)).map_err(io::Error::other)?;
+    assert_eq!(value["diagnostics"]["filtered"], 1);
+    let text = analyze(&["--database", "nope"], files)?;
+    assert!(text.status.success(), "{}", stderr(&text));
+    assert!(
+        stdout(&text).contains("filtered out 3 records"),
+        "{}",
+        stdout(&text)
+    );
+    Ok(())
+}
+
+#[test]
+fn bad_filters_are_usage_errors() -> io::Result<()> {
+    let log = scratch("badfilter.json", two_databases().as_bytes())?;
+    let out = analyze(&["--include-query", "("], std::slice::from_ref(&log))?;
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let store = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args(["report", "--store", "x.db", "--database", "shop"])
+        .output()?;
+    assert_eq!(store.status.code(), Some(2));
+    assert!(
+        stderr(&store).contains("filters apply while reading"),
+        "{}",
+        stderr(&store)
+    );
+    Ok(())
+}

@@ -11,6 +11,7 @@ use jiff::{Timestamp, tz::Offset};
 
 use crate::{
     analyze::{
+        filter::{Facets, Filter},
         pipeline::{self, AnalyzeError},
         render as analyze_render,
         report::{Report, ReportOptions, SortBy as ReportSortBy, all_statements},
@@ -69,6 +70,11 @@ impl Cli {
                         ErrorKind::MissingRequiredArgument,
                         "--since and --until need --store",
                     )
+                } else if args.store.is_some() && !args.filters.filter().is_empty() {
+                    fail(
+                        ErrorKind::ArgumentConflict,
+                        "filters apply while reading log files; a store's slices are already aggregated",
+                    )
                 } else if args.store.is_some()
                     && (args.capture.params || args.capture.slowest.is_some())
                 {
@@ -109,7 +115,7 @@ enum Command {
     },
     /// One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or
     /// text, with the two joined per statement.
-    Report(CombinedArgs),
+    Report(Box<CombinedArgs>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -124,7 +130,7 @@ enum LogsCommand {
     Dump(DumpArgs),
     /// Summarize one or more logs: statements with percentiles, errors, locks, temp files,
     /// connections, checkpoints and autovacuum.
-    Analyze(AnalyzeArgs),
+    Analyze(Box<AnalyzeArgs>),
     /// Add logs to a store; files already ingested are skipped and grown ones replace their old
     /// version.
     Ingest(IngestArgs),
@@ -195,6 +201,68 @@ struct AnalyzeArgs {
     output: OutputFormat,
     #[command(flatten)]
     capture: CaptureArgs,
+    #[command(flatten)]
+    filters: FilterArgs,
+}
+
+/// Which records of the log files take part.
+#[derive(Debug, Args)]
+struct FilterArgs {
+    /// Only records of these databases (repeat or comma-separate).
+    #[arg(long = "database", value_delimiter = ',')]
+    databases: Vec<String>,
+    /// Only records of these users.
+    #[arg(long = "user", value_delimiter = ',')]
+    users: Vec<String>,
+    /// Only records of these applications (`application_name`).
+    #[arg(long = "application", value_delimiter = ',')]
+    applications: Vec<String>,
+    /// Only records from these client hosts.
+    #[arg(long = "host", value_delimiter = ',')]
+    hosts: Vec<String>,
+    /// Drop records of these databases.
+    #[arg(long = "exclude-database", value_delimiter = ',')]
+    exclude_databases: Vec<String>,
+    /// Drop records of these users.
+    #[arg(long = "exclude-user", value_delimiter = ',')]
+    exclude_users: Vec<String>,
+    /// Drop records of these applications.
+    #[arg(long = "exclude-application", value_delimiter = ',')]
+    exclude_applications: Vec<String>,
+    /// Drop records from these client hosts.
+    #[arg(long = "exclude-host", value_delimiter = ',')]
+    exclude_hosts: Vec<String>,
+    /// Only records whose message or statement matches this regular expression.
+    #[arg(long, value_parser = parse_regex)]
+    include_query: Option<regex::Regex>,
+    /// Drop records whose message or statement matches this regular expression.
+    #[arg(long, value_parser = parse_regex)]
+    exclude_query: Option<regex::Regex>,
+}
+
+impl FilterArgs {
+    fn filter(&self) -> Filter {
+        Filter {
+            include: Facets {
+                databases: self.databases.clone(),
+                users: self.users.clone(),
+                applications: self.applications.clone(),
+                hosts: self.hosts.clone(),
+            },
+            exclude: Facets {
+                databases: self.exclude_databases.clone(),
+                users: self.exclude_users.clone(),
+                applications: self.exclude_applications.clone(),
+                hosts: self.exclude_hosts.clone(),
+            },
+            include_query: self.include_query.clone(),
+            exclude_query: self.exclude_query.clone(),
+        }
+    }
+}
+
+fn parse_regex(text: &str) -> Result<regex::Regex, String> {
+    regex::Regex::new(text).map_err(|error| error.to_string())
 }
 
 /// What to keep besides the aggregates.
@@ -329,6 +397,8 @@ struct CombinedArgs {
     out: Option<PathBuf>,
     #[command(flatten)]
     capture: CaptureArgs,
+    #[command(flatten)]
+    filters: FilterArgs,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -595,6 +665,7 @@ fn logs_ingest(
         hash_marks: None,
         slowest: args.capture.slowest(),
         params: args.capture.params,
+        filter: Filter::default(),
     };
     let mut failed = false;
     for outcome in store::ingest(&mut store, &args.files, &options, args.force) {
@@ -698,6 +769,7 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
             hash_marks: None,
             slowest: args.capture.slowest(),
             params: args.capture.params,
+            filter: args.filters.filter(),
         };
         let output = pipeline::run(&args.files, &pipeline_options).inspect_err(|error| {
             explain_prefix_failure(error, err);
@@ -785,6 +857,7 @@ fn logs_analyze(
         hash_marks: None,
         slowest: args.capture.slowest(),
         params: args.capture.params,
+        filter: args.filters.filter(),
     };
     let output = match pipeline::run(&args.files, &options) {
         Ok(output) => output,
