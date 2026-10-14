@@ -71,6 +71,24 @@ cargo run -p pgloupe -- logs report --store logs.db --since 2026-10-14 --until 2
 - Keep the store on the Linux filesystem; SQLite's WAL mode is unreliable on `/mnt/c`.
 - With `--max-fingerprints` below the number of distinct statements in an hour, that hour folds the rest into the overflow row, so `report` can differ from `logs analyze` for that run.
 
+## Report
+
+`pgloupe report` makes one report from logs and, optionally, two `pg_stat_statements` snapshots, and joins them per statement: what the log saw (percentiles, errors, lock waits, temp files) next to what the statistics counted (calls, time, rows, buffers, WAL).
+
+```bash
+cargo run -p pgloupe -- report postgresql.log --output html --out report.html
+cargo run -p pgloupe -- report postgresql.log.gz --before pgss_1.csv --after pgss_2.csv \
+    --before-info pgss_info_1.csv --after-info pgss_info_2.csv --output html --out report.html
+cargo run -p pgloupe -- report --store logs.db --before pgss_1.csv --after pgss_2.csv --output json
+cargo run -p pgloupe -- report --before pgss_1.csv --after pgss_2.csv          # snapshots only
+```
+
+- Formats: `text` (default), `json` (`schema_version: 1`, `kind: "pgloupe.report"`) and `html`: a single file with no network requests, readable without JavaScript (script only adds sorting and filtering). Log text in the page is escaped.
+- Statements are joined by fingerprint. Several statistics entries with one fingerprint (users, databases, partitions with different `queryid`s) are summed; `track = all` entries for statements run inside functions are kept apart as `nested_calls`.
+- `coverage` is log calls with a duration divided by the statistics' calls: below 100% when `log_min_duration_statement` hides fast calls, above when the log window is wider than the snapshot window.
+- With `--store`, the log window is the snapshot interval widened to whole hours unless `--since/--until` are given.
+- The `findings` block explains odd results: resets and evictions, unreadable query text (grant `pg_read_all_stats`), windows that do not match, statements missing from one side, partitions rolled up.
+
 ## Benchmark input
 
 `cargo run --release --example gen_log -- OUT RECORDS HOURS FINGERPRINTS [SEED]` writes a deterministic jsonlog with many hours and many distinct statements (per tenant and partition), for timing `logs analyze`, `logs ingest` and `logs report` on something larger and wider than the synth corpus.
