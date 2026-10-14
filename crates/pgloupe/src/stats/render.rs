@@ -94,6 +94,9 @@ fn reset_label(delta: &Delta) -> String {
         (Reset::Inferred, _) => {
             "inferred; every shared entry restarted, reset time unknown".to_owned()
         }
+        (Reset::Unknown, _) => {
+            "unknown (no entry is in both snapshots, so a reset cannot be ruled out)".to_owned()
+        }
     }
 }
 
@@ -107,15 +110,21 @@ fn evictions_label(evictions: Option<u64>) -> String {
 
 fn notes(delta: &Delta) -> Vec<String> {
     let mut notes = Vec::new();
-    if delta.reset != Reset::None {
+    if matches!(delta.reset, Reset::Proven | Reset::Inferred) {
         notes.push(
             "note: counters were reset inside the window, so every value is the activity since the reset (a lower bound), not the full window."
                 .to_owned(),
         );
     }
+    if delta.reset == Reset::Unknown {
+        notes.push(
+            "note: no entry is in both snapshots and there are no info files, so a reset cannot be ruled out; rows marked new may miss activity from before it."
+                .to_owned(),
+        );
+    }
     if delta.blind_spot {
         notes.push(
-            "note: without info files or stats_since, a reset followed by more calls than before the reset looks like normal growth and cannot be detected."
+            "note: reset detection is limited here (no info files, and stats_since does not cover every shared entry): a reset followed by more calls than before it looks like normal growth."
                 .to_owned(),
         );
     }
@@ -444,7 +453,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|line| line.starts_with("note: without info files or stats_since")),
+                .any(|line| line.starts_with("note: reset detection is limited")),
             "{lines:#?}"
         );
     }
@@ -491,7 +500,7 @@ mod tests {
         assert!(
             !lines
                 .iter()
-                .any(|l| l.starts_with("note: without info files"))
+                .any(|l| l.starts_with("note: reset detection is limited"))
         );
     }
 
@@ -627,5 +636,37 @@ mod tests {
         assert_eq!(value["verdict"]["blind_spot"], false);
         assert_eq!(value["rows"][0]["partial"], true);
         assert_eq!(value["rows"][0]["status"], "restarted");
+    }
+
+    #[test]
+    fn unknown_reset_is_labelled_and_explained() {
+        let before = snap(T0, V17, vec![(1, named(10, 5.0, "SELECT 1"))]);
+        let after = snap(T1, V17, vec![(2, named(3, 9.0, "SELECT 2"))]);
+        let delta = diff(&before, &after).unwrap();
+        let lines = squash(&text(&delta, &view()));
+        assert!(
+            lines.contains(
+                &"reset: unknown (no entry is in both snapshots, so a reset cannot be ruled out)"
+                    .to_owned()
+            )
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("note: no entry is in both snapshots"))
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.starts_with("note: counters were reset"))
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.starts_with("note: reset detection is limited"))
+        );
+        let value = json_of(&delta, &view());
+        assert_eq!(value["verdict"]["reset"], "unknown");
+        assert_eq!(value["rows"][0]["partial"], false);
     }
 }

@@ -58,7 +58,7 @@ fn text_report_for_a_clean_window() -> io::Result<()> {
     assert!(
         lines
             .iter()
-            .any(|line| line.starts_with("note: without info files or stats_since"))
+            .any(|line| line.starts_with("note: reset detection is limited"))
     );
     Ok(())
 }
@@ -109,7 +109,7 @@ fn proven_reset_with_info_files_is_flagged_and_exits_zero() -> io::Result<()> {
     assert!(
         !lines
             .iter()
-            .any(|l| l.starts_with("note: without info files"))
+            .any(|l| l.starts_with("note: reset detection is limited"))
     );
     Ok(())
 }

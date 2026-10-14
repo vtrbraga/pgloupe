@@ -18,6 +18,8 @@ pub enum Reset {
     Inferred,
     /// The info files show different `stats_reset` times.
     Proven,
+    /// No info files and no entry in both snapshots, so a reset can be neither seen nor excluded.
+    Unknown,
 }
 
 /// How a row's delta was obtained.
@@ -112,14 +114,14 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Result<Delta, DeltaError> {
     check_window(before, after)?;
     let infos = before.info.zip(after.info);
     let pairs = pair(before, after);
-    let reset = judge_reset(infos, &pairs);
+    let reset = judge_reset(infos, &pairs, !before.entries.is_empty());
     let reset_at = match (reset, infos) {
         (Reset::Proven, Some((_, after_info))) => Some(after_info.stats_reset),
         _ => None,
     };
     let evictions = count_evictions(infos, reset);
     let blind_spot = reset == Reset::None && !can_detect_reset(infos, &pairs);
-    let partial = reset != Reset::None;
+    let partial = matches!(reset, Reset::Proven | Reset::Inferred);
     let mut rows: Vec<Row> = pairs
         .iter()
         .map(|p| build_row(p, partial, evictions))
@@ -274,7 +276,11 @@ fn entry_restarted(before: &Entry, after: &Entry) -> bool {
     since_moved || after.counters.went_backwards(&before.counters)
 }
 
-fn judge_reset(infos: Option<(Info, Info)>, pairs: &[Paired<'_>]) -> Reset {
+fn judge_reset(
+    infos: Option<(Info, Info)>,
+    pairs: &[Paired<'_>],
+    before_has_entries: bool,
+) -> Reset {
     let proven = infos.is_some_and(|(before, after)| before.stats_reset != after.stats_reset);
     if proven {
         return Reset::Proven;
@@ -287,6 +293,8 @@ fn judge_reset(infos: Option<(Info, Info)>, pairs: &[Paired<'_>]) -> Reset {
     let restarted = pairs.iter().filter(|p| p.restarted).count();
     if shared > 0 && shared == restarted {
         Reset::Inferred
+    } else if shared == 0 && before_has_entries {
+        Reset::Unknown
     } else {
         Reset::None
     }
@@ -683,14 +691,29 @@ mod tests {
     }
 
     #[test]
-    fn no_shared_entries_is_not_a_reset_and_is_a_blind_spot() {
+    fn no_shared_entries_without_info_is_an_unknown_reset() {
         let before = snap(T0, V17, vec![(1, entry(1, 1.0))]);
         let after = snap(T1, V17, vec![(2, entry(1, 1.0))]);
         let delta = diff(&before, &after).unwrap();
-        assert_eq!(delta.reset, Reset::None);
-        assert!(delta.blind_spot);
+        assert_eq!(delta.reset, Reset::Unknown);
+        assert!(!delta.blind_spot, "unknown has its own note");
+        assert!(delta.rows.iter().all(|row| !row.partial));
         assert_eq!(delta.counts.gone, 1);
         assert_eq!(delta.counts.new, 1);
+    }
+
+    #[test]
+    fn first_snapshot_with_no_entries_is_not_an_unknown_reset() {
+        let before = snap(T0, V17, vec![]);
+        let after = snap(T1, V17, vec![(2, entry(1, 1.0))]);
+        assert_eq!(diff(&before, &after).unwrap().reset, Reset::None);
+    }
+
+    #[test]
+    fn no_shared_entries_with_info_files_follow_the_info() {
+        let before = snap(T0, V17, vec![(1, entry(1, 1.0))]).with_info(info(0, SINCE_A));
+        let after = snap(T1, V17, vec![(2, entry(1, 1.0))]).with_info(info(0, SINCE_A));
+        assert_eq!(diff(&before, &after).unwrap().reset, Reset::None);
     }
 
     #[test]

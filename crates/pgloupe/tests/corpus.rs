@@ -75,3 +75,24 @@ fn baseline_window_is_clean_and_churn_window_is_a_proven_reset() -> io::Result<(
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
+fn churn_window_without_info_files_says_the_reset_is_unknown() -> io::Result<()> {
+    let out = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args(["stats", "diff"])
+        .arg(corpus("pgss_1.csv"))
+        .arg(corpus("pgss_2.csv"))
+        .output()?;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines = squashed(&out);
+    assert!(
+        lines.iter().any(|l| l.starts_with("reset: unknown")),
+        "{lines:#?}"
+    );
+    Ok(())
+}
