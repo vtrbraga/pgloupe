@@ -25,10 +25,13 @@ use crate::{
 pub struct JoinedRow {
     /// 16 hex digits, or `q<queryid>` for a statistics entry whose text could not be fingerprinted.
     pub fingerprint: String,
+    /// The statement text: the log's sample when there is one, else the statistics'.
     pub text: String,
     /// `both`, `log` or `stats`.
     pub link: &'static str,
+    /// What the log saw; `None` for a statistics-only row.
     pub log: Option<StatementRow>,
+    /// What `pg_stat_statements` saw; `None` for a log-only row.
     pub stats: Option<StatsSide>,
     /// Log calls that carried a duration ÷ statistics calls in the window.
     pub coverage: Option<f64>,
@@ -40,16 +43,27 @@ pub struct JoinedRow {
 /// entry (user, database, partition) with the same fingerprint.
 #[derive(Debug, Clone, Serialize)]
 pub struct StatsSide {
+    /// Calls during the window.
     pub calls: u64,
+    /// Execution time during the window, in milliseconds.
     pub total_exec_ms: f64,
+    /// `total_exec_ms` ÷ `calls`.
     pub mean_ms: Option<f64>,
+    /// Rows returned or affected.
     pub rows: u64,
+    /// Planner runs (0 unless `pg_stat_statements.track_planning` is on).
     pub plans: u64,
+    /// Shared buffer hits.
     pub shared_blks_hit: u64,
+    /// Shared blocks read from disk or the OS cache.
     pub shared_blks_read: u64,
+    /// Temporary blocks read.
     pub temp_blks_read: u64,
+    /// Temporary blocks written.
     pub temp_blks_written: u64,
+    /// WAL generated, in bytes.
     pub wal_bytes: u64,
+    /// Share of all execution time in the window, in percent.
     pub share_pct: f64,
     /// Calls of the same statement inside functions (`track = all`), kept out of `calls`.
     pub nested_calls: u64,
@@ -82,12 +96,17 @@ const SCHEMA_VERSION: u32 = 1;
 /// The whole report: what the inputs were, what they say, and what the reader should know.
 #[derive(Debug, Clone, Serialize)]
 pub struct CombinedReport {
+    /// Version of this layout.
     pub schema_version: u32,
     /// Always `pgloupe.report`; tells a consumer which document this is.
     pub kind: &'static str,
+    /// Program and version that wrote the report.
     pub generator: String,
+    /// Where the data came from.
     pub inputs: Inputs,
+    /// The periods the two sources cover and how they relate.
     pub windows: Windows,
+    /// What the reader should know before trusting the numbers.
     pub findings: Vec<Finding>,
     /// What ranks `statements`: `total`, `calls`, `p95` or `max`.
     pub statements_by: &'static str,
@@ -100,10 +119,13 @@ pub struct CombinedReport {
 /// Where the report's data came from.
 #[derive(Debug, Clone, Serialize)]
 pub struct Inputs {
+    /// The log side; `None` for a snapshots-only report.
     pub logs: Option<LogInput>,
+    /// The statistics side; `None` for a logs-only report.
     pub stats: Option<StatsInput>,
 }
 
+/// The log input of a report.
 #[derive(Debug, Clone, Serialize)]
 pub struct LogInput {
     /// `files` or `store`.
@@ -114,22 +136,33 @@ pub struct LogInput {
     pub store: Option<String>,
 }
 
+/// The statistics input of a report.
 #[derive(Debug, Clone, Serialize)]
 pub struct StatsInput {
+    /// When the older snapshot was taken.
     pub before_at: String,
+    /// When the newer snapshot was taken.
     pub after_at: String,
+    /// Server version of the snapshots (`server_version_num`).
     pub server_version_num: u32,
+    /// Whether the counters were reset between the snapshots.
     pub reset: Reset,
+    /// When the counters were last reset, when known.
     pub reset_at: Option<String>,
+    /// Entries evicted during the window, when the info files say.
     pub evictions: Option<u64>,
+    /// No info files were given, so a reset would go unnoticed.
     pub blind_spot: bool,
+    /// How many entries were new, restarted, gone and so on.
     pub counts: Counts,
 }
 
 /// The periods the two sources cover.
 #[derive(Debug, Clone, Serialize)]
 pub struct Windows {
+    /// First to last log record.
     pub logs: Option<Span>,
+    /// Older to newer snapshot.
     pub stats: Option<Span>,
     /// How much of the shorter window the other one covers, in percent.
     pub overlap_pct: Option<f64>,
@@ -137,20 +170,27 @@ pub struct Windows {
     pub length_ratio: Option<f64>,
 }
 
+/// A period of time, as RFC 3339 timestamps.
 #[derive(Debug, Clone, Serialize)]
 pub struct Span {
+    /// Start of the period.
     pub from: String,
+    /// End of the period.
     pub to: String,
 }
 
 /// The log side of a report: the analysis, a row for every fingerprint, and where it came from.
 #[derive(Debug)]
 pub struct LogData {
+    /// The log analysis.
     pub report: Report,
+    /// One row per fingerprint.
     pub rows: Vec<StatementRow>,
     /// `files` or `store`.
     pub source: &'static str,
+    /// Files analyzed, or inputs of the store inside the window.
     pub inputs: usize,
+    /// The store's path, when the logs came from one.
     pub store: Option<String>,
 }
 
@@ -198,6 +238,9 @@ pub fn build(
         },
         _ => (None, None),
     };
+    let log_overflow_calls = log_report
+        .as_ref()
+        .map_or(0, |report| report.diagnostics.overflow_calls);
     let mut joined = join(log_rows, delta);
     rank(&mut joined.rows, options.by);
     let shown = joined.rows.len().min(options.top);
@@ -211,6 +254,7 @@ pub fn build(
         from_store: log_input
             .as_ref()
             .is_some_and(|input| input.source == "store"),
+        log_overflow_calls,
     });
     joined.rows.truncate(shown);
     CombinedReport {

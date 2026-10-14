@@ -95,6 +95,21 @@ impl Group {
         }
     }
 
+    /// Adds everything `other` knows; the text stays this group's unless it has none yet.
+    fn merge(&mut self, other: Group) {
+        if self.entries == 0 {
+            self.text = other.text;
+        }
+        self.entries += other.entries;
+        self.queryids.extend(other.queryids);
+        add_counters(&mut self.top, &other.top);
+        self.top_entries += other.top_entries;
+        add_counters(&mut self.nested, &other.nested);
+        self.top_share_pct += other.top_share_pct;
+        self.nested_share_pct += other.nested_share_pct;
+        self.flags.extend(other.flags);
+    }
+
     #[expect(
         clippy::cast_precision_loss,
         reason = "call counts stay far below 2^53"
@@ -172,6 +187,12 @@ pub fn join(log: Vec<StatementRow>, delta: Option<&Delta>) -> Joined {
         }
         groups.entry(key).or_default().add(row);
     }
+    rescue_unreadable(
+        &mut groups,
+        &log,
+        &mut unusable_entries,
+        &mut unusable_exec_ms,
+    );
     let rollups = groups
         .iter()
         .filter(|(key, group)| !key.starts_with('q') && group.queryids.len() > 1)
@@ -197,6 +218,48 @@ pub fn join(log: Vec<StatementRow>, delta: Option<&Delta>) -> Joined {
     }
 }
 
+/// Joins entries whose text is unreadable to the statement their `queryid` belongs to: a readable
+/// entry with the same `queryid` (another user or database), or the `query_id` the log carried.
+fn rescue_unreadable(
+    groups: &mut BTreeMap<String, Group>,
+    log: &[StatementRow],
+    unusable_entries: &mut usize,
+    unusable_exec_ms: &mut f64,
+) {
+    let mut owners: BTreeMap<i64, String> = BTreeMap::new();
+    for (key, group) in groups.iter().filter(|(key, _)| !key.starts_with('q')) {
+        for id in &group.queryids {
+            owners.entry(*id).or_insert_with(|| key.clone());
+        }
+    }
+    for row in log {
+        if let Some(id) = row.query_id.as_deref().and_then(|id| id.parse().ok()) {
+            owners.entry(id).or_insert_with(|| row.fingerprint.clone());
+        }
+    }
+    let unreadable: Vec<String> = groups
+        .keys()
+        .filter(|key| key.starts_with('q'))
+        .cloned()
+        .collect();
+    for key in unreadable {
+        let Some(owner) = groups
+            .get(&key)
+            .and_then(|group| group.queryids.iter().find_map(|id| owners.get(id)))
+            .cloned()
+        else {
+            continue;
+        };
+        let Some(group) = groups.remove(&key) else {
+            continue;
+        };
+        *unusable_entries = unusable_entries.saturating_sub(group.entries);
+        *unusable_exec_ms =
+            (*unusable_exec_ms - group.top.total_exec_time - group.nested.total_exec_time).max(0.0);
+        groups.entry(owner).or_default().merge(group);
+    }
+}
+
 #[expect(
     clippy::cast_precision_loss,
     reason = "call counts stay far below 2^53"
@@ -209,12 +272,20 @@ fn joined_row(fingerprint: String, log: Option<StatementRow>, group: Option<&Gro
         }
         _ => None,
     };
+    // The log keeps one sample `query_id` per fingerprint, so a miss only means something when the
+    // statistics have a single `queryid` for it.
     let query_id_matches = match (&log, group) {
         (Some(log), Some(group)) => log
             .query_id
             .as_deref()
             .and_then(|id| id.parse::<i64>().ok())
-            .map(|id| group.queryids.contains(&id)),
+            .and_then(|id| {
+                if group.queryids.contains(&id) {
+                    Some(true)
+                } else {
+                    (group.queryids.len() == 1).then_some(false)
+                }
+            }),
         _ => None,
     };
     let text = log
@@ -244,7 +315,7 @@ fn joined_row(fingerprint: String, log: Option<StatementRow>, group: Option<&Gro
     reason = "call counts stay far below 2^53"
 )]
 fn rank_value(row: &JoinedRow, by: SortBy) -> Option<f64> {
-    match by {
+    let value = match by {
         SortBy::Total => row
             .stats
             .as_ref()
@@ -257,19 +328,23 @@ fn rank_value(row: &JoinedRow, by: SortBy) -> Option<f64> {
             .or_else(|| row.log.as_ref().map(|log| log.calls as f64)),
         SortBy::P95 => row.log.as_ref().and_then(|log| log.p95_ms),
         SortBy::Max => row.log.as_ref().and_then(|log| log.max_ms),
-    }
+    };
+    value.filter(|value| !value.is_nan())
 }
 
-/// Orders `rows` by `by`, largest first; rows without a value go last; ties by fingerprint.
+/// Orders `rows` by `by`, largest first; rows without a value go last, then by total time, then
+/// by fingerprint.
 pub fn rank(rows: &mut [JoinedRow], by: SortBy) {
+    let by_value = |a: &JoinedRow, b: &JoinedRow, by| match (rank_value(a, by), rank_value(b, by)) {
+        (Some(x), Some(y)) => y.total_cmp(&x),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    };
     rows.sort_by(|a, b| {
-        match (rank_value(a, by), rank_value(b, by)) {
-            (Some(x), Some(y)) => y.total_cmp(&x),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
-        }
-        .then_with(|| a.fingerprint.cmp(&b.fingerprint))
+        by_value(a, b, by)
+            .then_with(|| by_value(a, b, SortBy::Total))
+            .then_with(|| a.fingerprint.cmp(&b.fingerprint))
     });
 }
 
@@ -467,6 +542,82 @@ mod tests {
         );
         rank(&mut joined, SortBy::P95);
         assert_eq!(order(&joined).last().unwrap(), "SELECT * FROM c");
+    }
+
+    #[test]
+    fn an_unreadable_entry_joins_through_a_readable_sibling() {
+        let d = delta(&[
+            (user_key(1, 10), Some(FILM), 5, 50.0),
+            (user_key(1, 11), Some("<insufficient privilege>"), 7, 70.0),
+        ]);
+        let joined = join(Vec::new(), Some(&d));
+        assert_eq!(joined.rows.len(), 1);
+        let stats = joined.rows[0].stats.as_ref().unwrap();
+        assert_eq!((stats.calls, stats.entries), (12, 2));
+        assert_eq!(joined.unusable_entries, 0);
+        assert!(joined.unusable_exec_ms.abs() < 1e-9);
+    }
+
+    #[test]
+    fn an_unreadable_entry_joins_through_the_logged_query_id() {
+        let mut log = log_rows(&[("SELECT * FROM film WHERE film_id = 5", 2, 1.0)]);
+        log[0].query_id = Some("9".to_owned());
+        let d = delta(&[(key(9), Some("<insufficient privilege>"), 8, 80.0)]);
+        let joined = join(log, Some(&d));
+        assert_eq!(joined.rows.len(), 1);
+        assert_eq!(joined.rows[0].link, "both");
+        assert_eq!(joined.rows[0].stats.as_ref().unwrap().calls, 8);
+        assert_eq!(joined.unusable_entries, 0);
+    }
+
+    #[test]
+    fn a_missing_query_id_is_only_false_when_the_statistics_have_one() {
+        let mut log = log_rows(&[("SELECT * FROM film WHERE film_id = 5", 1, 1.0)]);
+        log[0].query_id = Some("99".to_owned());
+        let one = delta(&[(key(1), Some(FILM), 3, 3.0)]);
+        assert_eq!(
+            join(log.clone(), Some(&one)).rows[0].query_id_matches,
+            Some(false)
+        );
+        let several = delta(&[
+            (key(1), Some(FILM), 3, 3.0),
+            (
+                key(2),
+                Some("SELECT * FROM film WHERE film_id = $2"),
+                3,
+                3.0,
+            ),
+        ]);
+        assert_eq!(join(log, Some(&several)).rows[0].query_id_matches, None);
+    }
+
+    #[test]
+    fn a_nan_time_ranks_last() {
+        let d = delta(&[
+            (key(1), Some("SELECT * FROM a"), 5, f64::NAN),
+            (key(2), Some("SELECT * FROM b"), 5, 1.0),
+        ]);
+        let mut rows = join(Vec::new(), Some(&d)).rows;
+        rank(&mut rows, SortBy::Total);
+        assert_eq!(rows[0].text, "SELECT * FROM b");
+    }
+
+    #[test]
+    fn p95_and_max_without_logs_fall_back_to_statistics_time() {
+        let d = delta(&[
+            (key(1), Some("SELECT * FROM a"), 5, 1.0),
+            (key(2), Some("SELECT * FROM b"), 5, 9.0),
+            (key(3), Some("SELECT * FROM c"), 5, 4.0),
+        ]);
+        for by in [SortBy::P95, SortBy::Max] {
+            let mut rows = join(Vec::new(), Some(&d)).rows;
+            rank(&mut rows, by);
+            let order: Vec<_> = rows.iter().map(|r| r.text.as_str()).collect();
+            assert_eq!(
+                order,
+                ["SELECT * FROM b", "SELECT * FROM c", "SELECT * FROM a"]
+            );
+        }
     }
 
     fn nested_key(queryid: i64) -> Key {

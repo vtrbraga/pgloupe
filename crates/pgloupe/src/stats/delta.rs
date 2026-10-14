@@ -22,6 +22,19 @@ pub enum Reset {
     Unknown,
 }
 
+impl Reset {
+    /// The name used in JSON and text output.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reset::None => "none",
+            Reset::Inferred => "inferred",
+            Reset::Proven => "proven",
+            Reset::Unknown => "unknown",
+        }
+    }
+}
+
 /// How a row's delta was obtained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]

@@ -2,7 +2,7 @@
 
 use std::fmt::Write as _;
 
-use minijinja::{Environment, Value, context, value::Serde};
+use minijinja::{AutoEscape, Environment, Value, context, value::Serde};
 use thiserror::Error;
 
 use super::CombinedReport;
@@ -32,15 +32,7 @@ pub enum HtmlError {
 ///
 /// Fails if the template cannot be rendered or the data cannot be serialized.
 pub fn html(report: &CombinedReport) -> Result<String, HtmlError> {
-    let mut env = Environment::new();
-    env.add_template("report.html", TEMPLATE)?;
-    env.add_filter("ms", fmt_ms);
-    env.add_filter("bytes", fmt_bytes);
-    env.add_filter("n", fmt_int);
-    env.add_filter("pct", fmt_pct);
-    env.add_filter("coverage", fmt_coverage);
-    env.add_filter("short", |text: &str| short(text));
-    env.add_filter("cut", |text: &str, max: usize| cut(text, max));
+    let env = environment()?;
     let (svg, bucket) = report.logs.as_ref().map_or_else(
         || (String::new(), String::new()),
         |logs| {
@@ -59,6 +51,21 @@ pub fn html(report: &CombinedReport) -> Result<String, HtmlError> {
         bucket_label => bucket,
     })?;
     Ok(page)
+}
+
+/// The template environment: every template is HTML, whatever it is called.
+fn environment() -> Result<Environment<'static>, minijinja::Error> {
+    let mut env = Environment::new();
+    env.set_auto_escape_callback(|_| AutoEscape::Html);
+    env.add_template("report.html", TEMPLATE)?;
+    env.add_filter("ms", fmt_ms);
+    env.add_filter("bytes", fmt_bytes);
+    env.add_filter("n", fmt_int);
+    env.add_filter("pct", fmt_pct);
+    env.add_filter("coverage", fmt_coverage);
+    env.add_filter("short", |text: &str| short(text));
+    env.add_filter("cut", |text: &str, max: usize| cut(text, max));
+    Ok(env)
 }
 
 /// The report as JSON that is safe inside a `<script>` element.
@@ -204,6 +211,15 @@ mod tests {
     };
 
     const HOSTILE: &str = "</script><img src=x onerror=alert(1)>";
+
+    #[test]
+    fn every_template_is_escaped_whatever_its_name() {
+        let env = environment().unwrap();
+        let out = env
+            .render_str("{{ x }}", context! { x => HOSTILE })
+            .unwrap();
+        assert!(!out.contains('<') && out.contains("&lt;"), "{out}");
+    }
 
     fn fixture_html() -> String {
         html(&fixture_report(SortBy::Total, 20, true, true)).unwrap()

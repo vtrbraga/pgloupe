@@ -15,7 +15,7 @@ clap = { version = "4", features = ["derive"] }
 csv = "1"
 flate2 = "1"
 jiff = { version = "0.2", features = ["serde"] }
-minijinja = { version = "3", features = ["serde"] }
+minijinja = { version = "3", default-features = false, features = ["serde", "builtins"] }
 pg_query = "6"
 postgres = "0.19"
 rand = "0.10"

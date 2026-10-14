@@ -6,16 +6,16 @@ overlap:   100%
 
 findings
   [info] stats_blind_spot: no pg_stat_statements_info files were given, so a reset between the snapshots would go unnoticed; export the info row with each snapshot
-  [warn] stats_only_heavy: 1 statement carries 14% of the execution time in pg_stat_statements but never appear in the logs: they run faster than log_min_duration_statement, or the logs miss that period
-  [info] log_only_present: some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, or the counters were reset
+  [warn] stats_only_heavy: 1 statement carries 14% of the execution time in pg_stat_statements but never appears in the logs: they run faster than log_min_duration_statement, or the logs miss that period
+  [info] log_only_present: some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, the counters were reset, or they failed (pg_stat_statements does not count failed statements)
 
 statements (by total)
-  link   log  stats  cover  total_ms  mean_ms  p95_ms  share%  errors  query
-  both     2      4    50%    400.00   100.00  100.49    80.0       0  UPDATE film SET rental_rate = $1
-  stats    -      2      -     70.00    35.00       -    14.0       -  DELETE FROM rental WHERE rental_id = $1
-  both     4     60     7%     30.00     0.50    0.50     6.0       0  SELECT * FROM film WHERE film_id = $1
-  log      2      -      -      7.30     3.65    3.22     3.2       0  SELECT * FROM actor
-  log      0      -      -      0.00        -       -     0.0       1  SELECT * FROM nope
+  link   log  stats  cover  total_ms  mean_ms  p95_ms  max_ms  share%  errors  query
+  both     2      4    50%    400.00   100.00  100.49  120.00    80.0       0  UPDATE film SET rental_rate = $1
+  stats    -      2      -     70.00    35.00       -       -    14.0       -  DELETE FROM rental WHERE rental_id = $1
+  both     4     60     7%     30.00     0.50    0.50    0.60     6.0       0  SELECT * FROM film WHERE film_id = $1
+  log      2      -      -      7.30     3.65    3.22    4.10     3.2       0  SELECT * FROM actor
+  log      0      -      -      0.00        -       -       -     0.0       1  SELECT * FROM nope
 
 diagnostics
   lines 9, records 9, skipped 0, unparsed statements 0

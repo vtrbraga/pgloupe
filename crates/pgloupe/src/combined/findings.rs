@@ -16,6 +16,8 @@ const MIN_OVERLAP_PCT: f64 = 50.0;
 const MAX_WINDOW_RATIO: f64 = 3.0;
 /// Coverage is only judged when the log window is at least this share of the snapshot window.
 const LOG_COVERS_STATS: f64 = 0.8;
+/// Joined statements whose log count exceeds the statistics' by this factor are flagged.
+const HIGH_COVERAGE: f64 = 1.5;
 /// Fingerprints listed in a finding.
 const LISTED: usize = 5;
 
@@ -34,6 +36,8 @@ pub struct Context<'a> {
     pub has_logs: bool,
     /// The logs come from a store, whose windows are whole hours.
     pub from_store: bool,
+    /// Statement calls the log folded into its overflow bucket.
+    pub log_overflow_calls: u64,
 }
 
 /// `1 statement` or `3 statements`.
@@ -97,17 +101,36 @@ pub fn findings(ctx: &Context<'_>) -> Vec<Finding> {
             ),
         ));
     }
+    if ctx.has_logs && !ctx.joined.rows.iter().any(|row| row.log.is_some()) {
+        found.push(finding(
+            "no_log_records",
+            "warn",
+            "the logs hold no statements for this period, so every row comes from pg_stat_statements alone: the logs do not cover the window, or statements are not logged (log_min_duration_statement, log_statement)"
+                .to_owned(),
+        ));
+    }
     if ctx.has_logs && ctx.delta.is_some() {
         heavy_stats_only(ctx, &mut found);
         low_coverage(ctx, &mut found);
+        high_coverage(ctx, &mut found);
         if ctx.top.iter().any(|row| row.link == "log") {
             found.push(finding(
                 "log_only_present",
                 "info",
-                "some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, or the counters were reset"
+                "some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, the counters were reset, or they failed (pg_stat_statements does not count failed statements)"
                     .to_owned(),
             ));
         }
+    }
+    if ctx.log_overflow_calls > 0 {
+        found.push(finding(
+            "log_overflow",
+            "info",
+            format!(
+                "{} statement calls were folded into the log's overflow bucket (more distinct statements than --max-fingerprints), so some rows marked as statistics-only may be in the logs after all",
+                ctx.log_overflow_calls
+            ),
+        ));
     }
     if ctx.joined.rollups > 0 {
         found.push(finding(
@@ -165,6 +188,20 @@ fn stats_rules(delta: &Delta, found: &mut Vec<Finding>) {
     }
 }
 
+/// Up to [`LISTED`] fingerprints of `rows` that the report shows, so a finding never points at a
+/// row the reader cannot find.
+fn listed<'a>(ctx: &Context<'_>, rows: impl IntoIterator<Item = &'a JoinedRow>) -> Vec<String> {
+    rows.into_iter()
+        .filter(|row| {
+            ctx.top
+                .iter()
+                .any(|shown| shown.fingerprint == row.fingerprint)
+        })
+        .take(LISTED)
+        .map(|row| row.fingerprint.clone())
+        .collect()
+}
+
 fn is_nested_only(row: &JoinedRow) -> bool {
     row.stats
         .as_ref()
@@ -199,17 +236,14 @@ fn heavy_stats_only(ctx: &Context<'_>, found: &mut Vec<Finding>) {
             "stats_only_heavy",
             "warn",
             format!(
-                "{} {} {:.0}% of the execution time in pg_stat_statements but never appear in the logs: they run faster than log_min_duration_statement, or the logs miss that period",
+                "{} {} {:.0}% of the execution time in pg_stat_statements but never {} in the logs: they run faster than log_min_duration_statement, or the logs miss that period",
                 statements_of(only.len()),
                 if only.len() == 1 { "carries" } else { "carry" },
-                share * 100.0 / total
+                share * 100.0 / total,
+                if only.len() == 1 { "appears" } else { "appear" }
             ),
         );
-        f.statements = only
-            .iter()
-            .take(LISTED)
-            .map(|r| r.fingerprint.clone())
-            .collect();
+        f.statements = listed(ctx, only.iter().copied());
         found.push(f);
     }
 }
@@ -220,6 +254,7 @@ fn low_coverage(ctx: &Context<'_>, found: &mut Vec<Finding>) {
     if ctx
         .window_ratio
         .is_some_and(|ratio| ratio < LOG_COVERS_STATS)
+        || ctx.overlap_pct.is_some_and(|pct| pct < MIN_OVERLAP_PCT)
     {
         return;
     }
@@ -244,11 +279,41 @@ fn low_coverage(ctx: &Context<'_>, found: &mut Vec<Finding>) {
                 LOW_COVERAGE * 100.0
             ),
         );
-        f.statements = low
-            .iter()
-            .take(LISTED)
-            .map(|r| r.fingerprint.clone())
-            .collect();
+        f.statements = listed(ctx, low.iter().copied());
+        found.push(f);
+    }
+}
+
+fn high_coverage(ctx: &Context<'_>, found: &mut Vec<Finding>) {
+    let comparable = ctx.overlap_pct.is_none_or(|pct| pct >= MIN_OVERLAP_PCT)
+        && ctx
+            .window_ratio
+            .is_none_or(|ratio| ratio < MAX_WINDOW_RATIO && ratio > 1.0 / MAX_WINDOW_RATIO);
+    if !comparable {
+        return;
+    }
+    let high: Vec<&JoinedRow> = ctx
+        .joined
+        .rows
+        .iter()
+        .filter(|row| {
+            row.stats
+                .as_ref()
+                .is_some_and(|s| s.calls >= COVERAGE_MIN_CALLS)
+                && row.coverage.is_some_and(|c| c > HIGH_COVERAGE)
+        })
+        .collect();
+    if !high.is_empty() {
+        let mut f = finding(
+            "coverage_high",
+            "info",
+            format!(
+                "for {} the log counted over {:.0}% of the calls pg_stat_statements did: the log window is longer than the snapshot window, or the statistics lost calls to a reset or eviction",
+                statements_of(high.len()),
+                HIGH_COVERAGE * 100.0
+            ),
+        );
+        f.statements = listed(ctx, high.iter().copied());
         found.push(f);
     }
 }
@@ -295,6 +360,7 @@ mod tests {
             top: &top,
             has_logs: true,
             from_store: false,
+            log_overflow_calls: 0,
         })
     }
 
@@ -517,6 +583,7 @@ mod tests {
             top: &joined.rows,
             has_logs: true,
             from_store: true,
+            log_overflow_calls: 0,
         });
         let f = found.iter().find(|f| f.code == "windows_mismatch").unwrap();
         assert!(f.message.contains("whole hours"), "{}", f.message);
@@ -530,5 +597,103 @@ mod tests {
         );
         let f = files.iter().find(|f| f.code == "windows_mismatch").unwrap();
         assert!(f.message.contains("trim the logs"), "{}", f.message);
+    }
+
+    #[test]
+    fn disjoint_windows_do_not_blame_the_log_threshold() {
+        let d = delta_with_info(&[(key(1), Some(FILM), 200, 2_000.0)], Some(quiet_infos()));
+        let log = log_rows(&[("SELECT * FROM film WHERE film_id = 5", 10, 50.0)]);
+        let found = run(Some(&d), log, Some(10.0));
+        assert!(codes(&found).contains(&"windows_disjoint"));
+        assert!(!codes(&found).contains(&"low_coverage"), "{found:?}");
+    }
+
+    #[test]
+    fn an_empty_log_side_is_called_out() {
+        let d = delta_with_info(&[(key(1), Some(FILM), 10, 100.0)], Some(quiet_infos()));
+        let found = run(Some(&d), Vec::new(), Some(100.0));
+        let f = found.iter().find(|f| f.code == "no_log_records").unwrap();
+        assert_eq!(f.severity, "warn");
+        assert!(f.message.contains("log_min_duration_statement"));
+    }
+
+    #[test]
+    fn a_log_that_counts_more_than_the_statistics_is_flagged() {
+        let d = delta_with_info(&[(key(1), Some(FILM), 100, 1_000.0)], Some(quiet_infos()));
+        let log = log_rows(&[("SELECT * FROM film WHERE film_id = 5", 200, 5.0)]);
+        let found = run(Some(&d), log.clone(), Some(100.0));
+        let f = found.iter().find(|f| f.code == "coverage_high").unwrap();
+        assert_eq!(f.statements.len(), 1);
+        // A window mismatch already explains it.
+        let mismatched = run_with_ratio(Some(&d), log, Some(100.0), Some(9.0));
+        assert!(!codes(&mismatched).contains(&"coverage_high"));
+    }
+
+    #[test]
+    fn findings_only_name_statements_the_report_shows() {
+        let d = delta_with_info(
+            &[
+                (key(1), Some(FILM), 10, 900.0),
+                (key(2), Some("SELECT * FROM actor"), 10, 100.0),
+            ],
+            Some(quiet_infos()),
+        );
+        let log = log_rows(&[("SELECT * FROM actor", 4, 10.0)]);
+        let joined = join(log, Some(&d));
+        let context = |top| Context {
+            delta: Some(&d),
+            joined: &joined,
+            overlap_pct: Some(100.0),
+            window_ratio: Some(1.0),
+            top,
+            has_logs: true,
+            from_store: false,
+            log_overflow_calls: 0,
+        };
+        let heavy = |found: Vec<Finding>| {
+            found
+                .into_iter()
+                .find(|f| f.code == "stats_only_heavy")
+                .unwrap()
+        };
+        assert_eq!(heavy(findings(&context(&joined.rows))).statements.len(), 1);
+        assert_eq!(
+            heavy(findings(&context(&[]))).statements,
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn one_statement_agrees_with_its_verb() {
+        let d = delta_with_info(
+            &[
+                (key(1), Some(FILM), 10, 900.0),
+                (key(2), Some("SELECT * FROM actor"), 10, 100.0),
+            ],
+            Some(quiet_infos()),
+        );
+        let log = log_rows(&[("SELECT * FROM actor", 4, 10.0)]);
+        let found = run(Some(&d), log, Some(100.0));
+        let f = found.iter().find(|f| f.code == "stats_only_heavy").unwrap();
+        assert!(f.message.contains("carries"), "{}", f.message);
+        assert!(f.message.contains("never appears"), "{}", f.message);
+    }
+
+    #[test]
+    fn calls_in_the_overflow_bucket_are_explained() {
+        let (d, log) = healthy_inputs();
+        let joined = join(log, Some(&d));
+        let found = findings(&Context {
+            delta: Some(&d),
+            joined: &joined,
+            overlap_pct: Some(100.0),
+            window_ratio: Some(1.0),
+            top: &joined.rows,
+            has_logs: true,
+            from_store: false,
+            log_overflow_calls: 42,
+        });
+        let f = found.iter().find(|f| f.code == "log_overflow").unwrap();
+        assert!(f.message.contains("42") && f.message.contains("--max-fingerprints"));
     }
 }

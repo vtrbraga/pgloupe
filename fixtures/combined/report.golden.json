@@ -7,7 +7,7 @@
     },
     {
       "code": "stats_only_heavy",
-      "message": "1 statement carries 14% of the execution time in pg_stat_statements but never appear in the logs: they run faster than log_min_duration_statement, or the logs miss that period",
+      "message": "1 statement carries 14% of the execution time in pg_stat_statements but never appears in the logs: they run faster than log_min_duration_statement, or the logs miss that period",
       "severity": "warn",
       "statements": [
         "60acb72b3d6477d8"
@@ -15,7 +15,7 @@
     },
     {
       "code": "log_only_present",
-      "message": "some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, or the counters were reset",
+      "message": "some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, the counters were reset, or they failed (pg_stat_statements does not count failed statements)",
       "severity": "info"
     }
   ],

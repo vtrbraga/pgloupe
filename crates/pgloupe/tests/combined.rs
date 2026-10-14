@@ -209,7 +209,7 @@ fn data_problems_exit_one_with_a_message() -> io::Result<()> {
         "--before-info",
         s(&fixtures().join("stats/reset_before_info.csv")),
     ])?;
-    assert_eq!(one_info.status.code(), Some(1));
+    assert_eq!(one_info.status.code(), Some(2));
     assert!(
         stderr(&one_info).contains("must be given together"),
         "{}",

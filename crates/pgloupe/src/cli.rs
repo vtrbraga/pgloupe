@@ -40,17 +40,51 @@ impl Cli {
     ///
     /// Returns a usage error (exit code 2 when printed with `exit`).
     pub fn validate(self) -> Result<Self, clap::Error> {
-        use clap::CommandFactory as _;
-        if let Command::Report(args) = &self.command
-            && args.store.is_none()
-            && (args.since.is_some() || args.until.is_some())
-        {
-            return Err(Cli::command().error(
-                clap::error::ErrorKind::MissingRequiredArgument,
-                "--since and --until need --store",
-            ));
+        use clap::{CommandFactory as _, error::ErrorKind};
+        let fail = |kind, message: &str| Err(Cli::command().error(kind, message));
+        let info_pair =
+            |before: &Option<PathBuf>, after: &Option<PathBuf>| before.is_some() != after.is_some();
+        let store_bucket = |bucket: i64| bucket % 60 != 0;
+        match &self.command {
+            Command::Stats {
+                command: StatsCommand::Diff(args),
+            } if info_pair(&args.before_info, &args.after_info) => fail(
+                ErrorKind::MissingRequiredArgument,
+                "--before-info and --after-info must be given together",
+            ),
+            Command::Logs {
+                command: LogsCommand::Report(args),
+            } if store_bucket(args.bucket) => fail(
+                ErrorKind::ValueValidation,
+                "--bucket must be a multiple of 1m with a store (it keeps one-minute buckets)",
+            ),
+            Command::Report(args) => {
+                if args.files.is_empty() && args.store.is_none() && args.before.is_none() {
+                    fail(
+                        ErrorKind::MissingRequiredArgument,
+                        "give log FILES, a --store, or snapshots (--before and --after)",
+                    )
+                } else if args.store.is_none() && (args.since.is_some() || args.until.is_some()) {
+                    fail(
+                        ErrorKind::MissingRequiredArgument,
+                        "--since and --until need --store",
+                    )
+                } else if info_pair(&args.before_info, &args.after_info) {
+                    fail(
+                        ErrorKind::MissingRequiredArgument,
+                        "--before-info and --after-info must be given together",
+                    )
+                } else if args.store.is_some() && store_bucket(args.bucket) {
+                    fail(
+                        ErrorKind::ValueValidation,
+                        "--bucket must be a multiple of 1m with a store (it keeps one-minute buckets)",
+                    )
+                } else {
+                    Ok(self)
+                }
+            }
+            _ => Ok(self),
         }
-        Ok(self)
     }
 }
 
@@ -210,17 +244,17 @@ struct StoreReportArgs {
 #[derive(Debug, Args)]
 struct CombinedArgs {
     /// Log files (csvlog, jsonlog or stderr; gzip is detected automatically), analyzed on the fly.
-    #[arg(conflicts_with = "store", required_unless_present_any = ["store", "before"])]
+    #[arg(conflicts_with = "store")]
     files: Vec<PathBuf>,
     /// A store written by `logs ingest`, instead of log files.
     #[arg(long)]
     store: Option<PathBuf>,
     /// With `--store`: start of the log window (RFC 3339 or `YYYY-MM-DD`, UTC). Defaults to the
     /// snapshot interval; rounded down to the hour.
-    #[arg(long, value_parser = store_report::parse_time, requires = "store")]
+    #[arg(long, value_parser = store_report::parse_time)]
     since: Option<Timestamp>,
     /// With `--store`: end of the log window; rounded up to the hour.
-    #[arg(long, value_parser = store_report::parse_time, requires = "store")]
+    #[arg(long, value_parser = store_report::parse_time)]
     until: Option<Timestamp>,
     /// Older `pg_stat_statements` snapshot (CSV export).
     #[arg(long, requires = "after")]
@@ -871,7 +905,19 @@ mod tests {
 
     #[test]
     fn report_needs_a_source_and_valid_pairs() {
-        Cli::try_parse_from(["pgloupe", "report"]).unwrap_err();
+        let usage = |args: &[&str]| {
+            Cli::try_parse_from(args)
+                .and_then(Cli::validate)
+                .unwrap_err()
+                .to_string()
+        };
+        let none = usage(&["pgloupe", "report"]);
+        assert!(
+            none.contains("--store") && none.contains("--before"),
+            "{none}"
+        );
+        let alone = usage(&["pgloupe", "report", "--since", "2026-10-14"]);
+        assert!(!alone.contains("Usage: pgloupe report --store"), "{alone}");
         Cli::try_parse_from(["pgloupe", "report", "a.log", "--store", "s.db"]).unwrap_err();
         Cli::try_parse_from(["pgloupe", "report", "--before", "b.csv"]).unwrap_err();
         Cli::try_parse_from(["pgloupe", "report", "a.log", "--since", "2026-10-14"])
@@ -887,6 +933,54 @@ mod tests {
         ])
         .unwrap();
         Cli::try_parse_from(["pgloupe", "report", "--before", "b.csv", "--after", "a.csv"])
+            .unwrap();
+    }
+
+    #[test]
+    fn mismatched_info_files_and_store_buckets_are_usage_errors() {
+        let kind = |args: &[&str]| {
+            Cli::try_parse_from(args)
+                .and_then(Cli::validate)
+                .unwrap_err()
+                .exit_code()
+        };
+        assert_eq!(
+            kind(&[
+                "pgloupe",
+                "stats",
+                "diff",
+                "a.csv",
+                "b.csv",
+                "--before-info",
+                "i.csv"
+            ]),
+            2
+        );
+        assert_eq!(
+            kind(&[
+                "pgloupe",
+                "report",
+                "--before",
+                "b",
+                "--after",
+                "a",
+                "--before-info",
+                "i"
+            ]),
+            2
+        );
+        assert_eq!(
+            kind(&["pgloupe", "report", "--store", "s.db", "--bucket", "30s"]),
+            2
+        );
+        assert_eq!(
+            kind(&[
+                "pgloupe", "logs", "report", "--store", "s.db", "--bucket", "90s"
+            ]),
+            2
+        );
+        Cli::try_parse_from(["pgloupe", "report", "--store", "s.db", "--bucket", "5m"])
+            .and_then(Cli::validate)
             .unwrap();
     }
 

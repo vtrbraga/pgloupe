@@ -187,7 +187,7 @@ fn info_flags_must_be_given_together() -> io::Result<()> {
         .arg("--before-info")
         .arg(fixture("reset_before_info.csv"))
         .output()?;
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(
         stderr(&out).contains("must be given together"),
         "{}",

@@ -295,7 +295,7 @@ fn bad_store_and_bad_window_fail_clearly() -> io::Result<()> {
         stderr(&out)
     );
     let out = report(&store, &["--bucket", "30s"])?;
-    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(out.status.code(), Some(2));
     assert!(
         stderr(&out).contains("one-minute buckets"),
         "{}",

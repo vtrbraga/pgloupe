@@ -3,10 +3,13 @@
 use super::{CombinedReport, JoinedRow, Span};
 use crate::analyze::render::{align, cut, num, opt, sections};
 
-const HEADERS: [&str; 10] = [
-    "link", "log", "stats", "cover", "total_ms", "mean_ms", "p95_ms", "share%", "errors", "query",
+const HEADERS: [&str; 11] = [
+    "link", "log", "stats", "cover", "total_ms", "mean_ms", "p95_ms", "max_ms", "share%", "errors",
+    "query",
 ];
-const RIGHT: [bool; 10] = [false, true, true, true, true, true, true, true, true, false];
+const RIGHT: [bool; 11] = [
+    false, true, true, true, true, true, true, true, true, true, false,
+];
 
 /// Renders `report` as text: the inputs, the findings, the joined statement table, then the log
 /// sections. The result ends with a newline.
@@ -80,7 +83,7 @@ fn stats_line(report: &CombinedReport) -> String {
         input.before_at,
         input.after_at,
         input.server_version_num,
-        format!("{:?}", input.reset).to_lowercase()
+        input.reset.as_str()
     )
 }
 
@@ -106,6 +109,7 @@ fn statements(rows: &[JoinedRow]) -> Vec<String> {
                 .and_then(|stats| stats.mean_ms)
                 .or_else(|| log.and_then(|log| log.mean_ms))),
             opt(log.and_then(|log| log.p95_ms)),
+            opt(log.and_then(|log| log.max_ms)),
             stats
                 .map(|stats| stats.share_pct)
                 .or_else(|| log.map(|log| log.share_pct))
@@ -156,7 +160,7 @@ mod tests {
         assert!(
             has(
                 &lines,
-                "both 2 4 50% 400.00 100.00 100.49 80.0 0 UPDATE film SET rental_rate = $1"
+                "both 2 4 50% 400.00 100.00 100.49 120.00 80.0 0 UPDATE film SET rental_rate = $1"
             ),
             "{lines:#?}"
         );
