@@ -2,6 +2,10 @@
 
 use std::collections::BTreeMap;
 
+use std::io::{BufWriter, Read as _};
+
+use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use rayon::prelude::*;
 use rusqlite::{OptionalExtension as _, Row, params};
 use serde::{Deserialize, Serialize};
 
@@ -38,6 +42,28 @@ pub struct Input {
     pub summary: FileReport,
     pub diag: StoredDiag,
     pub ingested_at: i64,
+}
+
+/// Slices decoded at a time when reading: enough to keep every core busy, few enough to bound
+/// memory.
+const READ_BATCH: usize = 16;
+
+/// A slice as it is stored: JSON, deflated. Repeated field names and table names compress away.
+fn encode(acc: &Accumulators) -> Result<Vec<u8>, StoreError> {
+    // serde_json writes many tiny pieces; buffering them lets the compressor see big blocks.
+    let mut writer =
+        BufWriter::with_capacity(64 * 1024, GzEncoder::new(Vec::new(), Compression::fast()));
+    serde_json::to_writer(&mut writer, acc)?;
+    let encoder = writer
+        .into_inner()
+        .map_err(std::io::IntoInnerError::into_error)?;
+    Ok(encoder.finish()?)
+}
+
+fn decode(blob: &[u8]) -> Result<Accumulators, StoreError> {
+    let mut json = Vec::with_capacity(blob.len().saturating_mul(8));
+    GzDecoder::new(blob).read_to_end(&mut json)?;
+    Ok(serde_json::from_slice(&json)?)
 }
 
 const COLUMNS: &str = "id, hash, size, path, disk_size, mtime, format, records, skipped, \
@@ -113,6 +139,20 @@ impl Raw {
             ingested_at: self.ingested_at,
         })
     }
+}
+
+/// Decodes `batch` in parallel and hands the slices to `visit` in order, emptying `batch`.
+fn visit_decoded(
+    batch: &mut Vec<Vec<u8>>,
+    visit: &mut impl FnMut(Accumulators),
+) -> Result<(), StoreError> {
+    let decoded: Vec<Result<Accumulators, StoreError>> =
+        batch.par_iter().map(|blob| decode(blob)).collect();
+    batch.clear();
+    for slice in decoded {
+        visit(slice?);
+    }
+    Ok(())
 }
 
 impl Store {
@@ -232,10 +272,11 @@ impl Store {
     ) -> Result<i64, StoreError> {
         let summary = serde_json::to_string(&input.summary)?;
         let diag = serde_json::to_string(&input.diag)?;
+        let slices: Vec<(&i64, &Accumulators)> = slices.iter().collect();
         let data = slices
-            .iter()
-            .map(|(hour, acc)| Ok((*hour, serde_json::to_string(acc)?)))
-            .collect::<Result<Vec<_>, serde_json::Error>>()?;
+            .par_iter()
+            .map(|(hour, acc)| Ok((**hour, encode(acc)?)))
+            .collect::<Result<Vec<_>, StoreError>>()?;
         let path = self.path.clone();
         let tx = self.conn.savepoint().map_err(|e| sql_error(e, &path))?;
         (|| {
@@ -266,8 +307,8 @@ impl Store {
             {
                 let mut insert =
                     tx.prepare("INSERT INTO slices (input_id, hour, data) VALUES (?1, ?2, ?3)")?;
-                for (hour, json) in &data {
-                    insert.execute(params![id, hour, json])?;
+                for (hour, blob) in &data {
+                    insert.execute(params![id, hour, blob])?;
                 }
             }
             tx.commit()?;
@@ -309,11 +350,14 @@ impl Store {
         let mut rows = statement
             .query([since, until])
             .map_err(|e| sql_error(e, &self.path))?;
+        let mut batch: Vec<Vec<u8>> = Vec::with_capacity(READ_BATCH);
         while let Some(row) = rows.next().map_err(|e| sql_error(e, &self.path))? {
-            let json: String = row.get(0).map_err(|e| sql_error(e, &self.path))?;
-            visit(serde_json::from_str(&json)?);
+            batch.push(row.get(0).map_err(|e| sql_error(e, &self.path))?);
+            if batch.len() == READ_BATCH {
+                visit_decoded(&mut batch, &mut visit)?;
+            }
         }
-        Ok(())
+        visit_decoded(&mut batch, &mut visit)
     }
 
     /// The slices whose hour is in `[since, until)`, ordered by hour, then input.
@@ -551,6 +595,61 @@ mod tests {
             .unwrap();
         assert_eq!(seen, store.slices(i64::MIN, i64::MAX).unwrap());
         assert_eq!(seen.len(), 3);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn slices_are_stored_compressed() {
+        let (mut store, path) = temp_store("compressed");
+        let mut acc = Accumulators::new(1_000, 60);
+        for i in 0..200 {
+            acc.add_record(&LogRecord::new(
+                Timestamp::from_second(5 + i).unwrap(),
+                Severity::Log,
+                format!(
+                    "duration: 5.0 ms  statement: SELECT * FROM table_{}",
+                    "x".repeat(usize::try_from(i % 7).unwrap() + 1)
+                ),
+            ));
+        }
+        let json_len = serde_json::to_string(&acc).unwrap().len();
+        store
+            .commit(
+                &input(1, 10, "a.log"),
+                &BTreeMap::from([(0, acc.clone())]),
+                &[],
+            )
+            .unwrap();
+        let (kind, stored): (String, i64) = store
+            .conn
+            .query_row("SELECT typeof(data), length(data) FROM slices", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(kind, "blob");
+        assert!(
+            usize::try_from(stored).unwrap() * 3 < json_len,
+            "{stored} vs {json_len}"
+        );
+        assert_eq!(store.slices(i64::MIN, i64::MAX).unwrap(), vec![acc]);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn many_slices_come_back_in_hour_order() {
+        let (mut store, path) = temp_store("many");
+        let hours: Vec<i64> = (0..70).map(|h| h * 3_600).collect();
+        store
+            .commit(&input(1, 10, "a.log"), &slices(&hours), &[])
+            .unwrap();
+        let firsts: Vec<i64> = store
+            .slices(i64::MIN, i64::MAX)
+            .unwrap()
+            .iter()
+            .map(|acc| acc.totals.first.unwrap().as_second())
+            .collect();
+        let expected: Vec<i64> = hours.iter().map(|h| h + 5).collect();
+        assert_eq!(firsts, expected);
         std::fs::remove_file(path).unwrap();
     }
 }

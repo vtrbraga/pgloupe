@@ -22,7 +22,7 @@ CREATE INDEX inputs_by_stat ON inputs (path, disk_size, mtime);
 CREATE TABLE slices (
   input_id INTEGER NOT NULL REFERENCES inputs(id) ON DELETE CASCADE,
   hour INTEGER NOT NULL,
-  data TEXT NOT NULL,
+  data BLOB NOT NULL,
   PRIMARY KEY (input_id, hour)
 );
 CREATE INDEX slices_by_hour ON slices (hour);

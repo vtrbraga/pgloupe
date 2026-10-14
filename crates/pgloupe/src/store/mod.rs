@@ -39,6 +39,8 @@ pub enum StoreError {
     Json(#[from] serde_json::Error),
     #[error("store holds a malformed content hash")]
     BadHash,
+    #[error("store data could not be compressed or decompressed")]
+    Compression(#[from] std::io::Error),
 }
 
 /// An open store.
