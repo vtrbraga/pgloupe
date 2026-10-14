@@ -132,7 +132,9 @@ impl<R: BufRead> StderrDecoder<R> {
     }
 
     fn attach(&mut self, label: Label, text: &str, pid: Option<u32>) {
-        let Some(pending) = self.pending.as_mut().filter(|p| p.record.pid == pid) else {
+        // A skipped line closes the open entry: what follows may belong to the skipped one.
+        let open = |p: &&mut Pending| p.record.pid == pid && !matches!(p.field, Field::Dropped);
+        let Some(pending) = self.pending.as_mut().filter(open) else {
             self.skip_line("detail or statement line without a matching log entry");
             return;
         };
@@ -167,15 +169,7 @@ impl<R: BufRead> StderrDecoder<R> {
 /// the number in a separate field. Move it there so the formats agree. `LOG` and `DEBUG` messages
 /// are left alone: their text can legitimately end that way.
 fn split_error_position(record: &mut LogRecord) {
-    if matches!(
-        record.level,
-        Severity::Log
-            | Severity::Debug1
-            | Severity::Debug2
-            | Severity::Debug3
-            | Severity::Debug4
-            | Severity::Debug5
-    ) {
+    if matches!(record.level, Severity::Log | Severity::Debug) {
         return;
     }
     let Some((message, position)) = record.message.rsplit_once(" at character ") else {
@@ -520,5 +514,46 @@ mod tests {
         };
         assert_eq!(messages, ["one", "two", "three"]);
         assert!(matches!(error, DecodeError::Io(_)));
+    }
+
+    #[test]
+    fn debug_entries_are_decoded() {
+        let text = format!("{SESSION} DEBUG:  a debug message\n{SESSION} LOG:  after\n");
+        let (records, stats) = decode(&text);
+        assert_eq!(stats.skipped, 0, "{:?}", stats.first_skipped);
+        assert_eq!(records[0].level, Severity::Debug);
+        assert_eq!(records[0].message, "a debug message");
+    }
+
+    #[test]
+    fn secondary_lines_of_a_skipped_entry_do_not_attach_to_the_previous_one() {
+        let mut bytes = format!("{SESSION} LOG:  first\n{SESSION} ERROR:  bad ").into_bytes();
+        bytes.extend_from_slice(b"\xE9t\xE9\n");
+        bytes.extend_from_slice(format!("{SESSION} STATEMENT:  SELECT bad\n").as_bytes());
+        bytes.extend_from_slice(format!("{SESSION} LOG:  last\n").as_bytes());
+        let mut decoder =
+            StderrDecoder::new(bytes.as_slice(), Prefix::compile(SYNTH).unwrap(), None);
+        let mut records = Vec::new();
+        while let Some(record) = decoder.next_record().unwrap() {
+            records.push(record);
+        }
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].message, "first");
+        assert_eq!(
+            records[0].statement, None,
+            "the skipped ERROR's STATEMENT must not land here"
+        );
+        assert_eq!(decoder.stats().skipped, 2);
+    }
+
+    #[test]
+    fn an_unknown_label_closes_the_previous_entry_to_secondary_lines() {
+        let text = format!(
+            "{SESSION} LOG:  first\n{SESSION} SHOUT:  what\n{SESSION} DETAIL:  of the shout\n"
+        );
+        let (records, stats) = decode(&text);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].detail, None);
+        assert_eq!(stats.skipped, 2);
     }
 }

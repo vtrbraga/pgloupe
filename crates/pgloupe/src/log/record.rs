@@ -9,11 +9,8 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Severity {
-    Debug1,
-    Debug2,
-    Debug3,
-    Debug4,
-    Debug5,
+    /// Postgres prints `DEBUG` for every debug level.
+    Debug,
     Info,
     Notice,
     Warning,
@@ -29,11 +26,7 @@ impl Severity {
     #[must_use]
     pub fn from_label(label: &str) -> Option<Severity> {
         Some(match label {
-            "DEBUG1" => Severity::Debug1,
-            "DEBUG2" => Severity::Debug2,
-            "DEBUG3" => Severity::Debug3,
-            "DEBUG4" => Severity::Debug4,
-            "DEBUG5" => Severity::Debug5,
+            "DEBUG" => Severity::Debug,
             "INFO" => Severity::Info,
             "NOTICE" => Severity::Notice,
             "WARNING" => Severity::Warning,
@@ -198,11 +191,7 @@ mod tests {
     #[test]
     fn severity_labels_round_trip() {
         for (label, level) in [
-            ("DEBUG1", Severity::Debug1),
-            ("DEBUG2", Severity::Debug2),
-            ("DEBUG3", Severity::Debug3),
-            ("DEBUG4", Severity::Debug4),
-            ("DEBUG5", Severity::Debug5),
+            ("DEBUG", Severity::Debug),
             ("INFO", Severity::Info),
             ("NOTICE", Severity::Notice),
             ("WARNING", Severity::Warning),
@@ -215,6 +204,8 @@ mod tests {
         }
         assert_eq!(Severity::from_label("STATEMENT"), None);
         assert_eq!(Severity::from_label("log"), None);
+        // Postgres prints DEBUG for every debug level; it never prints DEBUG1..5.
+        assert_eq!(Severity::from_label("DEBUG1"), None);
     }
 
     #[test]
