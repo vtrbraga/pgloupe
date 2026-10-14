@@ -14,7 +14,7 @@ use crate::{
         report::file_report,
         slice::Slices,
     },
-    log::tee::Content,
+    log::{Format, tee::Content},
 };
 
 /// What happened to one file.
@@ -37,6 +37,8 @@ pub struct FileOutcome {
     pub status: Status,
     /// Records decoded (or, for `Unchanged`, recorded earlier).
     pub records: u64,
+    /// Lines that could not be decoded (or, for `Unchanged`, recorded earlier).
+    pub skipped: u64,
     /// What the run noticed about the file; only for files that were read.
     pub diag: Option<StoredDiag>,
 }
@@ -71,6 +73,7 @@ pub fn ingest(
                 path: path.clone(),
                 status: Status::Failed(reason),
                 records: 0,
+                skipped: 0,
                 diag: None,
             })
         })
@@ -105,8 +108,8 @@ fn stat_of(path: &Path) -> Result<Stat, String> {
 
 /// What to do with a file that has been read.
 enum Decision {
-    /// Its bytes are already stored, with this many records.
-    Known { records: u64 },
+    /// Its bytes are already stored as this input.
+    Known { input: Box<Input> },
     /// Store it, deleting these inputs.
     Store { replace: Vec<i64> },
 }
@@ -125,7 +128,7 @@ fn decide(
         }
         store.touch(known.id, &stat.key, stat.disk_size, stat.mtime)?;
         return Ok(Decision::Known {
-            records: known.records,
+            input: Box::new(known),
         });
     }
     // An earlier input that is a byte prefix of this file: this file is its later version.
@@ -163,18 +166,19 @@ fn ingest_locked(
     force: bool,
 ) -> Result<FileOutcome, String> {
     let stat = stat_of(path)?;
-    let unchanged = |records| FileOutcome {
+    let unchanged = |known: &Input| FileOutcome {
         path: path.to_path_buf(),
         status: Status::Unchanged,
-        records,
-        diag: None,
+        records: known.records,
+        skipped: known.skipped,
+        diag: settings_hint(known, options),
     };
     if !force
         && let Some(known) = store
             .input_by_stat(&stat.key, stat.disk_size, stat.mtime)
             .map_err(|e| chain(&e))?
     {
-        return Ok(unchanged(known.records));
+        return Ok(unchanged(&known));
     }
     let run_options = pipeline::Options {
         hash_marks: Some(store.input_sizes().map_err(|e| chain(&e))?),
@@ -193,7 +197,7 @@ fn ingest_locked(
         ));
     }
     let replace = match decide(store, &content, &stat, force).map_err(|e| chain(&e))? {
-        Decision::Known { records } => return Ok(unchanged(records)),
+        Decision::Known { input } => return Ok(unchanged(&input)),
         Decision::Store { replace } => replace,
     };
     let (mut input, mut diag) = make_input(&file, &slices, &content, stat);
@@ -214,7 +218,40 @@ fn ingest_locked(
             Status::Replaced(replace.len())
         },
         records: file.stats.records,
+        skipped: file.stats.skipped,
         diag: Some(diag),
+    })
+}
+
+/// What to tell someone who gave `--prefix` or `--format` for a file that is already stored with
+/// different ones: the stored numbers stay until they ask for a re-ingest.
+fn settings_hint(known: &Input, options: &pipeline::Options) -> Option<StoredDiag> {
+    let mut warnings = Vec::new();
+    if let Some(given) = &options.prefix
+        && known.summary.prefix.as_deref() != Some(given.as_str())
+    {
+        warnings.push(format!(
+            "already stored with prefix {:?}, not the one you gave — use --force to ingest it again",
+            known.summary.prefix.as_deref().unwrap_or("none")
+        ));
+    }
+    if let Some(format) = options.format {
+        let name = match format {
+            Format::Csv => "csv",
+            Format::Json => "json",
+            Format::Stderr => "stderr",
+        };
+        if known.format != name {
+            warnings.push(format!(
+                "already stored as {}, not {name} — use --force to ingest it again",
+                known.format
+            ));
+        }
+    }
+    (!warnings.is_empty()).then_some(StoredDiag {
+        lines: 0,
+        warnings,
+        shapes: Vec::new(),
     })
 }
 
@@ -304,7 +341,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::log::Format;
 
     fn dir(name: &str) -> PathBuf {
         let dir =
@@ -601,5 +637,58 @@ mod tests {
         assert!(reason.contains("locked"), "{reason}");
         first.end_ingest().unwrap();
         assert_eq!(run(&mut second, &[&a], false)[0].status, Status::Ingested);
+    }
+
+    #[test]
+    fn ingest_reports_how_many_lines_were_skipped() {
+        let d = dir("skipped");
+        let log = d.join("a.log");
+        fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/logs/sample.log"),
+            &log,
+        )
+        .unwrap();
+        let mut store = store_in(&d, "s.db");
+        let options = pipeline::Options {
+            prefix: Some("%m [%p] ".to_owned()),
+            ..pipeline::Options::new()
+        };
+        let out = ingest(&mut store, std::slice::from_ref(&log), &options, false);
+        assert_eq!(out[0].status, Status::Ingested, "{:?}", out[0].status);
+        assert!(out[0].records > 0);
+        assert!(out[0].skipped > 0, "{:?}", out[0]);
+    }
+
+    #[test]
+    fn a_different_prefix_on_a_known_file_points_at_force() {
+        let d = dir("prefix-hint");
+        let log = d.join("a.log");
+        fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/logs/sample.log"),
+            &log,
+        )
+        .unwrap();
+        let mut store = store_in(&d, "s.db");
+        let first = pipeline::Options {
+            prefix: Some("%m [%p] ".to_owned()),
+            ..pipeline::Options::new()
+        };
+        ingest(&mut store, std::slice::from_ref(&log), &first, false);
+        let right = pipeline::Options {
+            prefix: Some("%m [%p] %q%u@%d/%a %Q ".to_owned()),
+            ..pipeline::Options::new()
+        };
+        let out = ingest(&mut store, std::slice::from_ref(&log), &right, false);
+        assert_eq!(out[0].status, Status::Unchanged);
+        let hint = out[0]
+            .diag
+            .as_ref()
+            .map(|d| d.warnings.join("\n"))
+            .unwrap_or_default();
+        assert!(hint.contains("--force"), "{hint}");
+        assert!(hint.contains("%m [%p] "), "{hint}");
+        // The same settings again say nothing.
+        let again = ingest(&mut store, std::slice::from_ref(&log), &first, false);
+        assert!(again[0].diag.is_none(), "{:?}", again[0].diag);
     }
 }

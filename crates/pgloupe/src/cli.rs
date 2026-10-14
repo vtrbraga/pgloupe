@@ -440,14 +440,18 @@ fn logs_ingest(
     for outcome in store::ingest(&mut store, &args.files, &options, args.force) {
         let path = outcome.path.display();
         match &outcome.status {
-            Status::Ingested => {
-                writeln!(out, "ingested   {path}  ({} records)", outcome.records)
-            }
+            Status::Ingested => writeln!(
+                out,
+                "ingested   {path}  ({} records{})",
+                outcome.records,
+                skipped_note(outcome.skipped)
+            ),
             Status::Unchanged => writeln!(out, "unchanged  {path}"),
             Status::Replaced(earlier) => writeln!(
                 out,
-                "replaced   {path}  ({} records, replaces {earlier} earlier)",
-                outcome.records
+                "replaced   {path}  ({} records{}, replaces {earlier} earlier)",
+                outcome.records,
+                skipped_note(outcome.skipped)
             ),
             Status::Failed(reason) => {
                 failed = true;
@@ -460,6 +464,15 @@ fn logs_ingest(
         }
     }
     Ok(if failed { Exit::Failed } else { Exit::Ok })
+}
+
+/// `, N skipped` when some lines could not be decoded.
+fn skipped_note(skipped: u64) -> String {
+    if skipped == 0 {
+        String::new()
+    } else {
+        format!(", {skipped} skipped")
+    }
 }
 
 fn logs_report(args: &StoreReportArgs, out: &mut dyn Write) -> anyhow::Result<Exit> {
