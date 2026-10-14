@@ -1,8 +1,12 @@
 //! Text and JSON output for a [`Delta`].
 
 use jiff::{SignedDuration, Timestamp};
+use serde::Serialize;
 
-use crate::stats::delta::{Delta, Reset, Row, SortBy, Status};
+use crate::stats::{
+    delta::{Counts, Delta, Reset, Row, SortBy, Status},
+    snapshot::Counters,
+};
 
 /// Longest query text shown in the table unless `wide`.
 const MAX_QUERY_CHARS: usize = 80;
@@ -212,6 +216,104 @@ fn fmt_duration(duration: SignedDuration) -> String {
         format!("{}m {:02}s", secs / 60, secs % 60)
     } else {
         format!("{}h {:02}m", secs / 3_600, secs % 3_600 / 60)
+    }
+}
+
+/// Version of the JSON layout below; bump when a field changes meaning.
+const SCHEMA_VERSION: u32 = 1;
+
+#[derive(Serialize)]
+struct Report<'a> {
+    schema_version: u32,
+    window: Window,
+    verdict: Verdict,
+    counts: &'a Counts,
+    rows: Vec<JsonRow<'a>>,
+}
+
+#[derive(Serialize)]
+struct Window {
+    before: String,
+    after: String,
+    duration_secs: f64,
+    server_version_num: u32,
+}
+
+#[derive(Serialize)]
+struct Verdict {
+    reset: Reset,
+    reset_at: Option<String>,
+    evictions: Option<u64>,
+    blind_spot: bool,
+}
+
+#[derive(Serialize)]
+struct JsonRow<'a> {
+    dbid: u32,
+    userid: u32,
+    /// A string: queryid is 64-bit and JSON consumers often read numbers as doubles.
+    queryid: String,
+    toplevel: bool,
+    datname: Option<&'a str>,
+    rolname: Option<&'a str>,
+    query: Option<&'a str>,
+    status: Status,
+    partial: bool,
+    evicted_suspect: bool,
+    delta: &'a Counters,
+    share_pct: f64,
+    mean_before_ms: Option<f64>,
+    mean_after_ms: Option<f64>,
+    mean_window_ms: Option<f64>,
+}
+
+/// Renders the machine-readable report (schema version 1), pretty-printed.
+///
+/// # Errors
+///
+/// Fails only if serialization fails, which the types above do not produce in practice.
+pub fn json(delta: &Delta, view: &View) -> Result<String, serde_json::Error> {
+    let report = Report {
+        schema_version: SCHEMA_VERSION,
+        window: Window {
+            before: delta.before_at.to_string(),
+            after: delta.after_at.to_string(),
+            duration_secs: delta.after_at.duration_since(delta.before_at).as_secs_f64(),
+            server_version_num: delta.server_version_num,
+        },
+        verdict: Verdict {
+            reset: delta.reset,
+            reset_at: delta.reset_at.map(|at| at.to_string()),
+            evictions: delta.evictions,
+            blind_spot: delta.blind_spot,
+        },
+        counts: &delta.counts,
+        rows: delta
+            .ranked(view.by, view.top, view.min_calls)
+            .into_iter()
+            .map(json_row)
+            .collect(),
+    };
+    serde_json::to_string_pretty(&report)
+}
+
+fn json_row(row: &Row) -> JsonRow<'_> {
+    JsonRow {
+        dbid: row.key.dbid,
+        userid: row.key.userid,
+        queryid: row.key.queryid.to_string(),
+        toplevel: row.key.toplevel,
+        datname: row.datname.as_deref(),
+        rolname: row.rolname.as_deref(),
+        query: row.query.as_deref(),
+        status: row.status,
+        partial: row.partial,
+        evicted_suspect: row.evicted_suspect,
+        delta: &row.delta,
+        share_pct: row.share_pct,
+        mean_before_ms: row.mean_before,
+        mean_after_ms: row.mean_after,
+        mean_window_ms: row.window_mean(),
     }
 }
 
@@ -448,5 +550,82 @@ mod tests {
         assert_eq!(fmt_duration(SignedDuration::from_secs(59)), "59.0s");
         assert_eq!(fmt_duration(SignedDuration::from_secs(600)), "10m 00s");
         assert_eq!(fmt_duration(SignedDuration::from_secs(3_725)), "1h 02m");
+    }
+
+    fn json_of(delta: &Delta, view: &View) -> serde_json::Value {
+        serde_json::from_str(&json(delta, view).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn json_has_schema_version_window_verdict_and_counts() {
+        let value = json_of(&clean_delta(), &view());
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["window"]["before"], "2026-10-14T10:00:00Z");
+        assert_eq!(value["window"]["after"], "2026-10-14T10:10:00Z");
+        assert_eq!(value["window"]["duration_secs"], 600.0);
+        assert_eq!(value["window"]["server_version_num"], 170_011);
+        assert_eq!(value["verdict"]["reset"], "none");
+        assert!(value["verdict"]["reset_at"].is_null());
+        assert!(value["verdict"]["evictions"].is_null());
+        assert_eq!(value["verdict"]["blind_spot"], true);
+        assert_eq!(value["counts"]["entries"], 4);
+        assert_eq!(value["counts"]["gone"], 1);
+        assert_eq!(value["counts"]["unchanged"], 1);
+    }
+
+    #[test]
+    fn json_rows_are_ranked_typed_and_complete() {
+        let value = json_of(&clean_delta(), &view());
+        let rows = value["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+        let top = &rows[0];
+        assert_eq!(top["queryid"], "2");
+        assert_eq!(top["status"], "ok");
+        assert_eq!(top["partial"], false);
+        assert_eq!(top["evicted_suspect"], false);
+        assert_eq!(top["delta"]["calls"], 4);
+        assert_eq!(top["delta"]["total_exec_time"], 400.0);
+        assert_eq!(top["share_pct"], 80.0);
+        assert_eq!(top["mean_before_ms"], 20.0);
+        assert_eq!(top["mean_window_ms"], 100.0);
+        assert_eq!(top["query"], "UPDATE film SET rental_rate = $1");
+        assert_eq!(rows[1]["status"], "new");
+        assert!(rows[1]["mean_before_ms"].is_null());
+    }
+
+    #[test]
+    fn json_honours_by_and_top() {
+        let view = View {
+            by: SortBy::Calls,
+            top: 1,
+            ..view()
+        };
+        let value = json_of(&clean_delta(), &view);
+        let rows = value["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["queryid"], "1");
+    }
+
+    #[test]
+    fn json_queryid_is_a_string() {
+        let before = snap(T0, V17, vec![(i64::MAX, named(1, 1.0, "SELECT 1"))]);
+        let after = snap(T1, V17, vec![(i64::MAX, named(2, 2.0, "SELECT 1"))]);
+        let value = json_of(&diff(&before, &after).unwrap(), &view());
+        assert_eq!(value["rows"][0]["queryid"], "9223372036854775807");
+    }
+
+    #[test]
+    fn json_reports_proven_reset_with_its_time() {
+        let before = snap(T0, V17, vec![(1, named(100, 50.0, "SELECT 1"))])
+            .with_info(info(0, "2026-10-14 09:00:00+00"));
+        let after = snap(T1, V17, vec![(1, named(7, 3.5, "SELECT 1"))])
+            .with_info(info(2, "2026-10-14 10:05:00+00"));
+        let value = json_of(&diff(&before, &after).unwrap(), &view());
+        assert_eq!(value["verdict"]["reset"], "proven");
+        assert_eq!(value["verdict"]["reset_at"], "2026-10-14T10:05:00Z");
+        assert_eq!(value["verdict"]["evictions"], 2);
+        assert_eq!(value["verdict"]["blind_spot"], false);
+        assert_eq!(value["rows"][0]["partial"], true);
+        assert_eq!(value["rows"][0]["status"], "restarted");
     }
 }
