@@ -173,3 +173,29 @@ fn end_to_end_speed_on_the_repeated_corpus() -> io::Result<()> {
     std::fs::remove_file(&path)?;
     Ok(())
 }
+
+#[test]
+#[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
+fn results_do_not_depend_on_threads_or_batches_on_the_real_corpus() -> io::Result<()> {
+    let path = corpus().join("log/postgresql.json");
+    let run = |threads: usize, batch_size: usize| {
+        pipeline::run(
+            std::slice::from_ref(&path),
+            &Options {
+                threads: Some(threads),
+                batch_size,
+                ..Options::new()
+            },
+        )
+        .map_err(io_err)
+    };
+    let reference = run(1, 4_096)?;
+    for (threads, batch) in [(8, 1), (3, 17), (8, 4_096)] {
+        assert_eq!(
+            run(threads, batch)?.acc,
+            reference.acc,
+            "threads {threads}, batch {batch}"
+        );
+    }
+    Ok(())
+}
