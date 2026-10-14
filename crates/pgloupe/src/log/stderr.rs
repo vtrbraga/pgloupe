@@ -1,7 +1,12 @@
 //! stderr decoder: groups the physical lines of one entry into one record.
+//!
+//! Entries are emitted in the order their first line appears. An entry is held until its backend
+//! starts a new one (or input ends), so later `DETAIL:`/`STATEMENT:` lines can still attach to it
+//! even when other backends' lines intervene. At most `max_open` entries are held: past that the
+//! oldest is closed and emitted, which bounds memory when a backend never speaks again.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     io::BufRead,
 };
 
@@ -13,10 +18,10 @@ use super::{
     record::{LogRecord, Severity},
 };
 
-/// More open entries than this are emitted, least recently touched first.
+/// Entries held at once before the oldest is emitted.
 const DEFAULT_MAX_OPEN: usize = 10_000;
 
-/// Which field of an open entry a tab-indented continuation line extends.
+/// Which field of a held entry a tab-indented continuation line extends.
 #[derive(Debug, Clone, Copy)]
 enum Field {
     Message,
@@ -36,9 +41,11 @@ type Key = Option<u32>;
 
 #[derive(Debug)]
 struct Pending {
+    key: Key,
     record: LogRecord,
     field: Field,
-    touched: u64,
+    /// Its backend started a newer entry (or it was force-closed): nothing can attach any more.
+    closed: bool,
 }
 
 /// Reads stderr logs written with a known `log_line_prefix`.
@@ -47,16 +54,19 @@ pub struct StderrDecoder<R: BufRead> {
     reader: R,
     prefix: Prefix,
     fallback: Option<Offset>,
-    open: HashMap<Key, Pending>,
+    /// Held entries by arrival sequence number.
+    held: BTreeMap<u64, Pending>,
+    /// The not yet closed entry of each backend.
+    current: HashMap<Key, u64>,
+    next_seq: u64,
     ready: VecDeque<LogRecord>,
     /// The entry tab-indented lines extend; `None` after a skipped line.
-    continuation: Option<Key>,
+    continuation: Option<u64>,
     max_open: usize,
-    clock: u64,
     buf: Vec<u8>,
     line_no: u64,
     finished: bool,
-    /// A read error found while entries were open: reported after they are emitted.
+    /// A read error found while entries were held: reported after they are emitted.
     deferred: Option<DecodeError>,
     stats: DecodeStats,
 }
@@ -67,7 +77,7 @@ impl<R: BufRead> StderrDecoder<R> {
         Self::with_max_open(reader, prefix, fallback, DEFAULT_MAX_OPEN)
     }
 
-    /// Like [`StderrDecoder::new`] with an explicit bound on simultaneously open entries.
+    /// Like [`StderrDecoder::new`] with an explicit bound on simultaneously held entries.
     pub fn with_max_open(
         reader: R,
         prefix: Prefix,
@@ -78,11 +88,12 @@ impl<R: BufRead> StderrDecoder<R> {
             reader,
             prefix,
             fallback,
-            open: HashMap::new(),
+            held: BTreeMap::new(),
+            current: HashMap::new(),
+            next_seq: 0,
             ready: VecDeque::new(),
             continuation: None,
             max_open: max_open.max(1),
-            clock: 0,
             buf: Vec::new(),
             line_no: 0,
             finished: false,
@@ -102,15 +113,50 @@ impl<R: BufRead> StderrDecoder<R> {
         self.ready.push_back(record);
     }
 
-    /// Counts a skipped line. With a known pid only that backend's entry is closed; otherwise the
-    /// last touched entry is (the line may have been its continuation or secondary line).
+    /// Closes an entry: nothing attaches to it from now on.
+    fn close(&mut self, seq: u64) {
+        if let Some(entry) = self.held.get_mut(&seq) {
+            entry.closed = true;
+            if self.current.get(&entry.key) == Some(&seq) {
+                self.current.remove(&entry.key);
+            }
+        }
+    }
+
+    /// Emits closed entries from the front, force-closing the oldest while too many are held.
+    fn settle(&mut self) {
+        loop {
+            while self
+                .held
+                .first_key_value()
+                .is_some_and(|(_, entry)| entry.closed)
+            {
+                if let Some((_, entry)) = self.held.pop_first() {
+                    self.queue(entry.record);
+                }
+            }
+            if self.held.len() <= self.max_open {
+                break;
+            }
+            let Some(&oldest) = self.held.keys().next() else {
+                break;
+            };
+            self.close(oldest);
+        }
+    }
+
+    /// Counts a skipped line. With a known pid only that backend's entry is closed to further
+    /// lines; otherwise the entry the line may have continued is.
     fn skip_line(&mut self, reason: &str, pid: Option<u32>, text: Option<&str>) {
         self.stats.skip_with(self.line_no, reason, text);
         if reason.starts_with("no severity label") {
             self.stats.no_label += 1;
         }
-        let target = pid.map(Some).or(self.continuation);
-        if let Some(entry) = target.and_then(|key| self.open.get_mut(&key)) {
+        let target = match pid {
+            Some(pid) => self.current.get(&Some(pid)).copied(),
+            None => self.continuation,
+        };
+        if let Some(entry) = target.and_then(|seq| self.held.get_mut(&seq)) {
             entry.field = Field::Dropped;
         }
         self.continuation = None;
@@ -146,7 +192,7 @@ impl<R: BufRead> StderrDecoder<R> {
     }
 
     fn continue_field(&mut self, extra: &str, line: &str) {
-        let Some(key) = self.continuation else {
+        let Some(seq) = self.continuation else {
             self.stats.skip_with(
                 self.line_no,
                 "continuation of a skipped line or a line without an entry",
@@ -154,7 +200,7 @@ impl<R: BufRead> StderrDecoder<R> {
             );
             return;
         };
-        let Some(pending) = self.open.get_mut(&key) else {
+        let Some(pending) = self.held.get_mut(&seq) else {
             self.stats.skip_with(
                 self.line_no,
                 "continuation line without a log entry",
@@ -186,36 +232,29 @@ impl<R: BufRead> StderrDecoder<R> {
         record.level = level;
         text.clone_into(&mut record.message);
         let key = record.pid;
-        self.clock += 1;
-        let pending = Pending {
-            record,
-            field: Field::Message,
-            touched: self.clock,
-        };
-        if let Some(old) = self.open.insert(key, pending) {
-            self.queue(old.record);
-        } else if self.open.len() > self.max_open {
-            self.evict_oldest();
+        let seq = self.next_seq;
+        self.next_seq += 1;
+        self.held.insert(
+            seq,
+            Pending {
+                key,
+                record,
+                field: Field::Message,
+                closed: false,
+            },
+        );
+        if let Some(previous) = self.current.insert(key, seq) {
+            self.close(previous);
         }
-        self.continuation = Some(key);
-    }
-
-    fn evict_oldest(&mut self) {
-        let oldest = self
-            .open
-            .iter()
-            .min_by_key(|(_, pending)| pending.touched)
-            .map(|(key, _)| *key);
-        if let Some(pending) = oldest.and_then(|key| self.open.remove(&key)) {
-            self.queue(pending.record);
-        }
+        self.continuation = Some(seq);
+        self.settle();
     }
 
     fn attach(&mut self, label: Label, text: &str, pid: Option<u32>, line: &str) {
-        let Some(pending) = self
-            .open
-            .get_mut(&pid)
-            .filter(|p| !matches!(p.field, Field::Dropped))
+        let seq = self.current.get(&pid).copied();
+        let Some((seq, pending)) = seq
+            .and_then(|seq| self.held.get_mut(&seq).map(|pending| (seq, pending)))
+            .filter(|(_, pending)| !matches!(pending.field, Field::Dropped))
         else {
             self.skip_line(
                 "detail or statement line without a matching log entry",
@@ -224,8 +263,6 @@ impl<R: BufRead> StderrDecoder<R> {
             );
             return;
         };
-        self.clock += 1;
-        pending.touched = self.clock;
         let record = &mut pending.record;
         pending.field = match label {
             Label::Detail => {
@@ -250,16 +287,16 @@ impl<R: BufRead> StderrDecoder<R> {
             }
             Label::Location | Label::Level(_) => Field::Ignored,
         };
-        self.continuation = Some(pid);
+        self.continuation = Some(seq);
     }
 
-    /// Emits every open entry, oldest first.
-    fn flush_open(&mut self) {
-        let mut entries: Vec<Pending> = self.open.drain().map(|(_, pending)| pending).collect();
-        entries.sort_by_key(|pending| (pending.record.ts, pending.record.pid));
-        for pending in entries {
-            self.queue(pending.record);
+    /// Closes and emits everything still held, in arrival order.
+    fn flush_held(&mut self) {
+        let seqs: Vec<u64> = self.held.keys().copied().collect();
+        for seq in seqs {
+            self.close(seq);
         }
+        self.settle();
         self.continuation = None;
     }
 }
@@ -297,14 +334,14 @@ impl<R: BufRead> Decoder for StderrDecoder<R> {
                 Ok(Some(line)) => line,
                 Ok(None) => {
                     self.finished = true;
-                    self.flush_open();
+                    self.flush_held();
                     continue;
                 }
                 Err(error) => {
                     // Hand out the complete entries first; the error follows.
                     self.finished = true;
                     self.deferred = Some(error);
-                    self.flush_open();
+                    self.flush_held();
                     continue;
                 }
             };
@@ -677,15 +714,44 @@ mod tests {
     }
 
     #[test]
-    fn open_entries_are_flushed_in_time_order() {
+    fn entries_come_out_in_the_order_they_appear() {
         let text = [
-            "2026-10-14 10:20:12.700 UTC [2] LOG:  later\n",
-            "2026-10-14 10:20:12.100 UTC [1] LOG:  earlier\n",
+            "2026-10-14 10:20:12.700 UTC [2] LOG:  second line of the file\n",
+            "2026-10-14 10:20:12.100 UTC [1] LOG:  first line of the file\n",
+            "2026-10-14 10:20:12.900 UTC [2] LOG:  third\n",
         ]
         .concat();
         let (records, _) = decode_with(SIMPLE, &text);
         let messages: Vec<&str> = records.iter().map(|r| r.message.as_str()).collect();
-        assert_eq!(messages, ["earlier", "later"]);
+        assert_eq!(
+            messages,
+            ["second line of the file", "first line of the file", "third"]
+        );
+    }
+
+    #[test]
+    fn a_silent_backend_does_not_hold_back_the_others_forever() {
+        // pid 1 speaks once; pid 2 then produces more entries than may be held.
+        let mut text = line(1, "LOG", "quiet");
+        for i in 0..50 {
+            text.push_str(&line(2, "LOG", &format!("busy {i}")));
+        }
+        let mut decoder = StderrDecoder::with_max_open(
+            text.as_bytes(),
+            Prefix::compile(SIMPLE).unwrap(),
+            None,
+            5,
+        );
+        let first = decoder.next_record().unwrap().unwrap();
+        assert_eq!(
+            first.message, "quiet",
+            "the oldest is force-closed over the bound"
+        );
+        let mut count = 1;
+        while decoder.next_record().unwrap().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 51);
     }
 
     #[test]
@@ -712,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn the_least_recently_touched_entry_is_evicted_over_the_cap() {
+    fn the_oldest_entry_is_emitted_when_too_many_are_held() {
         let text = [
             line(1, "LOG", "a"),
             line(2, "LOG", "b"),
