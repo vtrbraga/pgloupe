@@ -71,6 +71,10 @@ cargo run -p pgloupe -- logs report --store logs.db --since 2026-10-14 --until 2
 - Keep the store on the Linux filesystem; SQLite's WAL mode is unreliable on `/mnt/c`.
 - With `--max-fingerprints` below the number of distinct statements in an hour, that hour folds the rest into the overflow row, so `report` can differ from `logs analyze` for that run.
 
+## Benchmark input
+
+`cargo run --release --example gen_log -- OUT RECORDS HOURS FINGERPRINTS [SEED]` writes a deterministic jsonlog with many hours and many distinct statements (per tenant and partition), for timing `logs analyze`, `logs ingest` and `logs report` on something larger and wider than the synth corpus.
+
 ## Synthetic corpus
 
 `synth` generates Postgres logs and `pg_stat_statements` snapshots from a seeded workload on the Pagila sample database. Requires Docker.
