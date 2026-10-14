@@ -248,76 +248,8 @@ pub fn rank(rows: &mut [JoinedRow], by: SortBy) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        analyze::{acc::Accumulators, report::all_statements},
-        log::{LogRecord, Severity},
-        stats::{
-            delta::diff,
-            snapshot::{Entry, Key, Snapshot},
-        },
-        testutil::{entry, key, ts},
-    };
-
-    /// Log rows for `(sql, calls, ms each)`, through the real accumulators so ids are real.
-    fn log_rows(statements: &[(&str, usize, f64)]) -> Vec<StatementRow> {
-        let mut acc = Accumulators::new(1_000, 60);
-        let mut second = 0;
-        for (sql, calls, ms) in statements {
-            for _ in 0..*calls {
-                second += 1;
-                acc.add_record(&LogRecord::new(
-                    ts("2026-10-14T10:00:00Z") + std::time::Duration::from_secs(second),
-                    Severity::Log,
-                    format!("duration: {ms} ms  statement: {sql}"),
-                ));
-            }
-        }
-        all_statements(&acc)
-    }
-
-    fn with_text(text: Option<&str>, calls: u64, total: f64) -> Entry {
-        Entry {
-            query: text.map(str::to_owned),
-            ..entry(calls, total)
-        }
-    }
-
-    fn snapshot(at: &str, entries: Vec<(Key, Entry)>) -> Snapshot {
-        Snapshot {
-            taken_at: ts(at),
-            server_version_num: 170_000,
-            entries: entries.into_iter().collect(),
-            skipped_no_queryid: 0,
-            optional_columns: std::collections::BTreeSet::new(),
-            info: None,
-        }
-    }
-
-    /// A delta whose rows have the given `(key, text, calls, total ms)` as their window counts:
-    /// `before` has the entries at zero calls so they are `Ok`, not `New`.
-    fn delta(rows: &[(Key, Option<&str>, u64, f64)]) -> Delta {
-        let before = rows
-            .iter()
-            .map(|(k, text, _, _)| (*k, with_text(*text, 1, 1.0)))
-            .collect();
-        let after = rows
-            .iter()
-            .map(|(k, text, calls, total)| (*k, with_text(*text, 1 + calls, 1.0 + total)))
-            .collect();
-        diff(
-            &snapshot("2026-10-14T10:00:00Z", before),
-            &snapshot("2026-10-14T11:00:00Z", after),
-        )
-        .unwrap()
-    }
-
-    fn user_key(queryid: i64, userid: u32) -> Key {
-        Key {
-            userid,
-            ..key(queryid)
-        }
-    }
+    use super::{super::testkit::*, *};
+    use crate::{stats::delta::diff, testutil::key};
 
     const FILM: &str = "SELECT * FROM film WHERE film_id = $1";
 

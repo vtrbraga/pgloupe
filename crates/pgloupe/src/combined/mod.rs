@@ -1,7 +1,11 @@
 //! The combined report: log statistics joined with `pg_stat_statements` deltas.
 
+mod findings;
 mod join;
+#[cfg(test)]
+mod testkit;
 
+pub use findings::{Context, findings};
 pub use join::{Joined, join, rank};
 
 use serde::Serialize;
@@ -47,4 +51,17 @@ pub struct StatsSide {
     pub queryids: Vec<String>,
     /// `new`, `restarted`, `partial`, `evicted_suspect`.
     pub flags: Vec<&'static str>,
+}
+
+/// Something the report noticed about the data and wants the reader to know.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Finding {
+    /// Stable identifier, for tools and tests.
+    pub code: &'static str,
+    /// `info` or `warn`.
+    pub severity: &'static str,
+    pub message: String,
+    /// Fingerprints the finding is about, when it is about particular statements.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub statements: Vec<String>,
 }
