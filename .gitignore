@@ -7,7 +7,8 @@
 
 # Local Claude notes (docs live in OneDrive, see CLAUDE.md)
 CLAUDE.md
-.claude/settings.local.json
+CLAUDE.local.md
+.claude/
 
 # Editors / OS
 .vscode/

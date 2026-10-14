@@ -1,14 +1,13 @@
 use clap::Parser;
 
 /// A close look at your Postgres logs and query stats.
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[command(version, about)]
-struct Cli {}
+struct Cli;
 
-fn main() -> anyhow::Result<()> {
-    let _cli = Cli::parse();
+fn main() {
+    Cli::parse();
     println!("pgloupe {}", env!("CARGO_PKG_VERSION"));
-    Ok(())
 }
 
 #[cfg(test)]
