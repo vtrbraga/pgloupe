@@ -42,7 +42,7 @@ fn latest(a: Option<Timestamp>, b: Option<Timestamp>) -> Option<Timestamp> {
     }
 }
 
-fn add_maps<K: Ord, V: Merge>(into: &mut BTreeMap<K, V>, from: BTreeMap<K, V>) {
+pub(super) fn add_maps<K: Ord, V: Merge>(into: &mut BTreeMap<K, V>, from: BTreeMap<K, V>) {
     for (key, value) in from {
         match into.entry(key) {
             std::collections::btree_map::Entry::Occupied(mut slot) => slot.get_mut().merge(value),

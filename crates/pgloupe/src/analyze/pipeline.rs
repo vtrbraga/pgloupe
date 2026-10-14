@@ -14,7 +14,7 @@ use std::{
 use rayon::prelude::*;
 use thiserror::Error;
 
-use super::{Merge, acc::Accumulators};
+use super::{Merge, acc::Accumulators, slice::Slices};
 use crate::log::{
     DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions, SetupError,
     Severity, decoder_for,
@@ -126,6 +126,66 @@ pub enum AnalyzeError {
 /// Fails when a file cannot be opened or read, is binary, is a stderr log whose prefix cannot be
 /// inferred, or the worker pool cannot start.
 pub fn run(paths: &[PathBuf], options: &Options) -> Result<Output, AnalyzeError> {
+    let (mut acc, files) = run_with(paths, options, || {
+        Accumulators::new(worker_limit(options), options.bucket_secs)
+    })?;
+    acc.recap(options.max_fingerprints);
+    Ok(Output { acc, files })
+}
+
+/// One file folded into per-hour slices (one-minute timeline buckets, the store's resolution).
+#[derive(Debug)]
+pub struct SlicedOutput {
+    pub slices: Slices,
+    pub file: FileSummary,
+}
+
+/// Reads one file into per-hour slices, each capped at `options.max_fingerprints`.
+///
+/// # Errors
+///
+/// Fails like [`run`].
+pub fn run_sliced(path: &Path, options: &Options) -> Result<SlicedOutput, AnalyzeError> {
+    let paths = [path.to_path_buf()];
+    let (mut slices, mut files) =
+        run_with(&paths, options, || Slices::new(worker_limit(options), 60))?;
+    slices.recap(options.max_fingerprints);
+    let file = files.pop().ok_or_else(|| AnalyzeError::Open {
+        path: path.to_path_buf(),
+        source: io::Error::other("no file summary"),
+    })?;
+    Ok(SlicedOutput { slices, file })
+}
+
+fn worker_limit(options: &Options) -> usize {
+    options
+        .max_fingerprints
+        .saturating_mul(WORKER_LIMIT_FACTOR)
+        .max(1)
+}
+
+/// What a worker folds records into.
+trait Fold: Merge + Send {
+    fn add(&mut self, record: &LogRecord);
+}
+
+impl Fold for Accumulators {
+    fn add(&mut self, record: &LogRecord) {
+        self.add_record(record);
+    }
+}
+
+impl Fold for Slices {
+    fn add(&mut self, record: &LogRecord) {
+        self.add_record(record);
+    }
+}
+
+fn run_with<S: Fold>(
+    paths: &[PathBuf],
+    options: &Options,
+    new: impl Fn() -> S + Sync + Send,
+) -> Result<(S, Vec<FileSummary>), AnalyzeError> {
     let summaries = Arc::new(Mutex::new(Vec::new()));
     let failure = Arc::new(Mutex::new(None));
     let batches = Batches {
@@ -135,25 +195,20 @@ pub fn run(paths: &[PathBuf], options: &Options) -> Result<Output, AnalyzeError>
         summaries: Arc::clone(&summaries),
         failure: Arc::clone(&failure),
     };
-    let worker_limit = options
-        .max_fingerprints
-        .saturating_mul(WORKER_LIMIT_FACTOR)
-        .max(1);
-    let new_acc = || Accumulators::new(worker_limit, options.bucket_secs);
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(options.threads.unwrap_or(0))
         .build()
         .map_err(AnalyzeError::Pool)?;
-    let mut acc = pool.install(|| {
+    let acc = pool.install(|| {
         batches
             .par_bridge()
-            .fold(new_acc, |mut acc, batch| {
+            .fold(&new, |mut acc, batch| {
                 for record in &batch {
-                    acc.add_record(record);
+                    acc.add(record);
                 }
                 acc
             })
-            .reduce(new_acc, |mut left, right| {
+            .reduce(&new, |mut left, right| {
                 left.merge(right);
                 left
             })
@@ -161,13 +216,9 @@ pub fn run(paths: &[PathBuf], options: &Options) -> Result<Output, AnalyzeError>
     if let Some(error) = lock(&failure).take() {
         return Err(error);
     }
-    acc.recap(options.max_fingerprints);
     let mut files = std::mem::take(&mut *lock(&summaries));
     files.sort_by_key(|file: &(usize, FileSummary)| file.0);
-    Ok(Output {
-        acc,
-        files: files.into_iter().map(|(_, file)| file).collect(),
-    })
+    Ok((acc, files.into_iter().map(|(_, file)| file).collect()))
 }
 
 /// Locks a mutex, recovering the data if another thread panicked while holding it.
@@ -400,6 +451,57 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn slices_merge_to_what_run_computes() {
+        let path = fixture("sample.json");
+        let whole = run(std::slice::from_ref(&path), &Options::new()).unwrap();
+        let sliced = run_sliced(&path, &Options::new()).unwrap();
+        let mut merged = Accumulators::new(Options::new().max_fingerprints, 60);
+        for (_, acc) in sliced.slices.by_hour {
+            merged.merge(acc);
+        }
+        merged.recap(Options::new().max_fingerprints);
+        assert_eq!(merged.totals, whole.acc.totals);
+        assert_eq!(merged.queries, whole.acc.queries);
+        assert_eq!(merged.overflow, whole.acc.overflow);
+    }
+
+    #[test]
+    fn slices_are_keyed_by_utc_hour() {
+        let log = [
+            r#"{"timestamp":"2026-10-14 10:59:59.000 UTC","pid":1,"session_id":"a.1","line_num":1,"error_severity":"LOG","message":"duration: 1.0 ms  statement: SELECT 1","backend_type":"client backend"}"#,
+            r#"{"timestamp":"2026-10-14 11:00:00.000 UTC","pid":1,"session_id":"a.1","line_num":2,"error_severity":"LOG","message":"duration: 2.0 ms  statement: SELECT 1","backend_type":"client backend"}"#,
+        ]
+        .join("\n");
+        let path = scratch("hours.json", log.as_bytes());
+        let sliced = run_sliced(&path, &Options::new()).unwrap();
+        let hours: Vec<i64> = sliced.slices.by_hour.keys().copied().collect();
+        assert_eq!(hours.len(), 2);
+        assert_eq!(hours[1] - hours[0], 3_600);
+        assert_eq!(hours[0] % 3_600, 0);
+        for acc in sliced.slices.by_hour.values() {
+            assert_eq!(acc.totals.records, 1);
+        }
+    }
+
+    #[test]
+    fn slices_do_not_depend_on_threads_or_batches() {
+        let path = repeated("sample.json", 40);
+        let slices = |threads, batch_size| {
+            run_sliced(
+                &path,
+                &Options {
+                    threads: Some(threads),
+                    batch_size,
+                    ..Options::new()
+                },
+            )
+            .unwrap()
+            .slices
+        };
+        assert_eq!(slices(1, 4_096), slices(4, 3));
+    }
 
     #[test]
     fn accumulators_survive_json() {

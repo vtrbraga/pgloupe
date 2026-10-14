@@ -8,6 +8,7 @@ pub mod pipeline;
 pub mod render;
 pub mod report;
 pub mod sketch;
+pub mod slice;
 
 /// Combining two partial results into one.
 ///
