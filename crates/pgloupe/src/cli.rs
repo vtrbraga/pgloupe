@@ -69,6 +69,13 @@ impl Cli {
                         ErrorKind::MissingRequiredArgument,
                         "--since and --until need --store",
                     )
+                } else if args.store.is_some()
+                    && (args.capture.params || args.capture.slowest.is_some())
+                {
+                    fail(
+                        ErrorKind::ArgumentConflict,
+                        "--params and --slowest apply while reading log files; a store keeps what its ingest captured",
+                    )
                 } else if info_pair(&args.before_info, &args.after_info) {
                     fail(
                         ErrorKind::MissingRequiredArgument,
@@ -186,6 +193,26 @@ struct AnalyzeArgs {
     /// Report format.
     #[arg(long = "output", value_enum, default_value_t = OutputFormat::Text)]
     output: OutputFormat,
+    #[command(flatten)]
+    capture: CaptureArgs,
+}
+
+/// What to keep besides the aggregates.
+#[derive(Debug, Args)]
+struct CaptureArgs {
+    /// Slowest single executions to keep and list (default 20).
+    #[arg(long)]
+    slowest: Option<usize>,
+    /// Keep the bind parameters of those executions; they can hold personal data.
+    #[arg(long)]
+    params: bool,
+}
+
+impl CaptureArgs {
+    fn slowest(&self) -> usize {
+        self.slowest
+            .unwrap_or(crate::analyze::slowest::DEFAULT_KEPT)
+    }
 }
 
 #[derive(Debug, Args)]
@@ -214,6 +241,8 @@ struct IngestArgs {
     /// Read and store files even when their content is already in the store.
     #[arg(long)]
     force: bool,
+    #[command(flatten)]
+    capture: CaptureArgs,
 }
 
 #[derive(Debug, Args)]
@@ -298,6 +327,8 @@ struct CombinedArgs {
     /// Write the report here instead of to standard output.
     #[arg(long)]
     out: Option<PathBuf>,
+    #[command(flatten)]
+    capture: CaptureArgs,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -562,6 +593,8 @@ fn logs_ingest(
         threads: args.threads.map(usize::try_from).transpose()?,
         batch_size: pipeline::Options::new().batch_size,
         hash_marks: None,
+        slowest: args.capture.slowest(),
+        params: args.capture.params,
     };
     let mut failed = false;
     for outcome in store::ingest(&mut store, &args.files, &options, args.force) {
@@ -663,6 +696,8 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
             threads: args.threads.map(usize::try_from).transpose()?,
             batch_size: pipeline::Options::new().batch_size,
             hash_marks: None,
+            slowest: args.capture.slowest(),
+            params: args.capture.params,
         };
         let output = pipeline::run(&args.files, &pipeline_options).inspect_err(|error| {
             explain_prefix_failure(error, err);
@@ -748,6 +783,8 @@ fn logs_analyze(
         threads: args.threads.map(usize::try_from).transpose()?,
         batch_size: pipeline::Options::new().batch_size,
         hash_marks: None,
+        slowest: args.capture.slowest(),
+        params: args.capture.params,
     };
     let output = match pipeline::run(&args.files, &options) {
         Ok(output) => output,

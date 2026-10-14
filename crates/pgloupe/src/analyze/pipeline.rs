@@ -44,6 +44,10 @@ pub struct Options {
     /// When set, the decompressed bytes of each file are hashed while they are read, and the
     /// running hash is snapshotted at these lengths (see [`Content`]).
     pub hash_marks: Option<Vec<u64>>,
+    /// Slowest single executions to keep.
+    pub slowest: usize,
+    /// Keep bind parameters with the slowest executions.
+    pub params: bool,
 }
 
 impl Options {
@@ -59,6 +63,8 @@ impl Options {
             threads: None,
             batch_size: 4_096,
             hash_marks: None,
+            slowest: super::slowest::DEFAULT_KEPT,
+            params: false,
         }
     }
 }
@@ -135,6 +141,7 @@ pub enum AnalyzeError {
 pub fn run(paths: &[PathBuf], options: &Options) -> Result<Output, AnalyzeError> {
     let (mut acc, files) = run_with(paths, options, || {
         Accumulators::new(worker_limit(options), options.bucket_secs)
+            .with_capture(options.slowest, options.params)
     })?;
     acc.recap(options.max_fingerprints);
     Ok(Output { acc, files })
@@ -154,8 +161,9 @@ pub struct SlicedOutput {
 /// Fails like [`run`].
 pub fn run_sliced(path: &Path, options: &Options) -> Result<SlicedOutput, AnalyzeError> {
     let paths = [path.to_path_buf()];
-    let (mut slices, mut files) =
-        run_with(&paths, options, || Slices::new(worker_limit(options), 60))?;
+    let (mut slices, mut files) = run_with(&paths, options, || {
+        Slices::new(worker_limit(options), 60).with_capture(options.slowest, options.params)
+    })?;
     slices.recap(options.max_fingerprints);
     let file = files.pop().ok_or_else(|| AnalyzeError::Open {
         path: path.to_path_buf(),

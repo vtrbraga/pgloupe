@@ -46,6 +46,11 @@
   "kind": "pgloupe.report",
   "logs": {
     "autovacuum": [],
+    "cancelled": {
+      "by_reason": [],
+      "statements": [],
+      "total": 0
+    },
     "checkpoints": [],
     "connections": {
       "authenticated": 0,
@@ -282,6 +287,99 @@
       "records": 9
     },
     "schema_version": 1,
+    "slowest": {
+      "has_params": false,
+      "rows": [
+        {
+          "application": "synth:demo",
+          "database": "pagila",
+          "duration_ms": 120.0,
+          "fingerprint": "f0e619a53604ffb7",
+          "host": null,
+          "params": null,
+          "text": "UPDATE film SET rental_rate = 3.99",
+          "timestamp": "2026-10-14T10:06:00.1Z",
+          "user": "postgres"
+        },
+        {
+          "application": "synth:demo",
+          "database": "pagila",
+          "duration_ms": 100.0,
+          "fingerprint": "f0e619a53604ffb7",
+          "host": null,
+          "params": null,
+          "text": "UPDATE film SET rental_rate = 2.99",
+          "timestamp": "2026-10-14T10:05:00.1Z",
+          "user": "postgres"
+        },
+        {
+          "application": "synth:demo",
+          "database": "pagila",
+          "duration_ms": 4.1,
+          "fingerprint": "a8fbe6a1633776f6",
+          "host": null,
+          "params": null,
+          "text": "SELECT * FROM actor",
+          "timestamp": "2026-10-14T10:08:00.1Z",
+          "user": "postgres"
+        },
+        {
+          "application": "synth:demo",
+          "database": "pagila",
+          "duration_ms": 3.2,
+          "fingerprint": "a8fbe6a1633776f6",
+          "host": null,
+          "params": null,
+          "text": "SELECT * FROM actor",
+          "timestamp": "2026-10-14T10:07:00.1Z",
+          "user": "postgres"
+        },
+        {
+          "application": "synth:demo",
+          "database": "pagila",
+          "duration_ms": 0.6,
+          "fingerprint": "9703bd645db62a78",
+          "host": null,
+          "params": null,
+          "text": "SELECT * FROM film WHERE film_id = 11",
+          "timestamp": "2026-10-14T10:02:00.2Z",
+          "user": "postgres"
+        },
+        {
+          "application": "synth:demo",
+          "database": "pagila",
+          "duration_ms": 0.5,
+          "fingerprint": "9703bd645db62a78",
+          "host": null,
+          "params": null,
+          "text": "SELECT * FROM film WHERE film_id = 10",
+          "timestamp": "2026-10-14T10:01:00.1Z",
+          "user": "postgres"
+        },
+        {
+          "application": "synth:demo",
+          "database": "pagila",
+          "duration_ms": 0.5,
+          "fingerprint": "9703bd645db62a78",
+          "host": null,
+          "params": null,
+          "text": "SELECT * FROM film WHERE film_id = 13",
+          "timestamp": "2026-10-14T10:04:00.4Z",
+          "user": "postgres"
+        },
+        {
+          "application": "synth:demo",
+          "database": "pagila",
+          "duration_ms": 0.4,
+          "fingerprint": "9703bd645db62a78",
+          "host": null,
+          "params": null,
+          "text": "SELECT * FROM film WHERE film_id = 12",
+          "timestamp": "2026-10-14T10:03:00.3Z",
+          "user": "postgres"
+        }
+      ]
+    },
     "statements": [],
     "statements_by": "total",
     "temp_files": {

@@ -297,6 +297,64 @@ fn session_ms(time: &str) -> Option<f64> {
     Some((hours * 3600.0 + minutes * 60.0 + seconds) * 1000.0)
 }
 
+/// Why a statement was cancelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelReason {
+    /// `statement_timeout` expired.
+    StatementTimeout,
+    /// A user or application cancelled it (Ctrl-C, `pg_cancel_backend`).
+    UserRequest,
+    /// `lock_timeout` expired.
+    LockTimeout,
+    /// Any other cancellation (recovery conflict, autovacuum, ...).
+    Other,
+}
+
+impl CancelReason {
+    /// The name used in reports.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CancelReason::StatementTimeout => "statement_timeout",
+            CancelReason::UserRequest => "user_request",
+            CancelReason::LockTimeout => "lock_timeout",
+            CancelReason::Other => "other",
+        }
+    }
+}
+
+/// Why `record` says a statement was cancelled, if it does: SQLSTATE `57014` (`query_canceled`) or
+/// `55P03` (`lock_not_available`), or the server's wording when the log carries no SQLSTATE.
+#[must_use]
+pub fn cancel_reason(record: &LogRecord) -> Option<CancelReason> {
+    let message = record.message.as_str();
+    let cancelled = matches!(record.sqlstate.as_deref(), Some("57014" | "55P03"))
+        || message.starts_with("canceling statement due to");
+    if !cancelled {
+        return None;
+    }
+    Some(if message.contains("statement timeout") {
+        CancelReason::StatementTimeout
+    } else if message.contains("user request") {
+        CancelReason::UserRequest
+    } else if message.contains("lock timeout") {
+        CancelReason::LockTimeout
+    } else {
+        CancelReason::Other
+    })
+}
+
+/// The bind parameters in the DETAIL of an `execute` record (`parameters: $1 = '5', ...`).
+#[must_use]
+pub fn parameters(record: &LogRecord) -> Option<&str> {
+    record
+        .detail
+        .as_deref()?
+        .strip_prefix("parameters: ")
+        .map(str::trim)
+        .filter(|params| !params.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use jiff::Timestamp;
@@ -309,6 +367,65 @@ mod tests {
 
     fn log(message: &str) -> Event {
         classify(&record(Severity::Log, message))
+    }
+
+    fn error_record(sqlstate: Option<&str>, message: &str) -> LogRecord {
+        LogRecord {
+            sqlstate: sqlstate.map(str::to_owned),
+            ..record(Severity::Error, message)
+        }
+    }
+
+    #[test]
+    fn cancellations_are_recognised_with_their_reason() {
+        let reason = |sqlstate, message| cancel_reason(&error_record(sqlstate, message));
+        assert_eq!(
+            reason(
+                Some("57014"),
+                "canceling statement due to statement timeout"
+            ),
+            Some(CancelReason::StatementTimeout)
+        );
+        assert_eq!(
+            reason(Some("57014"), "canceling statement due to user request"),
+            Some(CancelReason::UserRequest)
+        );
+        assert_eq!(
+            reason(Some("55P03"), "canceling statement due to lock timeout"),
+            Some(CancelReason::LockTimeout)
+        );
+        // No SQLSTATE in the log: the wording decides.
+        assert_eq!(
+            reason(None, "canceling statement due to user request"),
+            Some(CancelReason::UserRequest)
+        );
+        assert_eq!(
+            reason(Some("57014"), "canceling autovacuum task"),
+            Some(CancelReason::Other)
+        );
+        assert_eq!(
+            reason(None, "canceling statement due to conflict with recovery"),
+            Some(CancelReason::Other)
+        );
+        assert_eq!(reason(Some("23505"), "duplicate key"), None);
+        assert_eq!(reason(Some("25P03"), "idle-in-transaction timeout"), None);
+    }
+
+    #[test]
+    fn parameters_come_from_the_detail() {
+        let with = |detail: &str| LogRecord {
+            detail: Some(detail.to_owned()),
+            ..record(
+                Severity::Log,
+                "duration: 1 ms  execute <unnamed>: SELECT $1",
+            )
+        };
+        assert_eq!(
+            parameters(&with("parameters: $1 = '5', $2 = 'x'")),
+            Some("$1 = '5', $2 = 'x'")
+        );
+        assert_eq!(parameters(&with("something else")), None);
+        assert_eq!(parameters(&record(Severity::Log, "x")), None);
     }
 
     #[test]

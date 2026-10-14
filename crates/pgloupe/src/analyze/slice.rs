@@ -22,6 +22,8 @@ pub fn hour_of(second: i64) -> i64 {
 pub struct Slices {
     limit: usize,
     bucket_secs: i64,
+    slowest: usize,
+    params: bool,
     /// Keyed by the hour's start, in Unix seconds.
     pub by_hour: BTreeMap<i64, Accumulators>,
 }
@@ -33,16 +35,27 @@ impl Slices {
         Slices {
             limit,
             bucket_secs,
+            slowest: super::slowest::DEFAULT_KEPT,
+            params: false,
             by_hour: BTreeMap::new(),
         }
     }
 
+    /// Keeps the `slowest` slowest executions per hour, with bind parameters when `params` is set.
+    #[must_use]
+    pub fn with_capture(mut self, slowest: usize, params: bool) -> Self {
+        self.slowest = slowest;
+        self.params = params;
+        self
+    }
+
     /// Folds `record` into its hour.
     pub fn add_record(&mut self, record: &LogRecord) {
-        let (limit, bucket_secs) = (self.limit, self.bucket_secs);
+        let (limit, bucket_secs, slowest, params) =
+            (self.limit, self.bucket_secs, self.slowest, self.params);
         self.by_hour
             .entry(hour_of(record.ts.as_second()))
-            .or_insert_with(|| Accumulators::new(limit, bucket_secs))
+            .or_insert_with(|| Accumulators::new(limit, bucket_secs).with_capture(slowest, params))
             .add_record(record);
     }
 

@@ -5,8 +5,8 @@ use std::time::Duration;
 use super::{
     histogram::HistogramBucket,
     report::{
-        CheckpointRow, DimensionRow, ErrorRow, KindRow, Quantiles, Report, StatementRow, TableRow,
-        TimelineRow,
+        CancelledReport, CheckpointRow, DimensionRow, ErrorRow, KindRow, Quantiles, Report,
+        SlowestReport, StatementRow, TableRow, TimelineRow,
     },
 };
 
@@ -47,6 +47,8 @@ pub fn sections(report: &Report, statements_table: bool) -> Vec<String> {
         );
     }
     section(&mut lines, "errors", errors(&report.errors));
+    section(&mut lines, "cancelled", cancelled(&report.cancelled));
+    section(&mut lines, "slowest executions", slowest(&report.slowest));
     section(&mut lines, "locks", locks(report));
     section(&mut lines, "temp files", temp_files(report));
     section(&mut lines, "connections", connections(report));
@@ -331,6 +333,55 @@ fn autovacuum(rows: &[TableRow]) -> Vec<String> {
             )
         })
         .collect()
+}
+
+fn cancelled(report: &CancelledReport) -> Vec<String> {
+    if report.total == 0 {
+        return Vec::new();
+    }
+    let reasons = report
+        .by_reason
+        .iter()
+        .map(|row| format!("{}={}", row.reason, row.count))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut lines = vec![format!("{} cancelled: {reasons}", report.total)];
+    lines.extend(report.statements.iter().map(|row| {
+        format!(
+            "{}x of {} calls  {}  {}",
+            row.cancelled,
+            row.calls,
+            &row.fingerprint[..8],
+            cut(&row.text)
+        )
+    }));
+    lines
+}
+
+fn slowest(report: &SlowestReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    for row in &report.rows {
+        let who = [&row.database, &row.user, &row.application, &row.host]
+            .into_iter()
+            .map(|value| value.as_deref().unwrap_or("-"))
+            .collect::<Vec<_>>()
+            .join("/");
+        lines.push(format!(
+            "{} ms  {}  {}  {}  {}",
+            num(row.duration_ms),
+            row.timestamp,
+            &row.fingerprint[..8],
+            who,
+            cut(&row.text)
+        ));
+        if let Some(params) = &row.params {
+            lines.push(format!("    parameters: {}", cut(params)));
+        }
+    }
+    if !report.rows.is_empty() && !report.has_params {
+        lines.push("(bind parameters were not kept; pass --params to keep them)".to_owned());
+    }
+    lines
 }
 
 fn kinds(rows: &[KindRow]) -> Vec<String> {

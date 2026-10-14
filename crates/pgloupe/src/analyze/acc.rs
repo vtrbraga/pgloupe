@@ -8,10 +8,11 @@ use serde::{Deserialize, Serialize};
 use super::{
     Merge,
     dimensions::{self, Attributes, Dimensions, Tally},
-    event::{Event, StatementKind, classify},
+    event::{Event, StatementKind, cancel_reason, classify, parameters},
     fingerprint::{display_text, fingerprint, sql_hash, statement_kind},
     kind::QueryKind,
     sketch::Sketch,
+    slowest::{self, Execution, Slowest},
 };
 use crate::log::LogRecord;
 
@@ -109,6 +110,8 @@ pub struct QueryStats {
     pub first_seen: Option<Timestamp>,
     pub last_seen: Option<Timestamp>,
     pub errors: u64,
+    /// Executions cancelled (timeout or request); also counted in `errors`.
+    pub cancelled: u64,
     pub lock_waits: u64,
     pub lock_wait_us: u64,
     pub temp_files: u64,
@@ -135,6 +138,7 @@ impl QueryStats {
             first_seen: None,
             last_seen: None,
             errors: 0,
+            cancelled: 0,
             lock_waits: 0,
             lock_wait_us: 0,
             temp_files: 0,
@@ -214,6 +218,7 @@ impl Merge for QueryStats {
         self.first_seen = earliest(self.first_seen, other.first_seen);
         self.last_seen = latest(self.last_seen, other.last_seen);
         self.errors += other.errors;
+        self.cancelled += other.cancelled;
         self.lock_waits += other.lock_waits;
         self.lock_wait_us += other.lock_wait_us;
         self.temp_files += other.temp_files;
@@ -423,6 +428,8 @@ pub struct Totals {
     pub unparsed_statements: u64,
     /// Durations of every statement that carried one, in milliseconds.
     pub durations: Sketch,
+    /// Cancelled statements by [`CancelReason`] name.
+    pub cancelled: BTreeMap<String, u64>,
 }
 
 impl Totals {
@@ -445,6 +452,7 @@ impl Totals {
             },
             unparsed_statements: 0,
             durations: Sketch::new(),
+            cancelled: BTreeMap::new(),
         }
     }
 
@@ -539,6 +547,12 @@ impl Totals {
 
     fn add_error(&mut self, record: &LogRecord) {
         let ts = record.ts;
+        if let Some(reason) = cancel_reason(record) {
+            *self
+                .cancelled
+                .entry(reason.as_str().to_owned())
+                .or_insert(0) += 1;
+        }
         self.timeline.add(ts, |b| b.errors += 1);
         let key = (record.level.label().to_owned(), record.sqlstate.clone());
         let stat = self.errors.entry(key).or_insert_with(|| ErrorStat {
@@ -576,6 +590,9 @@ impl Merge for Totals {
         self.timeline.merge(other.timeline);
         self.unparsed_statements += other.unparsed_statements;
         self.durations.merge(other.durations);
+        for (reason, n) in other.cancelled {
+            *self.cancelled.entry(reason).or_insert(0) += n;
+        }
     }
 }
 
@@ -588,6 +605,11 @@ pub struct Accumulators {
     pub overflow: QueryStats,
     /// Statements, errors and sessions by database, user, application and host.
     pub dims: Dimensions,
+    /// The slowest single executions.
+    pub slowest: Slowest,
+    /// Whether to keep bind parameters with the slowest executions.
+    #[serde(skip)]
+    capture_params: bool,
     limit: usize,
 }
 
@@ -600,8 +622,18 @@ impl Accumulators {
             queries: BTreeMap::new(),
             overflow: QueryStats::new(0, true, "<overflow>".to_owned(), QueryKind::Other),
             dims: Dimensions::default(),
+            slowest: Slowest::new(slowest::DEFAULT_KEPT),
+            capture_params: false,
             limit: limit.max(1),
         }
+    }
+
+    /// Keeps the `slowest` slowest executions, with their bind parameters when `params` is set.
+    #[must_use]
+    pub fn with_capture(mut self, slowest: usize, params: bool) -> Self {
+        self.slowest = Slowest::new(slowest);
+        self.capture_params = params;
+        self
     }
 
     /// Classifies `record` and folds it in.
@@ -619,6 +651,10 @@ impl Accumulators {
             } => {
                 let query = self.query_for(text, ts, record.query_id);
                 query.call(*duration_ms, ts, *kind);
+                let fingerprint = query.id;
+                if let Some(ms) = duration_ms {
+                    self.offer_slow(record, fingerprint, text, to_micros(*ms));
+                }
             }
             Event::LockWait { .. } => {
                 if let Some(sql) = record.statement.as_deref() {
@@ -647,10 +683,34 @@ impl Accumulators {
         if record.level.is_error()
             && let Some(sql) = record.statement.as_deref()
         {
+            let cancelled = cancel_reason(record).is_some();
             let query = self.query_for(sql, ts, record.query_id);
             query.seen(ts);
             query.errors += 1;
+            query.cancelled += u64::from(cancelled);
         }
+    }
+
+    fn offer_slow(&mut self, record: &LogRecord, fingerprint: u64, text: &str, duration_us: u64) {
+        if !self.slowest.wants(duration_us) {
+            return;
+        }
+        let owned = |value: &Option<String>| value.clone();
+        self.slowest.offer(Execution {
+            ts: record.ts,
+            duration_us,
+            fingerprint,
+            text: slowest::cut(text),
+            params: if self.capture_params {
+                parameters(record).map(slowest::cut)
+            } else {
+                None
+            },
+            database: owned(&record.database),
+            user: owned(&record.user),
+            application: owned(&record.application),
+            host: owned(&record.host),
+        });
     }
 
     /// Counts the record under its database, user, application and host.
@@ -725,6 +785,7 @@ impl Merge for Accumulators {
         add_maps(&mut self.queries, other.queries);
         self.overflow.merge(other.overflow);
         self.dims.merge(other.dims);
+        self.slowest.merge(other.slowest);
         let limit = self.limit.max(other.limit);
         self.recap(limit);
     }
@@ -1239,5 +1300,89 @@ mod tests {
             assert!(kinds.contains(&kind), "{kinds:?}");
         }
         assert_eq!(a.overflow.kind, QueryKind::Other);
+    }
+
+    fn failing(second: i64, message: &str, sqlstate: &str, sql: &str) -> LogRecord {
+        LogRecord {
+            sqlstate: Some(sqlstate.to_owned()),
+            statement: Some(sql.to_owned()),
+            ..LogRecord::new(at(second), Severity::Error, message)
+        }
+    }
+
+    #[test]
+    fn cancellations_are_counted_overall_and_per_statement() {
+        let mut a = acc();
+        a.add_record(&failing(
+            1,
+            "canceling statement due to statement timeout",
+            "57014",
+            "SELECT pg_sleep(9)",
+        ));
+        a.add_record(&failing(
+            2,
+            "canceling statement due to user request",
+            "57014",
+            "SELECT pg_sleep(9)",
+        ));
+        a.add_record(&failing(
+            3,
+            "duplicate key",
+            "23505",
+            "INSERT INTO t VALUES (1)",
+        ));
+        assert_eq!(a.totals.cancelled["statement_timeout"], 1);
+        assert_eq!(a.totals.cancelled["user_request"], 1);
+        assert_eq!(a.totals.cancelled.len(), 2);
+        let sleep = a
+            .queries
+            .values()
+            .find(|q| q.text.contains("pg_sleep"))
+            .unwrap();
+        assert_eq!((sleep.errors, sleep.cancelled), (2, 2));
+        let insert = a
+            .queries
+            .values()
+            .find(|q| q.text.contains("INSERT"))
+            .unwrap();
+        assert_eq!((insert.errors, insert.cancelled), (1, 0));
+    }
+
+    fn executed(second: i64, ms: f64, sql: &str, parameters: Option<&str>) -> LogRecord {
+        LogRecord {
+            detail: parameters.map(|p| format!("parameters: {p}")),
+            ..log(
+                second,
+                &format!("duration: {ms} ms  execute <unnamed>: {sql}"),
+            )
+        }
+    }
+
+    #[test]
+    fn the_slowest_executions_are_kept_with_parameters_only_on_request() {
+        let records = [
+            executed(1, 5.0, "SELECT * FROM t WHERE id = $1", Some("$1 = '1'")),
+            executed(2, 90.0, "SELECT * FROM t WHERE id = $1", Some("$1 = '2'")),
+            executed(3, 40.0, "SELECT * FROM u WHERE id = $1", Some("$1 = '3'")),
+        ];
+        let mut without = Accumulators::new(1_000, 60).with_capture(2, false);
+        let mut with = Accumulators::new(1_000, 60).with_capture(2, true);
+        for record in &records {
+            without.add_record(record);
+            with.add_record(record);
+        }
+        let rows = with.slowest.rows();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].duration_us, 90_000);
+        assert_eq!(rows[0].params.as_deref(), Some("$1 = '2'"));
+        assert_eq!(rows[1].params.as_deref(), Some("$1 = '3'"));
+        assert!(
+            without
+                .slowest
+                .rows()
+                .iter()
+                .all(|row| row.params.is_none())
+        );
+        assert_eq!(without.slowest.rows()[0].duration_us, 90_000);
     }
 }

@@ -13,6 +13,7 @@ use super::{
     kind::QueryKind,
     pipeline::{FileSummary, Output, PrefixSource},
     sketch::Sketch,
+    slowest::Execution,
 };
 use crate::log::Format;
 
@@ -61,6 +62,10 @@ pub struct Report {
     pub histograms: HistogramsReport,
     /// Statements, errors and sessions by database, user, application and host.
     pub dimensions: DimensionsReport,
+    /// Statements cancelled by timeout or request.
+    pub cancelled: CancelledReport,
+    /// The slowest single executions.
+    pub slowest: SlowestReport,
     pub timeline: TimelineReport,
     /// Present when the report was built from a store.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,6 +129,70 @@ pub struct DimensionsReport {
     pub application: Vec<DimensionRow>,
     pub host: Vec<DimensionRow>,
 }
+
+/// How many statements were cancelled, why, and which ones.
+#[derive(Debug, Clone, Serialize)]
+pub struct CancelledReport {
+    /// Cancelled executions.
+    pub total: u64,
+    /// Count per reason, most frequent first.
+    pub by_reason: Vec<CancelReasonRow>,
+    /// The statements cancelled most often.
+    pub statements: Vec<CancelledStatement>,
+}
+
+/// Cancellations for one reason.
+#[derive(Debug, Clone, Serialize)]
+pub struct CancelReasonRow {
+    /// `statement_timeout`, `user_request`, `lock_timeout` or `other`.
+    pub reason: String,
+    /// Cancelled executions.
+    pub count: u64,
+}
+
+/// A statement and how often it was cancelled.
+#[derive(Debug, Clone, Serialize)]
+pub struct CancelledStatement {
+    /// 16 hex digits.
+    pub fingerprint: String,
+    /// The normalized statement.
+    pub text: String,
+    /// Times cancelled.
+    pub cancelled: u64,
+    /// Times it was run, as far as the log shows.
+    pub calls: u64,
+}
+
+/// The slowest executions, slowest first.
+#[derive(Debug, Clone, Serialize)]
+pub struct SlowestReport {
+    /// Whether any row carries bind parameters (they are kept only with `--params`).
+    pub has_params: bool,
+    /// The executions.
+    pub rows: Vec<SlowestRow>,
+}
+
+/// One execution.
+#[derive(Debug, Clone, Serialize)]
+pub struct SlowestRow {
+    /// When the log recorded it.
+    pub timestamp: String,
+    /// How long it took, in milliseconds.
+    pub duration_ms: f64,
+    /// 16 hex digits; `0000000000000000` for statements in the overflow row.
+    pub fingerprint: String,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub application: Option<String>,
+    pub host: Option<String>,
+    /// The statement as the log spelled it.
+    pub text: String,
+    /// Bind parameters, when kept.
+    pub params: Option<String>,
+}
+
+/// Statements listed in the cancelled section.
+const TOP_CANCELLED: usize = 10;
 
 /// Where a report came from, when it came from a store.
 #[derive(Debug, Clone, Serialize)]
@@ -366,6 +435,8 @@ impl Report {
                 application: dimension_rows(acc, Dimension::Application),
                 host: dimension_rows(acc, Dimension::Host),
             },
+            cancelled: cancelled(acc),
+            slowest: slowest(acc),
             timeline: timeline(acc),
             store: None,
         }
@@ -551,6 +622,59 @@ fn kinds(acc: &Accumulators) -> Vec<KindRow> {
             .then_with(|| b.calls.cmp(&a.calls))
     });
     rows
+}
+
+fn cancelled(acc: &Accumulators) -> CancelledReport {
+    let mut by_reason: Vec<CancelReasonRow> = acc
+        .totals
+        .cancelled
+        .iter()
+        .map(|(reason, count)| CancelReasonRow {
+            reason: reason.clone(),
+            count: *count,
+        })
+        .collect();
+    by_reason.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+    let mut statements: Vec<&QueryStats> =
+        acc.queries.values().filter(|q| q.cancelled > 0).collect();
+    statements.sort_by(|a, b| b.cancelled.cmp(&a.cancelled).then(a.id.cmp(&b.id)));
+    CancelledReport {
+        total: acc.totals.cancelled.values().sum(),
+        by_reason,
+        statements: statements
+            .into_iter()
+            .take(TOP_CANCELLED)
+            .map(|q| CancelledStatement {
+                fingerprint: format!("{:016x}", q.id),
+                text: q.text.clone(),
+                cancelled: q.cancelled,
+                calls: q.calls,
+            })
+            .collect(),
+    }
+}
+
+fn slowest(acc: &Accumulators) -> SlowestReport {
+    let rows: Vec<SlowestRow> = acc
+        .slowest
+        .rows()
+        .iter()
+        .map(|run: &Execution| SlowestRow {
+            timestamp: run.ts.to_string(),
+            duration_ms: ms(run.duration_us),
+            fingerprint: format!("{:016x}", run.fingerprint),
+            database: run.database.clone(),
+            user: run.user.clone(),
+            application: run.application.clone(),
+            host: run.host.clone(),
+            text: run.text.clone(),
+            params: run.params.clone(),
+        })
+        .collect();
+    SlowestReport {
+        has_params: rows.iter().any(|row| row.params.is_some()),
+        rows,
+    }
 }
 
 fn dimension_rows(acc: &Accumulators, dimension: Dimension) -> Vec<DimensionRow> {
@@ -905,5 +1029,49 @@ mod tests {
             assert_eq!(same.calls, shown.calls);
             assert!(approx_eq(same.share_pct, shown.share_pct));
         }
+    }
+
+    #[test]
+    fn cancellations_and_slow_executions_are_reported() {
+        let mut acc = Accumulators::new(100, 60).with_capture(2, true);
+        for (second, ms) in [(1, 5.0), (2, 70.0), (3, 30.0)] {
+            acc.add_record(&LogRecord {
+                detail: Some(format!("parameters: $1 = '{second}'")),
+                ..LogRecord::new(
+                    at(second),
+                    Severity::Log,
+                    format!("duration: {ms} ms  execute <unnamed>: SELECT * FROM t WHERE id = $1"),
+                )
+            });
+        }
+        for second in [4, 5] {
+            let mut cancelled = LogRecord::new(
+                at(second),
+                Severity::Error,
+                "canceling statement due to statement timeout",
+            );
+            cancelled.sqlstate = Some("57014".to_owned());
+            cancelled.statement = Some("SELECT pg_sleep(60)".to_owned());
+            acc.add_record(&cancelled);
+        }
+        let report = Report::build(
+            &Output {
+                acc,
+                files: Vec::new(),
+            },
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        assert_eq!(report.cancelled.total, 2);
+        assert_eq!(report.cancelled.by_reason[0].reason, "statement_timeout");
+        assert_eq!(report.cancelled.statements[0].cancelled, 2);
+        assert!(report.cancelled.statements[0].text.contains("pg_sleep"));
+        let slowest = &report.slowest;
+        assert!(slowest.has_params);
+        assert_eq!(slowest.rows.len(), 2);
+        assert!(approx_eq(slowest.rows[0].duration_ms, 70.0));
+        assert_eq!(slowest.rows[0].params.as_deref(), Some("$1 = '2'"));
     }
 }

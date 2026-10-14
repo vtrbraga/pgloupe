@@ -12,6 +12,7 @@ pub mod render;
 pub mod report;
 pub mod sketch;
 pub mod slice;
+pub mod slowest;
 
 /// Combining two partial results into one.
 ///

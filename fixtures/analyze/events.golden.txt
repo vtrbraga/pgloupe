@@ -26,6 +26,17 @@ errors
   2x  ERROR 23505 first 2026-10-14T10:00:07Z  duplicate key value violates unique constraint "orders_pkey"
   1x  ERROR 40P01 first 2026-10-14T10:00:11Z  deadlock detected
 
+cancelled
+  none
+
+slowest executions
+  500.00 ms  2026-10-14T10:00:04Z  b94b46b5  shop/app/web/-  SELECT count(*) FROM orders o JOIN items i ON i.order_id = o.id
+  30.00 ms  2026-10-14T10:00:03Z  0b4ec38d  shop/app/web/-  SELECT * FROM orders WHERE id = 2
+  10.00 ms  2026-10-14T10:00:02Z  0b4ec38d  shop/app/web/-  SELECT * FROM orders WHERE id = 1
+  2.00 ms  2026-10-14T10:00:05.002Z  a0ead580  shop/app/web/-  SELECT * FROM users WHERE id = $1
+  1.00 ms  2026-10-14T10:00:06Z  bc2edfe0  shop/app/web/-  SELEC 1
+  (bind parameters were not kept; pass --params to keep them)
+
 locks
   waits 1, acquired 1, total wait 1200.30 ms, longest 1200.30 ms, deadlocks 1
 

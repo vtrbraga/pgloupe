@@ -371,3 +371,52 @@ fn zero_records_from_a_non_empty_file_exit_one_with_a_report() -> io::Result<()>
     assert!(text.contains("nothing could be decoded"), "{text}");
     Ok(())
 }
+
+fn slow_log() -> String {
+    let line = |second: u32, severity: &str, message: &str, extra: &str| {
+        format!(
+            r#"{{"timestamp":"2026-10-14 10:00:{second:02}.000 UTC","pid":1,"session_id":"a.1","line_num":{second},"error_severity":"{severity}","message":"{message}"{extra},"backend_type":"client backend"}}"#
+        ) + "\n"
+    };
+    let mut text = String::new();
+    text.push_str(&line(
+        1,
+        "LOG",
+        "duration: 5 ms  execute <unnamed>: SELECT * FROM t WHERE id = $1",
+        r#","detail":"parameters: $1 = '1'""#,
+    ));
+    text.push_str(&line(
+        2,
+        "LOG",
+        "duration: 90 ms  execute <unnamed>: SELECT * FROM t WHERE id = $1",
+        r#","detail":"parameters: $1 = '2'""#,
+    ));
+    text.push_str(&line(
+        3,
+        "ERROR",
+        "canceling statement due to statement timeout",
+        r#","state_code":"57014","statement":"SELECT pg_sleep(60)""#,
+    ));
+    text
+}
+
+#[test]
+fn slowest_executions_and_cancellations_are_listed_and_parameters_are_opt_in() -> io::Result<()> {
+    let log = scratch("slow.json", slow_log().as_bytes())?;
+    let plain = analyze(&[], std::slice::from_ref(&log))?;
+    assert!(plain.status.success(), "{}", stderr(&plain));
+    let text = stdout(&plain);
+    assert!(text.contains("1 cancelled: statement_timeout=1"), "{text}");
+    assert!(text.contains("90.00 ms"), "{text}");
+    assert!(!text.contains("$1 = '2'"), "{text}");
+    assert!(text.contains("bind parameters were not kept"), "{text}");
+
+    let with = analyze(&["--params", "--slowest", "1"], std::slice::from_ref(&log))?;
+    let text = stdout(&with);
+    assert!(text.contains("parameters: $1 = '2'"), "{text}");
+    assert!(
+        !text.contains("$1 = '1'"),
+        "only the slowest is kept\n{text}"
+    );
+    Ok(())
+}

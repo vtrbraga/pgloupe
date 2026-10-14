@@ -356,3 +356,31 @@ fn force_reingests() -> io::Result<()> {
     assert!(stdout(&out).starts_with("replaced "), "{}", stdout(&out));
     Ok(())
 }
+
+#[test]
+fn the_store_keeps_slowest_executions_and_parameters_only_if_ingest_asked() -> io::Result<()> {
+    let d = dir("slowest")?;
+    let line = |second: u32, ms: u32, detail: &str| {
+        format!(
+            r#"{{"timestamp":"2026-10-14 10:00:{second:02}.000 UTC","pid":1,"session_id":"a.1","line_num":{second},"error_severity":"LOG","message":"duration: {ms} ms  execute <unnamed>: SELECT 1 FROM t WHERE id = $1","detail":"{detail}","backend_type":"client backend"}}"#
+        ) + "\n"
+    };
+    let log = d.join("a.json");
+    fs::write(
+        &log,
+        line(1, 5, "parameters: $1 = '1'") + &line(2, 80, "parameters: $1 = '2'"),
+    )?;
+    for (name, extra, expect_params) in
+        [("plain", &[][..], false), ("with", &["--params"][..], true)]
+    {
+        let store = d.join(format!("{name}.db"));
+        assert!(ingest(&store, &[&log], extra)?.status.success());
+        let out = report(&store, &[])?;
+        assert!(out.status.success(), "{}", stderr(&out));
+        let value: Value = serde_json::from_str(&stdout(&out))?;
+        let slowest = &value["slowest"];
+        assert_eq!(slowest["rows"][0]["duration_ms"], 80.0);
+        assert_eq!(slowest["has_params"], expect_params);
+    }
+    Ok(())
+}
