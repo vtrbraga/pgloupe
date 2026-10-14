@@ -64,7 +64,7 @@ pub struct DecodeStats {
     pub no_label: u64,
     /// Skipped lines whose shape was not tracked because [`MAX_SHAPES`] was reached.
     pub other_shapes: u64,
-    shapes: HashMap<String, Shape>,
+    pub(crate) shapes: HashMap<String, Shape>,
 }
 
 impl DecodeStats {
