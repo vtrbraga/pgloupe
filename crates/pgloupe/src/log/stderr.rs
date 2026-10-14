@@ -19,7 +19,10 @@ enum Field {
     Context,
     Statement,
     InternalQuery,
+    /// Read and discarded on purpose (`LOCATION:`).
     Ignored,
+    /// A line after this entry was skipped; its continuations must not be glued on.
+    Dropped,
 }
 
 #[derive(Debug)]
@@ -38,6 +41,8 @@ pub struct StderrDecoder<R: BufRead> {
     buf: Vec<u8>,
     line_no: u64,
     finished: bool,
+    /// A read error found while an entry was still open: reported after that entry.
+    deferred: Option<DecodeError>,
     stats: DecodeStats,
 }
 
@@ -52,7 +57,16 @@ impl<R: BufRead> StderrDecoder<R> {
             buf: Vec::new(),
             line_no: 0,
             finished: false,
+            deferred: None,
             stats: DecodeStats::default(),
+        }
+    }
+
+    /// Counts a skipped line and stops its continuation lines from extending the open entry.
+    fn skip_line(&mut self, reason: impl Into<String>) {
+        self.stats.skip(self.line_no, reason);
+        if let Some(pending) = self.pending.as_mut() {
+            pending.field = Field::Dropped;
         }
     }
 
@@ -86,7 +100,7 @@ impl<R: BufRead> StderrDecoder<R> {
                     }
                     return Ok(Some(line));
                 }
-                Err(_) => self.stats.skip(self.line_no, "line is not valid UTF-8"),
+                Err(_) => self.skip_line("line is not valid UTF-8"),
             }
         }
     }
@@ -105,6 +119,11 @@ impl<R: BufRead> StderrDecoder<R> {
             Field::Statement => pending.record.statement.as_mut(),
             Field::InternalQuery => pending.record.internal_query.as_mut(),
             Field::Ignored => None,
+            Field::Dropped => {
+                self.stats
+                    .skip(self.line_no, "continuation of a skipped line");
+                None
+            }
         };
         if let Some(target) = target {
             target.push('\n');
@@ -114,10 +133,7 @@ impl<R: BufRead> StderrDecoder<R> {
 
     fn attach(&mut self, label: Label, text: &str, pid: Option<u32>) {
         let Some(pending) = self.pending.as_mut().filter(|p| p.record.pid == pid) else {
-            self.stats.skip(
-                self.line_no,
-                "detail or statement line without a matching log entry",
-            );
+            self.skip_line("detail or statement line without a matching log entry");
             return;
         };
         let record = &mut pending.record;
@@ -175,12 +191,26 @@ fn split_error_position(record: &mut LogRecord) {
 impl<R: BufRead> Decoder for StderrDecoder<R> {
     fn next_record(&mut self) -> Result<Option<LogRecord>, DecodeError> {
         loop {
+            if let Some(error) = self.deferred.take() {
+                return Err(error);
+            }
             if self.finished {
                 return Ok(self.pending.take().map(|p| self.emit(p.record)));
             }
-            let Some(line) = self.read_line()? else {
-                self.finished = true;
-                continue;
+            let line = match self.read_line() {
+                Ok(Some(line)) => line,
+                Ok(None) => {
+                    self.finished = true;
+                    continue;
+                }
+                Err(error) => match self.pending.take() {
+                    // Hand out the complete entry first; the error follows on the next call.
+                    Some(pending) => {
+                        self.deferred = Some(error);
+                        return Ok(Some(self.emit(pending.record)));
+                    }
+                    None => return Err(error),
+                },
             };
             if let Some(rest) = line.strip_prefix('\t') {
                 self.continue_field(rest);
@@ -188,7 +218,7 @@ impl<R: BufRead> Decoder for StderrDecoder<R> {
             }
             let mut record = LogRecord::new(Timestamp::UNIX_EPOCH, Severity::Log, String::new());
             match self.prefix.parse_line(&line, &mut record, self.fallback) {
-                Err(reason) => self.stats.skip(self.line_no, reason),
+                Err(reason) => self.skip_line(reason),
                 Ok((Label::Level(level), text)) => {
                     record.level = level;
                     text.clone_into(&mut record.message);
@@ -447,5 +477,48 @@ mod tests {
         assert_eq!(records[2].cursor_position, None);
         assert_eq!(records[3].message, "not a position at character x");
         assert_eq!(records[3].cursor_position, None);
+    }
+
+    #[test]
+    fn continuation_after_a_skipped_line_is_not_glued_onto_the_open_entry() {
+        let text = format!(
+            "{SESSION} LOG:  first\ngarbage line\n\tFROM secret\n\
+             {SESSION} LOG:  second\n\
+             2026-10-14 10:20:12.500 UTC [999] postgres@pagila/x 0 DETAIL:  not mine\n\
+             \tmore of not mine\n"
+        );
+        let (records, stats) = decode(&text);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].message, "first");
+        assert_eq!(records[1].message, "second");
+        assert_eq!(records[1].detail, None);
+        assert_eq!(
+            stats.skipped, 4,
+            "garbage, its continuation, foreign detail, its continuation"
+        );
+    }
+
+    #[test]
+    fn truncated_input_keeps_the_last_complete_entry_and_reports_the_error() {
+        use std::io::{BufReader, Cursor, Read};
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
+            }
+        }
+        let data = format!("{SESSION} LOG:  one\n{SESSION} LOG:  two\n{SESSION} LOG:  three\n");
+        let reader = BufReader::new(Cursor::new(data.into_bytes()).chain(Broken));
+        let mut decoder = StderrDecoder::new(reader, Prefix::compile(SYNTH).unwrap(), None);
+        let mut messages = Vec::new();
+        let error = loop {
+            match decoder.next_record() {
+                Ok(Some(record)) => messages.push(record.message),
+                Ok(None) => panic!("expected the read error"),
+                Err(error) => break error,
+            }
+        };
+        assert_eq!(messages, ["one", "two", "three"]);
+        assert!(matches!(error, DecodeError::Io(_)));
     }
 }
