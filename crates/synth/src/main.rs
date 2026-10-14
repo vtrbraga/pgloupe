@@ -1,7 +1,9 @@
 use clap::Parser;
 use synth::cli::{Cli, Command};
 
-fn main() {
+fn main() -> anyhow::Result<()> {
     let Command::Generate(args) = Cli::parse().command;
-    println!("{}", args.run_dir().display());
+    let dir = synth::generate::run(&args)?;
+    println!("{}", dir.display());
+    Ok(())
 }
