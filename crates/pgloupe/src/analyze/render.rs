@@ -61,7 +61,7 @@ fn header(report: &Report, elapsed: Option<Duration>) -> Vec<String> {
         format!("files:      {}", report.files.len()),
     ];
     for file in &report.files {
-        let prefix = match (&file.prefix, file.prefix_source, file.prefix_match) {
+        let prefix = match (&file.prefix, file.prefix_source.as_str(), file.prefix_match) {
             (Some(prefix), "inferred", Some(percent)) => {
                 format!(" prefix {prefix} (inferred {percent:.1}%)")
             }

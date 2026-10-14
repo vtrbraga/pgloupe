@@ -1,6 +1,6 @@
 //! The "why is this report empty or odd" block: counts, unmatched line shapes, setting gaps.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::pipeline::{FileSummary, Output, PrefixSource};
 use crate::log::Format;
@@ -9,7 +9,7 @@ use crate::log::Format;
 const TOP_SHAPES: usize = 5;
 
 /// One kind of skipped line.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShapeRow {
     pub shape: String,
     pub count: u64,

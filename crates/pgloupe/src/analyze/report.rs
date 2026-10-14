@@ -3,7 +3,7 @@
 use std::{cmp::Reverse, collections::BTreeMap};
 
 use jiff::Timestamp;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::{
     acc::{Accumulators, QueryStats, to_micros},
@@ -53,15 +53,15 @@ pub struct Report {
     pub timeline: TimelineReport,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileReport {
     pub path: String,
     pub bytes: u64,
     /// `csv`, `json` or `stderr`.
-    pub format: &'static str,
+    pub format: String,
     pub prefix: Option<String>,
     /// `given`, `inferred` or `n/a`.
-    pub prefix_source: &'static str,
+    pub prefix_source: String,
     /// Percent of the inference sample the inferred prefix matched.
     pub prefix_match: Option<f64>,
     pub lines: u64,
@@ -283,7 +283,7 @@ impl Report {
     }
 }
 
-fn file_report(file: &FileSummary) -> FileReport {
+pub(crate) fn file_report(file: &FileSummary) -> FileReport {
     let (prefix_source, prefix_match) = match &file.prefix_source {
         PrefixSource::Given => ("given", None),
         PrefixSource::Inferred { matched, sampled } => (
@@ -299,9 +299,10 @@ fn file_report(file: &FileSummary) -> FileReport {
             Format::Csv => "csv",
             Format::Json => "json",
             Format::Stderr => "stderr",
-        },
+        }
+        .to_owned(),
         prefix: file.prefix.clone(),
-        prefix_source,
+        prefix_source: prefix_source.to_owned(),
         prefix_match,
         lines: file.stats.lines,
         records: file.stats.records,

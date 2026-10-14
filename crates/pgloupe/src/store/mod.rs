@@ -1,8 +1,11 @@
 //! The SQLite store: a manifest of ingested logs and their per-hour statistics.
 
+mod manifest;
 mod schema;
 
 use std::path::Path;
+
+pub use manifest::{Input, StoredDiag};
 
 use rusqlite::{Connection, OpenFlags, ffi::ErrorCode};
 use thiserror::Error;
@@ -37,10 +40,6 @@ pub enum StoreError {
 
 /// An open store.
 #[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "the manifest queries of the next commit use both fields"
-)]
 pub struct Store {
     conn: Connection,
     path: String,
