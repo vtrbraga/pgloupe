@@ -1,5 +1,6 @@
 //! Log analysis: events, fingerprints, mergeable accumulators and reports.
 
+pub mod fingerprint;
 pub mod sketch;
 
 /// Combining two partial results into one.
