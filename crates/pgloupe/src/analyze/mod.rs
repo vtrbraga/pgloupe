@@ -3,6 +3,7 @@
 pub mod acc;
 pub mod event;
 pub mod fingerprint;
+pub mod pipeline;
 pub mod sketch;
 
 /// Combining two partial results into one.

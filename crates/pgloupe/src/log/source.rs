@@ -15,7 +15,7 @@ use super::{Format, time::looks_like_log_time};
 /// # Errors
 ///
 /// Fails if the file cannot be opened or read.
-pub fn open(path: &Path) -> io::Result<Box<dyn BufRead>> {
+pub fn open(path: &Path) -> io::Result<Box<dyn BufRead + Send>> {
     open_reader(File::open(path)?)
 }
 
@@ -24,7 +24,7 @@ pub fn open(path: &Path) -> io::Result<Box<dyn BufRead>> {
 /// # Errors
 ///
 /// Fails if the first bytes cannot be read.
-pub fn open_reader(inner: impl Read + 'static) -> io::Result<Box<dyn BufRead>> {
+pub fn open_reader(inner: impl Read + Send + 'static) -> io::Result<Box<dyn BufRead + Send>> {
     let mut buffered = BufReader::new(inner);
     if buffered.fill_buf()?.starts_with(&[0x1f, 0x8b]) {
         Ok(Box::new(BufReader::new(MultiGzDecoder::new(buffered))))

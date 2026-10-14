@@ -1,0 +1,538 @@
+//! Reading files, decoding them and folding the records into accumulators in parallel.
+//!
+//! One thread decodes each file in order (stderr entry grouping and csv records need it) and hands
+//! batches to rayon workers through `par_bridge`, which pulls a batch only when a worker is free.
+//! Each worker folds into its own [`Accumulators`]; the partial results are merged at the end.
+
+use std::{
+    collections::VecDeque,
+    io::{self, BufRead},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
+
+use rayon::prelude::*;
+use thiserror::Error;
+
+use super::{Merge, acc::Accumulators};
+use crate::log::{
+    DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions, SetupError,
+    Severity, decoder_for,
+    infer::{Inference, SAMPLE_LINES, infer_prefix},
+    prefix::Prefix,
+    source,
+};
+
+/// A worker keeps up to this many times the requested fingerprints before the final re-cap, so the
+/// result does not depend on how records were split across workers.
+const WORKER_LIMIT_FACTOR: usize = 4;
+
+/// Settings of an analysis run.
+#[derive(Debug, Clone)]
+pub struct Options {
+    /// Force a log format; `None` detects it per file.
+    pub format: Option<Format>,
+    pub prefix: Option<String>,
+    pub log_tz: Option<jiff::tz::Offset>,
+    pub max_fingerprints: usize,
+    pub bucket_secs: i64,
+    /// Worker threads; `None` uses all cores.
+    pub threads: Option<usize>,
+    /// Records handed to a worker at a time.
+    pub batch_size: usize,
+}
+
+impl Options {
+    /// Defaults: detect formats, 50,000 fingerprints, one-minute buckets, 4096-record batches.
+    #[must_use]
+    pub fn new() -> Self {
+        Options {
+            format: None,
+            prefix: None,
+            log_tz: None,
+            max_fingerprints: 50_000,
+            bucket_secs: 60,
+            threads: None,
+            batch_size: 4_096,
+        }
+    }
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Where a stderr file's prefix came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrefixSource {
+    Given,
+    Inferred { matched: usize, sampled: usize },
+    NotApplicable,
+}
+
+/// What happened to one input file.
+#[derive(Debug, Clone)]
+pub struct FileSummary {
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub format: Format,
+    pub prefix: Option<String>,
+    pub prefix_source: PrefixSource,
+    pub stats: DecodeStats,
+}
+
+/// The result of a run.
+#[derive(Debug)]
+pub struct Output {
+    pub acc: Accumulators,
+    pub files: Vec<FileSummary>,
+}
+
+/// Why an analysis could not complete.
+#[derive(Debug, Error)]
+pub enum AnalyzeError {
+    #[error("{}: could not open", .path.display())]
+    Open {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("{}: could not read", .path.display())]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: DecodeError,
+    },
+    #[error("{}: cannot decode", .path.display())]
+    Setup {
+        path: PathBuf,
+        #[source]
+        source: SetupError,
+    },
+    #[error("{}: looks like binary data, not a log; pass --format to force a decoder", .path.display())]
+    Binary { path: PathBuf },
+    #[error("{}: could not infer the log_line_prefix; pass --prefix with the server's setting", .path.display())]
+    PrefixNotInferred { path: PathBuf, inference: Inference },
+    #[error("could not start the worker pool: {0}")]
+    Pool(String),
+}
+
+/// Reads `paths` in order and returns the merged statistics.
+///
+/// # Errors
+///
+/// Fails when a file cannot be opened or read, is binary, is a stderr log whose prefix cannot be
+/// inferred, or the worker pool cannot start.
+pub fn run(paths: &[PathBuf], options: &Options) -> Result<Output, AnalyzeError> {
+    let summaries = Arc::new(Mutex::new(Vec::new()));
+    let failure = Arc::new(Mutex::new(None));
+    let batches = Batches {
+        pending: paths.iter().cloned().collect(),
+        current: None,
+        options: options.clone(),
+        summaries: Arc::clone(&summaries),
+        failure: Arc::clone(&failure),
+    };
+    let worker_limit = options
+        .max_fingerprints
+        .saturating_mul(WORKER_LIMIT_FACTOR)
+        .max(1);
+    let new_acc = || Accumulators::new(worker_limit, options.bucket_secs);
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(options.threads.unwrap_or(0))
+        .build()
+        .map_err(|err| AnalyzeError::Pool(err.to_string()))?;
+    let mut acc = pool.install(|| {
+        batches
+            .par_bridge()
+            .fold(new_acc, |mut acc, batch| {
+                for record in &batch {
+                    acc.add_record(record);
+                }
+                acc
+            })
+            .reduce(new_acc, |mut left, right| {
+                left.merge(right);
+                left
+            })
+    });
+    if let Some(error) = lock(&failure).take() {
+        return Err(error);
+    }
+    acc.recap(options.max_fingerprints);
+    let mut files = std::mem::take(&mut *lock(&summaries));
+    files.sort_by_key(|file: &(usize, FileSummary)| file.0);
+    Ok(Output {
+        acc,
+        files: files.into_iter().map(|(_, file)| file).collect(),
+    })
+}
+
+/// Locks a mutex, recovering the data if another thread panicked while holding it.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The file being decoded.
+struct Current {
+    index: usize,
+    path: PathBuf,
+    bytes: u64,
+    format: Format,
+    prefix: Option<String>,
+    prefix_source: PrefixSource,
+    decoder: Box<dyn Decoder + Send>,
+}
+
+/// Yields batches of records, file after file.
+struct Batches {
+    pending: VecDeque<PathBuf>,
+    current: Option<Current>,
+    options: Options,
+    summaries: Arc<Mutex<Vec<(usize, FileSummary)>>>,
+    failure: Arc<Mutex<Option<AnalyzeError>>>,
+}
+
+impl Batches {
+    fn opened(&self) -> usize {
+        lock(&self.summaries).len() + usize::from(self.current.is_some())
+    }
+
+    fn finish_current(&mut self) {
+        if let Some(current) = self.current.take() {
+            let stats = current.decoder.stats().clone();
+            lock(&self.summaries).push((
+                current.index,
+                FileSummary {
+                    path: current.path,
+                    bytes: current.bytes,
+                    format: current.format,
+                    prefix: current.prefix,
+                    prefix_source: current.prefix_source,
+                    stats,
+                },
+            ));
+        }
+    }
+
+    fn fail(&mut self, error: AnalyzeError) {
+        *lock(&self.failure) = Some(error);
+        self.finish_current();
+        self.pending.clear();
+    }
+
+    fn open_next(&mut self) -> Option<()> {
+        let path = self.pending.pop_front()?;
+        let index = self.opened();
+        match open_file(&path, index, &self.options) {
+            Ok(current) => self.current = Some(current),
+            Err(error) => self.fail(error),
+        }
+        Some(())
+    }
+}
+
+impl Iterator for Batches {
+    type Item = Vec<LogRecord>;
+
+    fn next(&mut self) -> Option<Vec<LogRecord>> {
+        loop {
+            if self.current.is_none() {
+                self.open_next()?;
+                continue;
+            }
+            let mut batch = Vec::new();
+            let mut error = None;
+            let mut finished = false;
+            if let Some(current) = self.current.as_mut() {
+                while batch.len() < self.options.batch_size.max(1) {
+                    match current.decoder.next_record() {
+                        Ok(Some(record)) => batch.push(record),
+                        Ok(None) => {
+                            finished = true;
+                            break;
+                        }
+                        Err(source) => {
+                            error = Some(AnalyzeError::Read {
+                                path: current.path.clone(),
+                                source,
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+            if let Some(error) = error {
+                self.fail(error);
+            } else if finished {
+                self.finish_current();
+            }
+            if !batch.is_empty() {
+                return Some(batch);
+            }
+            if self.current.is_none() && self.pending.is_empty() {
+                return None;
+            }
+        }
+    }
+}
+
+fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, AnalyzeError> {
+    let open_err = |source| AnalyzeError::Open {
+        path: path.to_path_buf(),
+        source,
+    };
+    let bytes = std::fs::metadata(path).map_err(open_err)?.len();
+    let mut reader = source::open(path).map_err(open_err)?;
+    let peek = reader.fill_buf().map_err(open_err)?;
+    let empty = peek.is_empty();
+    let format = match options.format {
+        Some(format) => format,
+        None if empty => Format::Json,
+        None if peek.contains(&0) => {
+            return Err(AnalyzeError::Binary {
+                path: path.to_path_buf(),
+            });
+        }
+        None => match (source::sniff(peek), options.prefix.as_deref()) {
+            // A stderr prefix that starts like a csv row (`%m,`) looks like csv; the prefix wins
+            // only when it really matches the first line.
+            (Format::Csv, Some(prefix)) if prefix_fits(prefix, peek, options.log_tz) => {
+                Format::Stderr
+            }
+            (sniffed, _) => sniffed,
+        },
+    };
+    let (prefix, prefix_source) = if format == Format::Stderr && !empty {
+        match &options.prefix {
+            Some(prefix) => (Some(prefix.clone()), PrefixSource::Given),
+            None => infer(path, options)?,
+        }
+    } else {
+        (None, PrefixSource::NotApplicable)
+    };
+    let log_options = LogOptions {
+        prefix: prefix.clone(),
+        log_tz: options.log_tz,
+    };
+    let decoder =
+        decoder_for(format, reader, &log_options).map_err(|source| AnalyzeError::Setup {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    Ok(Current {
+        index,
+        path: path.to_path_buf(),
+        bytes,
+        format,
+        prefix,
+        prefix_source,
+        decoder,
+    })
+}
+
+/// True if `prefix` matches the first non-blank line in `peek`.
+fn prefix_fits(prefix: &str, peek: &[u8], fallback: Option<jiff::tz::Offset>) -> bool {
+    let Ok(prefix) = Prefix::compile(prefix) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(peek);
+    let Some(line) = text.lines().find(|line| !line.trim().is_empty()) else {
+        return false;
+    };
+    let mut record = LogRecord::new(jiff::Timestamp::UNIX_EPOCH, Severity::Log, String::new());
+    prefix.parse_line(line, &mut record, fallback).is_ok()
+}
+
+/// Infers the prefix of a stderr file by reading its first lines through a second reader.
+fn infer(path: &Path, options: &Options) -> Result<(Option<String>, PrefixSource), AnalyzeError> {
+    let open_err = |source| AnalyzeError::Open {
+        path: path.to_path_buf(),
+        source,
+    };
+    let reader = source::open(path).map_err(open_err)?;
+    let mut lines = Vec::new();
+    for line in reader.lines().take(SAMPLE_LINES * 2) {
+        match line {
+            Ok(line) => lines.push(line),
+            Err(_err) => break,
+        }
+    }
+    let inference = infer_prefix(&lines, options.log_tz);
+    match inference.prefix.clone() {
+        Some(prefix) => {
+            let matched = inference.best.as_ref().map_or(0, |(_, matched)| *matched);
+            Ok((
+                Some(prefix),
+                PrefixSource::Inferred {
+                    matched,
+                    sampled: inference.sampled,
+                },
+            ))
+        }
+        None => Err(AnalyzeError::PrefixNotInferred {
+            path: path.to_path_buf(),
+            inference,
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/logs")
+            .join(name)
+    }
+
+    fn scratch(name: &str, contents: &[u8]) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("pgloupe-pipeline-{}-{name}", std::process::id()));
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
+    fn repeated(name: &str, times: usize) -> PathBuf {
+        let one = fs::read(fixture(name)).unwrap();
+        let mut bytes = Vec::new();
+        for _ in 0..times {
+            bytes.extend_from_slice(&one);
+            if !one.ends_with(b"\n") {
+                bytes.push(b'\n');
+            }
+        }
+        scratch(&format!("{times}x{name}"), &bytes)
+    }
+
+    fn options() -> Options {
+        Options {
+            prefix: Some("%m [%p] %q%u@%d/%a %Q ".to_owned()),
+            ..Options::new()
+        }
+    }
+
+    #[test]
+    fn analyzes_each_format_of_the_sample() {
+        for name in ["sample.csv", "sample.json", "sample.log"] {
+            let output = run(&[fixture(name)], &options()).unwrap();
+            assert_eq!(output.acc.totals.records, 8, "{name}");
+            assert_eq!(output.files.len(), 1);
+            assert_eq!(output.files[0].stats.skipped, 0, "{name}");
+            assert_eq!(output.acc.totals.events["statement"], 2, "{name}");
+            assert_eq!(output.acc.totals.events["temp_file"], 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn formats_are_detected_and_prefixes_reported() {
+        let csv = run(&[fixture("sample.csv")], &Options::new()).unwrap();
+        assert_eq!(csv.files[0].format, Format::Csv);
+        assert_eq!(csv.files[0].prefix_source, PrefixSource::NotApplicable);
+        let given = run(&[fixture("sample.log")], &options()).unwrap();
+        assert_eq!(given.files[0].prefix_source, PrefixSource::Given);
+        let inferred = run(&[fixture("sample.log")], &Options::new()).unwrap();
+        assert!(matches!(
+            inferred.files[0].prefix_source,
+            PrefixSource::Inferred { .. }
+        ));
+        assert_eq!(
+            inferred.files[0].prefix.as_deref(),
+            Some("%m [%p] %q%u@%d/%a %Q ")
+        );
+        assert_eq!(inferred.acc.totals.records, 8);
+    }
+
+    #[test]
+    fn the_result_does_not_depend_on_threads_or_batch_size() {
+        let path = repeated("sample.json", 200);
+        let reference = run(
+            std::slice::from_ref(&path),
+            &Options {
+                threads: Some(1),
+                batch_size: 4_096,
+                ..Options::new()
+            },
+        )
+        .unwrap();
+        assert_eq!(reference.acc.totals.records, 1_600);
+        for (threads, batch) in [(1, 1), (4, 7), (4, 4_096), (8, 100), (3, 1_599)] {
+            let other = run(
+                std::slice::from_ref(&path),
+                &Options {
+                    threads: Some(threads),
+                    batch_size: batch,
+                    ..Options::new()
+                },
+            )
+            .unwrap();
+            assert_eq!(other.acc, reference.acc, "threads {threads}, batch {batch}");
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn empty_and_overlapping_files_merge() {
+        let empty = scratch("empty.json", b"");
+        let a = fixture("sample.json");
+        let b = fixture("sample.json");
+        let output = run(&[a, empty.clone(), b], &Options::new()).unwrap();
+        assert_eq!(output.files.len(), 3);
+        assert_eq!(output.acc.totals.records, 16);
+        assert_eq!(output.files[1].stats.records, 0);
+        fs::remove_file(empty).unwrap();
+    }
+
+    #[test]
+    fn a_missing_file_is_an_error_naming_it() {
+        let err = run(&[PathBuf::from("/nonexistent/x.log")], &Options::new()).unwrap_err();
+        assert!(matches!(err, AnalyzeError::Open { .. }), "{err}");
+        assert!(err.to_string().contains("/nonexistent/x.log"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_prefix_fails_with_the_inference_report() {
+        let path = scratch(
+            "odd.log",
+            b"<2026-10-14T10:20:09> pid=42 LOG:  hello\n<2026-10-14T10:20:10> pid=42 LOG:  again\n",
+        );
+        let err = run(std::slice::from_ref(&path), &Options::new()).unwrap_err();
+        fs::remove_file(path).unwrap();
+        let AnalyzeError::PrefixNotInferred { inference, .. } = err else {
+            panic!("expected a prefix error, got {err}");
+        };
+        assert_eq!(inference.prefix, None);
+        assert_ne!(inference.unmatched, Vec::<String>::new());
+    }
+
+    #[test]
+    fn binary_input_is_refused() {
+        let path = scratch("bin.bin", &[0, 1, 2, 3, 0]);
+        let err = run(std::slice::from_ref(&path), &Options::new()).unwrap_err();
+        fs::remove_file(path).unwrap();
+        assert!(matches!(err, AnalyzeError::Binary { .. }), "{err}");
+    }
+
+    #[test]
+    fn the_fingerprint_cap_applies_to_the_final_result() {
+        let path = repeated("sample.json", 3);
+        let output = run(
+            std::slice::from_ref(&path),
+            &Options {
+                max_fingerprints: 1,
+                ..Options::new()
+            },
+        )
+        .unwrap();
+        fs::remove_file(path).unwrap();
+        assert_eq!(output.acc.queries.len(), 1);
+        assert!(output.acc.overflow.calls > 0);
+    }
+}

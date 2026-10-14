@@ -189,9 +189,9 @@ pub enum SetupError {
 /// Fails for a stderr log without a prefix, or with a prefix that cannot be compiled.
 pub fn decoder_for(
     format: Format,
-    reader: Box<dyn BufRead>,
+    reader: Box<dyn BufRead + Send>,
     options: &Options,
-) -> Result<Box<dyn Decoder>, SetupError> {
+) -> Result<Box<dyn Decoder + Send>, SetupError> {
     Ok(match format {
         Format::Csv => Box::new(csvlog::CsvDecoder::new(reader, options.log_tz)),
         Format::Json => Box::new(jsonlog::JsonDecoder::new(reader, options.log_tz)),

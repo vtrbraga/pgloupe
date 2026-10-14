@@ -556,7 +556,7 @@ mod tests {
     #[test]
     fn decoder_for_builds_each_format_and_demands_a_prefix_for_stderr() {
         use crate::log::{Format, Options, SetupError, decoder_for};
-        let reader = |text: &'static str| -> Box<dyn BufRead> { Box::new(text.as_bytes()) };
+        let reader = |text: &'static str| -> Box<dyn BufRead + Send> { Box::new(text.as_bytes()) };
         let options = Options::default();
         decoder_for(Format::Csv, reader(""), &options).unwrap();
         decoder_for(Format::Json, reader(""), &options).unwrap();
