@@ -1,6 +1,6 @@
 //! Decoding Postgres server logs into typed records.
 
-use std::{fmt, io::BufRead};
+use std::{collections::HashMap, fmt, io::BufRead};
 
 use jiff::tz::Offset;
 use thiserror::Error;
@@ -41,6 +41,17 @@ pub struct Skipped {
     pub reason: String,
 }
 
+/// Distinct skipped-line shapes tracked; further ones are only counted in `other_shapes`.
+const MAX_SHAPES: usize = 1_000;
+
+/// A kind of skipped line: its normalized text, how often it occurred and where it first did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shape {
+    pub text: String,
+    pub count: u64,
+    pub first_line: u64,
+}
+
 /// What a decoder read, kept and skipped.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DecodeStats {
@@ -49,26 +60,90 @@ pub struct DecodeStats {
     pub records: u64,
     pub skipped: u64,
     pub first_skipped: Option<Skipped>,
-    /// Lines whose prefix matched but whose severity label is unknown.
+    /// Lines whose prefix matched but whose severity label is unknown (often a localized server).
     pub no_label: u64,
+    /// Skipped lines whose shape was not tracked because [`MAX_SHAPES`] was reached.
+    pub other_shapes: u64,
+    shapes: HashMap<String, Shape>,
 }
 
 impl DecodeStats {
-    /// Counts a skipped record, remembering the offending text (shape counting arrives later).
-    pub fn skip_with(&mut self, line: u64, reason: &str, _text: Option<&str>) {
-        self.skip(line, reason);
+    /// Counts a skipped record by its reason alone.
+    pub fn skip(&mut self, line: u64, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.skip_with(line, &reason, None);
     }
 
-    /// Counts a skipped record; only the first one keeps its line and reason.
-    pub fn skip(&mut self, line: u64, reason: impl Into<String>) {
+    /// Counts a skipped record; `text` (the offending line) gives its shape, else the reason does.
+    pub fn skip_with(&mut self, line: u64, reason: &str, text: Option<&str>) {
         self.skipped += 1;
         if self.first_skipped.is_none() {
             self.first_skipped = Some(Skipped {
                 line,
-                reason: reason.into(),
+                reason: reason.to_owned(),
             });
         }
+        let key = shape(text.unwrap_or(reason));
+        if let Some(entry) = self.shapes.get_mut(&key) {
+            entry.count += 1;
+        } else if self.shapes.len() < MAX_SHAPES {
+            self.shapes.insert(
+                key.clone(),
+                Shape {
+                    text: key,
+                    count: 1,
+                    first_line: line,
+                },
+            );
+        } else {
+            self.other_shapes += 1;
+        }
     }
+
+    /// The `n` most frequent skipped-line shapes (ties: earliest first line, then text).
+    #[must_use]
+    pub fn top_shapes(&self, n: usize) -> Vec<Shape> {
+        let mut shapes: Vec<Shape> = self.shapes.values().cloned().collect();
+        shapes.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then(a.first_line.cmp(&b.first_line))
+                .then_with(|| a.text.cmp(&b.text))
+        });
+        shapes.truncate(n);
+        shapes
+    }
+}
+
+/// Normalizes a line so similar ones compare equal: digit runs become `#`, double-quoted text
+/// becomes `"…"`, and the result is cut at 80 characters.
+#[must_use]
+pub fn shape(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_quote = false;
+    let mut after_digit = false;
+    for c in text.chars().take(400) {
+        if in_quote {
+            if c == '"' {
+                in_quote = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            out.push_str("\"…\"");
+            in_quote = true;
+            after_digit = false;
+        } else if c.is_ascii_digit() {
+            if !after_digit {
+                out.push('#');
+            }
+            after_digit = true;
+        } else {
+            out.push(c);
+            after_digit = false;
+        }
+    }
+    out.chars().take(80).collect()
 }
 
 impl fmt::Display for DecodeStats {
@@ -172,5 +247,58 @@ mod tests {
             stats.to_string(),
             "decoded 8 records from 10 lines; 1 skipped (first at line 4: bad row)"
         );
+    }
+
+    #[test]
+    fn shapes_collapse_digits_and_quotes() {
+        assert_eq!(
+            shape("2026-10-14 10:20:09 [123] relation \"film_12\" missing"),
+            "#-#-# #:#:# [#] relation \"…\" missing"
+        );
+        assert_eq!(shape(&"x".repeat(200)).chars().count(), 80);
+        assert_eq!(shape(""), "");
+    }
+
+    #[test]
+    fn skipped_lines_are_counted_by_shape() {
+        let mut stats = DecodeStats::default();
+        stats.skip_with(3, "no match", Some("garbage 1 here"));
+        stats.skip_with(9, "no match", Some("garbage 22 here"));
+        stats.skip_with(5, "other", Some("something else"));
+        stats.skip(7, "reason only 4");
+        assert_eq!(stats.skipped, 4);
+        let top = stats.top_shapes(2);
+        assert_eq!(
+            top,
+            vec![
+                Shape {
+                    text: "garbage # here".to_owned(),
+                    count: 2,
+                    first_line: 3
+                },
+                Shape {
+                    text: "something else".to_owned(),
+                    count: 1,
+                    first_line: 5
+                },
+            ]
+        );
+        assert_eq!(stats.top_shapes(10).len(), 3);
+        assert_eq!(stats.first_skipped.as_ref().unwrap().line, 3);
+    }
+
+    #[test]
+    fn shapes_are_bounded() {
+        let mut stats = DecodeStats::default();
+        for i in 0..1_500_u64 {
+            // Digits collapse in a shape, so build 1,500 distinct letter-only texts.
+            let word: String = (0..3)
+                .map(|k| char::from(b'a' + u8::try_from((i / 26_u64.pow(k)) % 26).unwrap()))
+                .collect();
+            stats.skip_with(i, "x", Some(&format!("word {word}")));
+        }
+        assert_eq!(stats.skipped, 1_500);
+        assert!(stats.top_shapes(usize::MAX).len() <= 1_000);
+        assert!(stats.other_shapes > 0);
     }
 }

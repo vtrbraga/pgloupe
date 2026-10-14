@@ -273,4 +273,10 @@ mod tests {
         assert_eq!(records, []);
         assert_eq!(stats.lines, 0);
     }
+
+    #[test]
+    fn skipped_rows_are_shaped_by_their_reason() {
+        let (_, stats) = decode("a,b,c\nd,e,f\n");
+        assert_eq!(stats.top_shapes(1)[0].count, 2);
+    }
 }

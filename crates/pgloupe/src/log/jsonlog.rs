@@ -89,7 +89,7 @@ impl<R: BufRead> Decoder for JsonDecoder<R> {
                     self.stats.records += 1;
                     return Ok(Some(record));
                 }
-                Err(reason) => self.stats.skip(self.line_no, reason),
+                Err(reason) => self.stats.skip_with(self.line_no, &reason, Some(line)),
             }
         }
     }

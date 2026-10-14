@@ -753,4 +753,21 @@ mod tests {
         assert_eq!(stats.skipped, 0);
         assert_eq!(records[0].message, "boom");
     }
+
+    #[test]
+    fn unmatched_lines_are_aggregated_by_shape() {
+        let text = format!("garbage 1\n{SESSION} LOG:  fine\ngarbage 22\n");
+        let (_, stats) = decode(&text);
+        let top = stats.top_shapes(5);
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].text, "garbage #");
+        assert_eq!(top[0].count, 2);
+    }
+
+    #[test]
+    fn unknown_labels_are_counted_separately() {
+        let text = format!("{SESSION} FEHLER:  etwas\n{SESSION} LOG:  fine\n");
+        let (_, stats) = decode(&text);
+        assert_eq!(stats.no_label, 1);
+    }
 }
