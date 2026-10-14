@@ -60,18 +60,40 @@ pub fn build(output: &Output) -> Diagnostics {
             totals.unparsed_statements
         ));
     }
-    if output.files.iter().any(|f| {
+    timezone_warning(&output.files, &mut diagnostics.warnings);
+    diagnostics
+}
+
+/// The warnings that come from the files themselves (prefix, labels, timezones), not from what
+/// the statistics contain. The store keeps these per input.
+#[must_use]
+pub fn file_warnings(files: &[FileSummary]) -> Vec<String> {
+    let mut warnings = Vec::new();
+    prefix_warnings(files, &mut warnings);
+    label_warning(files, &mut warnings);
+    inferred_prefix_warning(files, &mut warnings);
+    timezone_warning(files, &mut warnings);
+    warnings
+}
+
+fn timezone_warning(files: &[FileSummary], warnings: &mut Vec<String>) {
+    if files.iter().any(|f| {
         f.stats
             .first_skipped
             .as_ref()
             .is_some_and(|s| s.reason.starts_with("unknown timezone"))
     }) {
-        diagnostics.warnings.push(
+        warnings.push(
             "some lines have a timezone abbreviation pgloupe cannot resolve — pass --log-tz with a numeric offset"
                 .to_owned(),
         );
     }
-    diagnostics
+}
+
+/// The most frequent unmatched line shapes across `files`.
+#[must_use]
+pub fn top_unmatched_shapes(files: &[FileSummary]) -> Vec<ShapeRow> {
+    unmatched_shapes(files)
 }
 
 fn unmatched_shapes(files: &[FileSummary]) -> Vec<ShapeRow> {

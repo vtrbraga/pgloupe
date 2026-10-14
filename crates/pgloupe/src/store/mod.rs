@@ -1,10 +1,12 @@
 //! The SQLite store: a manifest of ingested logs and their per-hour statistics.
 
+mod ingest;
 mod manifest;
 mod schema;
 
 use std::path::Path;
 
+pub use ingest::{FileOutcome, Status, ingest};
 pub use manifest::{Input, StoredDiag};
 
 use rusqlite::{Connection, OpenFlags, ffi::ErrorCode};
