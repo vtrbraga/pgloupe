@@ -2,9 +2,17 @@
 
 mod common;
 
-use std::{fs, os::unix::fs::MetadataExt as _};
+use std::{
+    fs,
+    os::unix::fs::MetadataExt as _,
+    time::{Duration, Instant},
+};
 
-use synth::container::{PgContainer, RunSpec, docker, remove_stale};
+use synth::{
+    container::{PgContainer, RunSpec, docker, remove_stale},
+    session::{self, Target},
+    snapshot,
+};
 
 fn start(name: &str, label: &str) -> PgContainer {
     let dir = common::scratch_dir(name);
@@ -54,4 +62,46 @@ fn remove_stale_removes_only_labelled_containers() {
     let filter = format!("name={name}");
     let left = docker(&["ps", "-aq", "--filter", filter.as_str()]).unwrap();
     assert_eq!(left, "");
+}
+
+#[test]
+#[ignore = "needs docker"]
+fn snapshot_writes_three_csv_files_with_headers() {
+    let label = format!("pgloupe.synth.test={}", common::unique("snap"));
+    let pg = start("snap", &label);
+    let mut control = Target { port: pg.port() }.control("postgres").unwrap();
+    control
+        .batch_execute("CREATE EXTENSION pg_stat_statements")
+        .unwrap();
+    let dir = common::scratch_dir("snap-out");
+    let at = snapshot::take(&mut control, &dir, 0).unwrap();
+    assert!(at.ends_with("+00"), "server time should be UTC text: {at}");
+    let pgss = fs::read_to_string(dir.join("pgss_0.csv")).unwrap();
+    assert!(pgss.lines().next().unwrap().contains("queryid"));
+    assert!(
+        fs::read_to_string(dir.join("pgss_info_0.csv"))
+            .unwrap()
+            .contains("dealloc")
+    );
+    assert!(
+        fs::read_to_string(dir.join("pg_stat_database_0.csv"))
+            .unwrap()
+            .contains("datname")
+    );
+}
+
+#[test]
+#[ignore = "needs docker"]
+fn wait_for_lock_wait_times_out_for_idle_backend() {
+    let label = format!("pgloupe.synth.test={}", common::unique("idle"));
+    let pg = start("idle", &label);
+    let target = Target { port: pg.port() };
+    let mut idle = target
+        .connect("postgres", "postgres", "synth:test")
+        .unwrap();
+    let pid = session::backend_pid(&mut idle).unwrap();
+    let mut control = target.control("postgres").unwrap();
+    let started = Instant::now();
+    session::wait_for_lock_wait(&mut control, pid, Duration::from_millis(300)).unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(2));
 }
