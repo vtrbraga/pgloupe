@@ -56,8 +56,9 @@ impl<R: BufRead> StderrDecoder<R> {
         }
     }
 
-    fn emit(&mut self, record: LogRecord) -> LogRecord {
+    fn emit(&mut self, mut record: LogRecord) -> LogRecord {
         self.stats.records += 1;
+        split_error_position(&mut record);
         record
     }
 
@@ -144,6 +145,31 @@ impl<R: BufRead> StderrDecoder<R> {
             Label::Location | Label::Level(_) => Field::Ignored,
         };
     }
+}
+
+/// Postgres's stderr logger appends ` at character N` to error messages; csvlog and jsonlog carry
+/// the number in a separate field. Move it there so the formats agree. `LOG` and `DEBUG` messages
+/// are left alone: their text can legitimately end that way.
+fn split_error_position(record: &mut LogRecord) {
+    if matches!(
+        record.level,
+        Severity::Log
+            | Severity::Debug1
+            | Severity::Debug2
+            | Severity::Debug3
+            | Severity::Debug4
+            | Severity::Debug5
+    ) {
+        return;
+    }
+    let Some((message, position)) = record.message.rsplit_once(" at character ") else {
+        return;
+    };
+    let Ok(position) = position.parse::<u32>() else {
+        return;
+    };
+    record.cursor_position = Some(position);
+    record.message.truncate(message.len());
 }
 
 impl<R: BufRead> Decoder for StderrDecoder<R> {
@@ -398,5 +424,28 @@ mod tests {
             decoder_for(Format::Stderr, reader(""), &bad),
             Err(SetupError::Prefix(_))
         ));
+    }
+
+    #[test]
+    fn error_position_suffix_becomes_cursor_position() {
+        let text = format!(
+            "{SESSION} ERROR:  syntax error at or near \"SELEC\" at character 1\n\
+             {SESSION} STATEMENT:  SELEC 1\n\
+             {SESSION} WARNING:  something odd at character 12\n\
+             {SESSION} LOG:  duration: 1.0 ms  statement: select 'x' -- at character 7\n\
+             {SESSION} ERROR:  not a position at character x\n"
+        );
+        let (records, _) = decode(&text);
+        assert_eq!(records[0].message, "syntax error at or near \"SELEC\"");
+        assert_eq!(records[0].cursor_position, Some(1));
+        assert_eq!(records[1].message, "something odd");
+        assert_eq!(records[1].cursor_position, Some(12));
+        assert_eq!(
+            records[2].message, "duration: 1.0 ms  statement: select 'x' -- at character 7",
+            "LOG messages are left alone"
+        );
+        assert_eq!(records[2].cursor_position, None);
+        assert_eq!(records[3].message, "not a position at character x");
+        assert_eq!(records[3].cursor_position, None);
     }
 }
