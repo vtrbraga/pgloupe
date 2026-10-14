@@ -1,6 +1,6 @@
 //! `pg_stat_statements` snapshots read from CSV exports.
 
-use std::{collections::BTreeMap, io::Read};
+use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -137,6 +137,13 @@ struct RawRow {
     wal_bytes: Option<u64>,
 }
 
+/// A `pg_stat_statements_info` CSV row; `snapshot_at` is ignored.
+#[derive(Debug, Deserialize)]
+struct RawInfo {
+    dealloc: u64,
+    stats_reset: Option<String>,
+}
+
 impl Snapshot {
     /// Reads a snapshot from a `COPY ... WITH (FORMAT csv, HEADER)` export.
     ///
@@ -214,6 +221,82 @@ impl Snapshot {
             skipped_no_queryid,
             info: None,
         })
+    }
+
+    /// Reads a snapshot from a file.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the file cannot be opened or parsed; see [`Snapshot::from_reader`].
+    pub fn from_path(path: &Path) -> Result<Self, SnapshotError> {
+        let (file, label) = open(path)?;
+        Self::from_reader(file, &label)
+    }
+
+    /// Attaches the matching `pg_stat_statements_info` row.
+    #[must_use]
+    pub fn with_info(mut self, info: Info) -> Self {
+        self.info = Some(info);
+        self
+    }
+}
+
+impl Info {
+    /// Reads the single data row of a `pg_stat_statements_info` export.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the `dealloc` column is missing, the file has no rows, or a value does not parse.
+    pub fn from_reader(reader: impl Read, file: &str) -> Result<Self, SnapshotError> {
+        let mut rdr = csv::Reader::from_reader(reader);
+        let headers = rdr
+            .headers()
+            .map_err(|source| csv_error(file, source))?
+            .clone();
+        check_columns(&headers, file, &["dealloc"])?;
+        let mut record = csv::StringRecord::new();
+        if !rdr
+            .read_record(&mut record)
+            .map_err(|source| csv_error(file, source))?
+        {
+            return Err(SnapshotError::NoRows {
+                file: file.to_owned(),
+            });
+        }
+        let raw: RawInfo = record
+            .deserialize(Some(&headers))
+            .map_err(|source| csv_error(file, source))?;
+        let stats_reset = raw
+            .stats_reset
+            .as_deref()
+            .map(parse_timestamp)
+            .transpose()
+            .map_err(|message| bad_value(file, 2, "stats_reset", &message))?;
+        Ok(Info {
+            dealloc: raw.dealloc,
+            stats_reset,
+        })
+    }
+
+    /// Reads an info export from a file.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the file cannot be opened or parsed; see [`Info::from_reader`].
+    pub fn from_path(path: &Path) -> Result<Self, SnapshotError> {
+        let (file, label) = open(path)?;
+        Self::from_reader(file, &label)
+    }
+}
+
+fn open(path: &Path) -> Result<(File, String), SnapshotError> {
+    let label = path.display().to_string();
+    match File::open(path) {
+        Ok(file) => Ok((file, label)),
+        Err(source) => Err(SnapshotError::Io {
+            file: label,
+            source,
+        }),
     }
 }
 
@@ -600,5 +683,70 @@ mod tests {
         let diff = grown.minus(&before);
         assert_eq!(diff.calls, 5);
         assert!(approx_eq(diff.total_exec_time, 3.0));
+    }
+
+    const INFO_HEADER: &str = "snapshot_at,dealloc,stats_reset";
+
+    fn read_info(rows: &[&str]) -> Result<Info, SnapshotError> {
+        let mut text = INFO_HEADER.to_owned();
+        for row in rows {
+            text.push('\n');
+            text.push_str(row);
+        }
+        Info::from_reader(text.as_bytes(), "info.csv")
+    }
+
+    #[test]
+    fn info_reads_dealloc_and_stats_reset() {
+        let info =
+            read_info(&["2026-10-14 10:20:13.85288+00,5,2026-10-14 10:20:13.382713+00"]).unwrap();
+        assert_eq!(info.dealloc, 5);
+        assert_eq!(
+            info.stats_reset,
+            Some("2026-10-14T10:20:13.382713Z".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn info_without_stats_reset_is_none() {
+        let info = read_info(&["2026-10-14 10:20:13+00,0,"]).unwrap();
+        assert_eq!(info.stats_reset, None);
+    }
+
+    #[test]
+    fn info_missing_dealloc_or_rows_is_an_error() {
+        let err =
+            Info::from_reader("snapshot_at,stats_reset\n".as_bytes(), "info.csv").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                SnapshotError::MissingColumn {
+                    column: "dealloc",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        let err = read_info(&[]).unwrap_err();
+        assert!(matches!(err, SnapshotError::NoRows { .. }), "{err}");
+    }
+
+    #[test]
+    fn with_info_attaches_the_info() {
+        let info = Info {
+            dealloc: 3,
+            stats_reset: None,
+        };
+        let snap = read(&[ROW]).unwrap().with_info(info);
+        assert_eq!(snap.info, Some(info));
+    }
+
+    #[test]
+    fn missing_file_error_names_the_path() {
+        let err = Snapshot::from_path(std::path::Path::new("/nonexistent/pgss.csv")).unwrap_err();
+        assert!(matches!(err, SnapshotError::Io { .. }), "{err}");
+        assert!(err.to_string().contains("/nonexistent/pgss.csv"), "{err}");
+        let err = Info::from_path(std::path::Path::new("/nonexistent/info.csv")).unwrap_err();
+        assert!(err.to_string().contains("/nonexistent/info.csv"), "{err}");
     }
 }
