@@ -203,13 +203,17 @@ fn logs_dump(args: &DumpArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyho
                 let _ = writeln!(err, "{}", log::DecodeStats::default());
                 return Ok(Exit::Ok);
             }
-            if peek.contains(&0) {
+            if peek.iter().all(u8::is_ascii_whitespace) {
+                // Nothing but blank lines: any decoder reads it as an empty log.
+                Format::Json
+            } else if peek.contains(&0) {
                 bail!(
                     "{}: looks like binary data, not a log; pass --format to force a decoder",
                     args.file.display()
                 );
+            } else {
+                source::sniff(peek)
             }
-            source::sniff(peek)
         }
     };
     let options = Options {

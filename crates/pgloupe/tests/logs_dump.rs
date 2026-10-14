@@ -329,3 +329,13 @@ fn unwritable_stderr_does_not_panic() -> io::Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn a_whitespace_only_file_is_not_called_a_stderr_log() -> io::Result<()> {
+    let path = scratch("spaces.log", b"\n\n   \n")?;
+    let out = dump(&[], &path)?;
+    fs::remove_file(&path)?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("stderr log"), "{}", stderr(&out));
+    Ok(())
+}

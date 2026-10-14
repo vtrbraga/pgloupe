@@ -292,7 +292,7 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
     let empty = peek.is_empty();
     let format = match options.format {
         Some(format) => format,
-        None if empty => Format::Json,
+        None if peek.iter().all(u8::is_ascii_whitespace) => Format::Json,
         None if peek.contains(&0) => {
             return Err(AnalyzeError::Binary {
                 path: path.to_path_buf(),

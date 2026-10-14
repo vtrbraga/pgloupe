@@ -14,11 +14,12 @@ pub const ACCEPT_PERCENT: usize = 95;
 /// Unmatched examples kept for the failure report.
 const MAX_EXAMPLES: usize = 5;
 
-const CANDIDATES: [&str; 8] = [
+const CANDIDATES: [&str; 9] = [
     "%t:%r:%u@%d:[%p]:",
     "%m [%p] %q%u@%d/%a %Q ",
     "%m [%p] %q%u@%d ",
     "%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h ",
+    "%m %p %c ",
     "%m [%p] ",
     "%t [%p]: ",
     "%t ",
@@ -68,15 +69,21 @@ pub fn infer_prefix(lines: &[String], fallback: Option<Offset>) -> Inference {
         .filter(|line| !line.is_empty() && !line.starts_with('\t'))
         .take(SAMPLE_LINES)
         .collect();
-    let mut candidates: Vec<String> = CANDIDATES.iter().map(|c| (*c).to_owned()).collect();
-    if let Some(first) = sample.first() {
-        for composed in compose(first) {
-            if !candidates.contains(&composed) {
-                candidates.push(composed);
-            }
+    // Candidates composed from the observed timestamp shape come first: on a tie they are the
+    // more specific description of what the sample shows.
+    let mut candidates: Vec<String> = sample
+        .first()
+        .map(|first| compose(first))
+        .unwrap_or_default();
+    for fixed in CANDIDATES {
+        if !candidates.iter().any(|c| c == fixed) {
+            candidates.push(fixed.to_owned());
         }
     }
-    let mut best: Option<(Prefix, String, usize)> = None;
+    // (prefix, text, matched lines, score). A candidate with a `%q` whose session part never
+    // matched a sample line behaves like its head alone, so a candidate without that unproven
+    // tail wins a tie.
+    let mut best: Option<(Prefix, String, usize, (usize, bool))> = None;
     for candidate in &candidates {
         let Ok(prefix) = Prefix::compile(candidate) else {
             continue;
@@ -85,18 +92,20 @@ pub fn infer_prefix(lines: &[String], fallback: Option<Offset>) -> Inference {
             .iter()
             .filter(|line| matches(&prefix, line, fallback))
             .count();
-        if best.as_ref().is_none_or(|(_, _, most)| matched > *most) {
-            best = Some((prefix, candidate.clone(), matched));
+        let tail_proven = !candidate.contains("%q") || tail_matches(candidate, &sample, fallback);
+        let score = (matched, tail_proven);
+        if best.as_ref().is_none_or(|(_, _, _, top)| score > *top) {
+            best = Some((prefix, candidate.clone(), matched, score));
         }
     }
     let accepted = best
         .as_ref()
-        .filter(|(_, _, matched)| {
+        .filter(|(_, _, matched, _)| {
             !sample.is_empty() && matched * 100 >= sample.len() * ACCEPT_PERCENT
         })
-        .map(|(_, text, _)| text.clone());
+        .map(|(_, text, _, _)| text.clone());
     let unmatched = match (&accepted, &best) {
-        (None, Some((prefix, _, _))) => sample
+        (None, Some((prefix, _, _, _))) => sample
             .iter()
             .filter(|line| !matches(prefix, line, fallback))
             .take(MAX_EXAMPLES)
@@ -107,9 +116,18 @@ pub fn infer_prefix(lines: &[String], fallback: Option<Offset>) -> Inference {
     Inference {
         prefix: accepted,
         sampled: sample.len(),
-        best: best.map(|(_, text, matched)| (text, matched)),
+        best: best.map(|(_, text, matched, _)| (text, matched)),
         unmatched,
     }
+}
+
+/// True if the candidate with its `%q` removed (so the session part is mandatory) matches at least
+/// one sample line.
+fn tail_matches(candidate: &str, sample: &[&str], fallback: Option<Offset>) -> bool {
+    let Ok(strict) = Prefix::compile(&candidate.replace("%q", "")) else {
+        return false;
+    };
+    sample.iter().any(|line| matches(&strict, line, fallback))
 }
 
 fn matches(prefix: &Prefix, line: &str, fallback: Option<Offset>) -> bool {
@@ -243,5 +261,35 @@ mod tests {
     fn unmatched_examples_are_limited_to_five() {
         let sample = lines(&"junk LOG:  x\n".repeat(20));
         assert_eq!(infer_prefix(&sample, None).unmatched.len(), 5);
+    }
+
+    #[test]
+    fn a_session_part_that_never_appears_does_not_win_a_tie() {
+        let sample =
+            lines("2026-10-14 10:20:09 UTC [42] LOG:  a\n2026-10-14 10:20:10 UTC [42] LOG:  b\n");
+        assert_eq!(
+            infer_prefix(&sample, None).prefix.as_deref(),
+            Some("%t [%p] ")
+        );
+    }
+
+    #[test]
+    fn a_session_part_that_appears_wins() {
+        let sample = lines(
+            "2026-10-14 10:20:09.302 UTC [42] LOG:  a\n2026-10-14 10:20:09.410 UTC [96] u@d/a 0 LOG:  b\n",
+        );
+        assert_eq!(
+            infer_prefix(&sample, None).prefix.as_deref(),
+            Some("%m [%p] %q%u@%d/%a %Q ")
+        );
+    }
+
+    #[test]
+    fn recognizes_the_timestamp_pid_session_id_prefix() {
+        let sample = lines("2026-10-14 10:20:12.500 UTC 5 6acf5759.2a LOG:  hi\n");
+        assert_eq!(
+            infer_prefix(&sample, None).prefix.as_deref(),
+            Some("%m %p %c ")
+        );
     }
 }

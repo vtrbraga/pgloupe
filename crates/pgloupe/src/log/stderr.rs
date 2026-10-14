@@ -186,7 +186,14 @@ impl<R: BufRead> StderrDecoder<R> {
                     }
                     return Ok(Some(line));
                 }
-                Err(_err) => self.skip_line("line is not valid UTF-8", None, None),
+                Err(err) => {
+                    // The pid usually sits before the broken bytes: use it to close the right entry.
+                    let lossy = String::from_utf8_lossy(err.as_bytes()).into_owned();
+                    let mut record =
+                        LogRecord::new(Timestamp::UNIX_EPOCH, Severity::Log, String::new());
+                    let _ = self.prefix.parse_line(&lossy, &mut record, self.fallback);
+                    self.skip_line("line is not valid UTF-8", record.pid, None);
+                }
             }
         }
     }
@@ -835,5 +842,25 @@ mod tests {
         let text = format!("{SESSION} FEHLER:  etwas\n{SESSION} LOG:  fine\n");
         let (_, stats) = decode(&text);
         assert_eq!(stats.no_label, 1);
+    }
+
+    #[test]
+    fn an_invalid_utf8_line_closes_its_own_backends_entry() {
+        let mut bytes = line(5, "LOG", "first").into_bytes();
+        bytes.extend_from_slice(line(3, "LOG", "other").as_bytes());
+        bytes.extend_from_slice(b"2026-10-14 10:20:12.500 UTC [5] ERROR:  bad \xE9t\xE9\n");
+        bytes.extend_from_slice(line(5, "STATEMENT", "SELECT bad").as_bytes());
+        let mut decoder =
+            StderrDecoder::new(bytes.as_slice(), Prefix::compile(SIMPLE).unwrap(), None);
+        let mut records = Vec::new();
+        while let Some(record) = decoder.next_record().unwrap() {
+            records.push(record);
+        }
+        let first = records.iter().find(|r| r.message == "first").unwrap();
+        assert_eq!(
+            first.statement, None,
+            "the skipped ERROR's STATEMENT must not land here"
+        );
+        assert_eq!(decoder.stats().skipped, 2);
     }
 }
