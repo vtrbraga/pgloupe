@@ -1,6 +1,6 @@
 //! Decoding Postgres server logs into typed records.
 
-use std::fmt;
+use std::{fmt, io::BufRead};
 
 use jiff::tz::Offset;
 use thiserror::Error;
@@ -10,8 +10,10 @@ pub mod jsonlog;
 pub mod prefix;
 pub mod record;
 pub mod source;
+pub mod stderr;
 pub mod time;
 
+pub use prefix::PrefixError;
 pub use record::{LogRecord, Severity};
 
 /// The three log formats pgloupe reads.
@@ -91,6 +93,29 @@ pub enum DecodeError {
 pub enum SetupError {
     #[error("this looks like a stderr log; pass --prefix with the server's log_line_prefix")]
     MissingPrefix,
+    #[error("invalid log_line_prefix")]
+    Prefix(#[from] PrefixError),
+}
+
+/// Builds the decoder for `format`.
+///
+/// # Errors
+///
+/// Fails for a stderr log without a prefix, or with a prefix that cannot be compiled.
+pub fn decoder_for(
+    format: Format,
+    reader: Box<dyn BufRead>,
+    options: &Options,
+) -> Result<Box<dyn Decoder>, SetupError> {
+    Ok(match format {
+        Format::Csv => Box::new(csvlog::CsvDecoder::new(reader, options.log_tz)),
+        Format::Json => Box::new(jsonlog::JsonDecoder::new(reader, options.log_tz)),
+        Format::Stderr => {
+            let text = options.prefix.as_deref().ok_or(SetupError::MissingPrefix)?;
+            let prefix = prefix::Prefix::compile(text)?;
+            Box::new(stderr::StderrDecoder::new(reader, prefix, options.log_tz))
+        }
+    })
 }
 
 /// Turns a log into records, one at a time.
