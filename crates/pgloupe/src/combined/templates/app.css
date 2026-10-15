@@ -54,11 +54,11 @@ html.app #app{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:
 .panel{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px;min-width:0}
 .panel>h3{margin:0 0 10px;font-size:13px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;display:flex;align-items:center;gap:8px}
 .panel>h3 .grow{flex:1}
-.kpi{display:flex;flex-direction:column;gap:2px;padding:14px 16px;position:relative;overflow:hidden}
-.kpi .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
-.kpi .value{font-size:26px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.kpi{min-width:0;container-type:inline-size;display:flex;flex-direction:column;gap:2px;padding:14px 16px;position:relative;overflow:hidden}
+.kpi .label{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.04em;overflow-wrap:anywhere}
+.kpi .value{font-size:clamp(18px,17cqw,26px);white-space:nowrap;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .kpi .hint{color:var(--muted);font-size:12px}
-.kpi .spark{position:absolute;right:10px;top:12px;width:96px;height:28px}
+.kpi .spark{position:absolute;right:10px;top:34px;width:96px;height:28px}
 .kpi.warn .value{color:var(--warn)}.kpi.bad .value{color:var(--bad)}
 .kpi.off .value{color:var(--muted);font-size:16px;font-weight:600;padding:6px 0 4px}
 
