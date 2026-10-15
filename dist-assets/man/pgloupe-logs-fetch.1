@@ -1,0 +1,75 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH pgloupe-logs-fetch 1  "fetch " 
+.SH NAME
+pgloupe\-logs\-fetch \- Download a time range of log files from a managed service or server (resumable)
+.SH SYNOPSIS
+\fBpgloupe logs fetch\fR [\fB\-\-instance\fR] [\fB\-\-region\fR] [\fB\-\-profile\fR] [\fB\-\-project\fR] [\fB\-\-resource\-group\fR] [\fB\-\-subscription\fR] [\fB\-\-log\-group\fR] [\fB\-\-bin\fR] [\fB\-\-conn\fR] [\fB\-\-password\-env\fR] [\fB\-\-sslrootcert\fR] [\fB\-\-since\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-provider\fR> <\fB\-\-out\fR> 
+.SH DESCRIPTION
+Download a time range of log files from a managed service or server (resumable)
+.SH OPTIONS
+.TP
+\fB\-\-provider\fR \fI<PROVIDER>\fR
+Log source
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+aws\-rds: Amazon RDS and Aurora PostgreSQL, through the `aws` CLI
+.IP \(bu 2
+aws\-cloudwatch: RDS/Aurora logs exported to `CloudWatch` Logs (EXPERIMENTAL)
+.IP \(bu 2
+azure\-flexible: Azure Database for PostgreSQL Flexible Server, through `az` (EXPERIMENTAL)
+.IP \(bu 2
+gcp\-cloudsql: Google Cloud SQL for PostgreSQL, through `gcloud` (EXPERIMENTAL)
+.IP \(bu 2
+aiven: Aiven for PostgreSQL, through `avn` (EXPERIMENTAL)
+.IP \(bu 2
+heroku: Heroku Postgres, through `heroku`: recent lines only (EXPERIMENTAL)
+.IP \(bu 2
+sql: The server\*(Aqs own log directory over SQL (EXPERIMENTAL)
+.RE
+.TP
+\fB\-\-instance\fR \fI<INSTANCE>\fR
+The instance: RDS instance identifier, Azure server name, Cloud SQL instance, Aiven service, or Heroku app
+.TP
+\fB\-\-region\fR \fI<REGION>\fR
+AWS region; default from the AWS CLI configuration
+.TP
+\fB\-\-profile\fR \fI<PROFILE>\fR
+AWS CLI profile
+.TP
+\fB\-\-project\fR \fI<PROJECT>\fR
+Google Cloud project (`gcp\-cloudsql`) or Aiven project (`aiven`)
+.TP
+\fB\-\-resource\-group\fR \fI<RESOURCE_GROUP>\fR
+Azure resource group (`azure\-flexible`)
+.TP
+\fB\-\-subscription\fR \fI<SUBSCRIPTION>\fR
+Azure subscription (`azure\-flexible`)
+.TP
+\fB\-\-log\-group\fR \fI<LOG_GROUP>\fR
+`CloudWatch` log group (`aws\-cloudwatch`); default `/aws/rds/instance/<instance>/postgresql`
+.TP
+\fB\-\-bin\fR \fI<BIN>\fR
+Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)
+.TP
+\fB\-\-conn\fR \fI<CONN>\fR
+Connection for `\-\-provider sql`
+.TP
+\fB\-\-password\-env\fR \fI<PASSWORD_ENV>\fR
+Environment variable that holds the password (default `PGPASSWORD`)
+.TP
+\fB\-\-sslrootcert\fR \fI<SSLROOTCERT>\fR
+CA certificate (PEM) to trust
+.TP
+\fB\-\-since\fR \fI<SINCE>\fR [default: 24h]
+Start: `30m`, `24h`, `7d`, `2w` back from now, or an RFC 3339 time or `YYYY\-MM\-DD` (UTC)
+.TP
+\fB\-\-out\fR \fI<OUT>\fR
+Directory the files go to (created if missing); a rerun continues where this stopped
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

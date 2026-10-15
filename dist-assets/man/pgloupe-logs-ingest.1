@@ -1,0 +1,119 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH pgloupe-logs-ingest 1  "ingest " 
+.SH NAME
+pgloupe\-logs\-ingest \- Add logs to a store; files already ingested are skipped and grown ones replace their old version
+.SH SYNOPSIS
+\fBpgloupe logs ingest\fR [\fB\-\-format\fR] [\fB\-\-prefix\fR] [\fB\-\-log\-tz\fR] [\fB\-\-max\-fingerprints\fR] [\fB\-\-threads\fR] [\fB\-\-force\fR] [\fB\-\-slowest\fR] [\fB\-\-params\fR] [\fB\-\-database\fR] [\fB\-\-user\fR] [\fB\-\-application\fR] [\fB\-\-host\fR] [\fB\-\-exclude\-database\fR] [\fB\-\-exclude\-user\fR] [\fB\-\-exclude\-application\fR] [\fB\-\-exclude\-host\fR] [\fB\-\-include\-query\fR] [\fB\-\-exclude\-query\fR] [\fB\-\-pid\fR] [\fB\-\-exclude\-message\fR] [\fB\-\-between\fR] [\fB\-\-exclude\-hours\fR] [\fB\-\-weekdays\fR] [\fB\-\-tz\fR] [\fB\-\-anonymize\fR] [\fB\-\-anonymize\-key\fR] [\fB\-\-lc\-messages\fR] [\fB\-\-messages\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-store\fR> <\fIFILES\fR> 
+.SH DESCRIPTION
+Add logs to a store; files already ingested are skipped and grown ones replace their old version
+.SH OPTIONS
+.TP
+\fB\-\-store\fR \fI<STORE>\fR
+The store file; created when missing
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: auto]
+Log format; `auto` looks at each file\*(Aqs first line
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+csv
+.IP \(bu 2
+json
+.IP \(bu 2
+stderr
+.IP \(bu 2
+pgbouncer: The pgBouncer log (experimental)
+.RE
+.TP
+\fB\-\-prefix\fR \fI<PREFIX>\fR
+The server\*(Aqs `log_line_prefix`; inferred when omitted
+.TP
+\fB\-\-log\-tz\fR \fI<LOG_TZ>\fR
+Offset for timezone abbreviations the log does not spell out, e.g. `\-03` or `+05:30`
+.TP
+\fB\-\-max\-fingerprints\fR \fI<MAX_FINGERPRINTS>\fR [default: 50000]
+Distinct statements kept per hour before the rest fold into one overflow row
+.TP
+\fB\-\-threads\fR \fI<THREADS>\fR
+Worker threads (default: all cores)
+.TP
+\fB\-\-force\fR
+Read and store files even when their content is already in the store
+.TP
+\fB\-\-slowest\fR \fI<SLOWEST>\fR
+Slowest single executions to keep and list (default 20)
+.TP
+\fB\-\-params\fR
+Keep the bind parameters of those executions; they can hold personal data
+.TP
+\fB\-\-database\fR \fI<DATABASES>\fR
+Only records of these databases (repeat or comma\-separate)
+.TP
+\fB\-\-user\fR \fI<USERS>\fR
+Only records of these users
+.TP
+\fB\-\-application\fR \fI<APPLICATIONS>\fR
+Only records of these applications (`application_name`)
+.TP
+\fB\-\-host\fR \fI<HOSTS>\fR
+Only records from these client hosts
+.TP
+\fB\-\-exclude\-database\fR \fI<EXCLUDE_DATABASES>\fR
+Drop records of these databases
+.TP
+\fB\-\-exclude\-user\fR \fI<EXCLUDE_USERS>\fR
+Drop records of these users
+.TP
+\fB\-\-exclude\-application\fR \fI<EXCLUDE_APPLICATIONS>\fR
+Drop records of these applications
+.TP
+\fB\-\-exclude\-host\fR \fI<EXCLUDE_HOSTS>\fR
+Drop records from these client hosts
+.TP
+\fB\-\-include\-query\fR \fI<INCLUDE_QUERY>\fR
+Only records whose message or statement matches this regular expression
+.TP
+\fB\-\-exclude\-query\fR \fI<EXCLUDE_QUERY>\fR
+Drop records whose message or statement matches this regular expression
+.TP
+\fB\-\-pid\fR \fI<PIDS>\fR
+Only records of these backend process ids
+.TP
+\fB\-\-exclude\-message\fR \fI<EXCLUDE_MESSAGE>\fR
+Drop records whose message matches this regular expression (noise such as health checks)
+.TP
+\fB\-\-between\fR \fI<BETWEEN>\fR
+Only records inside this time of day, as `HH:MM\-HH:MM` (wraps past midnight)
+.TP
+\fB\-\-exclude\-hours\fR \fI<EXCLUDE_HOURS>\fR
+Drop records in these hours of the day, as `5\-7` (hours 5 to 7 inclusive); repeatable
+.TP
+\fB\-\-weekdays\fR \fI<WEEKDAYS>\fR
+Only records on these days: `mon\-fri`, `sat,sun`
+.TP
+\fB\-\-tz\fR \fI<TZ>\fR
+Zone for `\-\-between`, `\-\-exclude\-hours` and `\-\-weekdays`: an IANA name or `UTC` (default)
+.TP
+\fB\-\-anonymize\fR
+Make the report safe to share: users, databases, applications and hosts become stable pseudonyms, and literals, emails and addresses are removed from every text
+.TP
+\fB\-\-anonymize\-key\fR \fI<ANONYMIZE_KEY>\fR
+Secret that decides the pseudonyms (default: none, so common names are guessable)
+.TP
+\fB\-\-lc\-messages\fR \fI<LC_MESSAGES>\fR [default: auto]
+The language of the server\*(Aqs messages (`lc_messages`): `auto` (default) looks at the log, `en` reads English, or one of `pt_BR`, `es`, `fr`, `de`
+.TP
+\fB\-\-messages\-file\fR \fI<MESSAGES_FILE>\fR
+A translation table for another language: lines of `locale<TAB>english<TAB>translated`, as in the built\-in one
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIFILES\fR>
+Log files (csvlog, jsonlog or stderr; compression is detected automatically)

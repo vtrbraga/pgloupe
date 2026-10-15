@@ -1,0 +1,32 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH pgloupe-logs 1  "logs " 
+.SH NAME
+pgloupe\-logs \- Work with Postgres server logs
+.SH SYNOPSIS
+\fBpgloupe logs\fR [\fB\-h\fR|\fB\-\-help\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Work with Postgres server logs
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.SH SUBCOMMANDS
+.TP
+pgloupe\-logs\-dump(1)
+Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON
+.TP
+pgloupe\-logs\-analyze(1)
+Summarize one or more logs: statements with percentiles, errors, locks, temp files, connections, checkpoints and autovacuum
+.TP
+pgloupe\-logs\-ingest(1)
+Add logs to a store; files already ingested are skipped and grown ones replace their old version
+.TP
+pgloupe\-logs\-report(1)
+Report on a time window of a store
+.TP
+pgloupe\-logs\-fetch(1)
+Download a time range of log files from a managed service or server (resumable)
+.TP
+pgloupe\-logs\-help(1)
+Print this message or the help of the given subcommand(s)

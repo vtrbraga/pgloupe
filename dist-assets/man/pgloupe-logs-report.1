@@ -1,0 +1,61 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH pgloupe-logs-report 1  "report " 
+.SH NAME
+pgloupe\-logs\-report \- Report on a time window of a store
+.SH SYNOPSIS
+\fBpgloupe logs report\fR [\fB\-\-slowest\fR] [\fB\-\-since\fR] [\fB\-\-until\fR] [\fB\-\-by\fR] [\fB\-\-top\fR] [\fB\-\-bucket\fR] [\fB\-\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-store\fR> 
+.SH DESCRIPTION
+Report on a time window of a store
+.SH OPTIONS
+.TP
+\fB\-\-store\fR \fI<STORE>\fR
+The store file written by `logs ingest`
+.TP
+\fB\-\-slowest\fR \fI<SLOWEST>\fR
+Slowest executions to list, at most what the ingest kept (20 unless it was told more)
+.TP
+\fB\-\-since\fR \fI<SINCE>\fR
+Start of the window (RFC 3339 or `YYYY\-MM\-DD`, UTC); rounded down to the hour
+.TP
+\fB\-\-until\fR \fI<UNTIL>\fR
+End of the window; rounded up to the hour
+.TP
+\fB\-\-by\fR \fI<BY>\fR [default: total]
+Metric that orders the statement table
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+total: Total execution time
+.IP \(bu 2
+calls: Number of calls
+.IP \(bu 2
+p95: 95th percentile of the duration
+.IP \(bu 2
+max: Slowest single call
+.RE
+.TP
+\fB\-\-top\fR \fI<TOP>\fR [default: 20]
+Statements to list (`all` for every statement)
+.TP
+\fB\-\-bucket\fR \fI<BUCKET>\fR [default: 1m]
+Timeline resolution: a multiple of one minute
+.TP
+\fB\-\-output\fR \fI<OUTPUT>\fR [default: text]
+Report format
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+text
+.IP \(bu 2
+json
+.RE
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

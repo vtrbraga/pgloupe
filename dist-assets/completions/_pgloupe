@@ -1,0 +1,783 @@
+#compdef pgloupe
+
+autoload -U is-at-least
+
+_pgloupe() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_pgloupe_commands" \
+"*::: :->pgloupe" \
+&& ret=0
+    case $state in
+    (pgloupe)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:pgloupe-command-$line[1]:"
+        case $line[1] in
+            (stats)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_pgloupe__subcmd__stats_commands" \
+"*::: :->stats" \
+&& ret=0
+
+    case $state in
+    (stats)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:pgloupe-stats-command-$line[1]:"
+        case $line[1] in
+            (diff)
+_arguments "${_arguments_options[@]}" : \
+'--before-info=[\`pg_stat_statements_info\` CSV taken with the older snapshot]:BEFORE_INFO:_files' \
+'--after-info=[\`pg_stat_statements_info\` CSV taken with the newer snapshot]:AFTER_INFO:_files' \
+'--by=[Metric that orders the table]:BY:((total\:"Δ total execution time"
+calls\:"Δ calls"
+mean\:"Mean execution time inside the window"))' \
+'--top=[Rows to show (\`all\` for every statement)]:TOP:_default' \
+'--min-calls=[With \`--by mean\`, skip queries with fewer calls than this in the window]:MIN_CALLS:_default' \
+'--format=[Output format]:FORMAT:(text json)' \
+'--wide[Show full query text in the table]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':before -- Older snapshot\: CSV export of `pg_stat_statements`:_files' \
+':after -- Newer snapshot:_files' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_pgloupe__subcmd__stats__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:pgloupe-stats-help-command-$line[1]:"
+        case $line[1] in
+            (diff)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(logs)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_pgloupe__subcmd__logs_commands" \
+"*::: :->logs" \
+&& ret=0
+
+    case $state in
+    (logs)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:pgloupe-logs-command-$line[1]:"
+        case $line[1] in
+            (dump)
+_arguments "${_arguments_options[@]}" : \
+'--format=[Log format; \`auto\` looks at the first line]:FORMAT:((auto\:""
+csv\:""
+json\:""
+stderr\:""
+pgbouncer\:"The pgBouncer log (experimental)"))' \
+'--prefix=[The server'\''s \`log_line_prefix\`; required for stderr logs]:PREFIX:_default' \
+'--log-tz=[Offset for timezone abbreviations the log does not spell out, e.g. \`-03\` or \`+05\:30\`]:LOG_TZ:_default' \
+'--limit=[Stop after this many records]:LIMIT:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':file -- Log file; compression is detected automatically:_files' \
+&& ret=0
+;;
+(analyze)
+_arguments "${_arguments_options[@]}" : \
+'--format=[Log format; \`auto\` looks at each file'\''s first line]:FORMAT:((auto\:""
+csv\:""
+json\:""
+stderr\:""
+pgbouncer\:"The pgBouncer log (experimental)"))' \
+'--prefix=[The server'\''s \`log_line_prefix\`; inferred when omitted]:PREFIX:_default' \
+'--log-tz=[Offset for timezone abbreviations the log does not spell out, e.g. \`-03\` or \`+05\:30\`]:LOG_TZ:_default' \
+'--by=[Metric that orders the statement table]:BY:((total\:"Total execution time"
+calls\:"Number of calls"
+p95\:"95th percentile of the duration"
+max\:"Slowest single call"))' \
+'--top=[Statements to list (\`all\` for every statement)]:TOP:_default' \
+'--bucket=[Timeline resolution\: \`30s\`, \`1m\`, \`1h\`]:BUCKET:_default' \
+'--max-fingerprints=[Distinct statements kept before the rest fold into one overflow row]:MAX_FINGERPRINTS:_default' \
+'--threads=[Worker threads (default\: all cores)]:THREADS:_default' \
+'--output=[Report format]:OUTPUT:(text json)' \
+'--slowest=[Slowest single executions to keep and list (default 20)]:SLOWEST:_default' \
+'*--database=[Only records of these databases (repeat or comma-separate)]:DATABASES:_default' \
+'*--user=[Only records of these users]:USERS:_default' \
+'*--application=[Only records of these applications (\`application_name\`)]:APPLICATIONS:_default' \
+'*--host=[Only records from these client hosts]:HOSTS:_default' \
+'*--exclude-database=[Drop records of these databases]:EXCLUDE_DATABASES:_default' \
+'*--exclude-user=[Drop records of these users]:EXCLUDE_USERS:_default' \
+'*--exclude-application=[Drop records of these applications]:EXCLUDE_APPLICATIONS:_default' \
+'*--exclude-host=[Drop records from these client hosts]:EXCLUDE_HOSTS:_default' \
+'--include-query=[Only records whose message or statement matches this regular expression]:INCLUDE_QUERY:_default' \
+'--exclude-query=[Drop records whose message or statement matches this regular expression]:EXCLUDE_QUERY:_default' \
+'*--pid=[Only records of these backend process ids]:PIDS:_default' \
+'--exclude-message=[Drop records whose message matches this regular expression (noise such as health checks)]:EXCLUDE_MESSAGE:_default' \
+'--between=[Only records inside this time of day, as \`HH\:MM-HH\:MM\` (wraps past midnight)]:BETWEEN:_default' \
+'*--exclude-hours=[Drop records in these hours of the day, as \`5-7\` (hours 5 to 7 inclusive); repeatable]:EXCLUDE_HOURS:_default' \
+'--weekdays=[Only records on these days\: \`mon-fri\`, \`sat,sun\`]:WEEKDAYS:_default' \
+'--tz=[Zone for \`--between\`, \`--exclude-hours\` and \`--weekdays\`\: an IANA name or \`UTC\` (default)]:TZ:_default' \
+'--anonymize-key=[Secret that decides the pseudonyms (default\: none, so common names are guessable)]:ANONYMIZE_KEY:_default' \
+'--lc-messages=[The language of the server'\''s messages (\`lc_messages\`)\: \`auto\` (default) looks at the log, \`en\` reads English, or one of \`pt_BR\`, \`es\`, \`fr\`, \`de\`]:LC_MESSAGES:_default' \
+'--messages-file=[A translation table for another language\: lines of \`locale<TAB>english<TAB>translated\`, as in the built-in one]:MESSAGES_FILE:_files' \
+'--params[Keep the bind parameters of those executions; they can hold personal data]' \
+'--anonymize[Make the report safe to share\: users, databases, applications and hosts become stable pseudonyms, and literals, emails and addresses are removed from every text]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'*::files -- Log files (csvlog, jsonlog or stderr; compression is detected automatically):_files' \
+&& ret=0
+;;
+(ingest)
+_arguments "${_arguments_options[@]}" : \
+'--store=[The store file; created when missing]:STORE:_files' \
+'--format=[Log format; \`auto\` looks at each file'\''s first line]:FORMAT:((auto\:""
+csv\:""
+json\:""
+stderr\:""
+pgbouncer\:"The pgBouncer log (experimental)"))' \
+'--prefix=[The server'\''s \`log_line_prefix\`; inferred when omitted]:PREFIX:_default' \
+'--log-tz=[Offset for timezone abbreviations the log does not spell out, e.g. \`-03\` or \`+05\:30\`]:LOG_TZ:_default' \
+'--max-fingerprints=[Distinct statements kept per hour before the rest fold into one overflow row]:MAX_FINGERPRINTS:_default' \
+'--threads=[Worker threads (default\: all cores)]:THREADS:_default' \
+'--slowest=[Slowest single executions to keep and list (default 20)]:SLOWEST:_default' \
+'*--database=[Only records of these databases (repeat or comma-separate)]:DATABASES:_default' \
+'*--user=[Only records of these users]:USERS:_default' \
+'*--application=[Only records of these applications (\`application_name\`)]:APPLICATIONS:_default' \
+'*--host=[Only records from these client hosts]:HOSTS:_default' \
+'*--exclude-database=[Drop records of these databases]:EXCLUDE_DATABASES:_default' \
+'*--exclude-user=[Drop records of these users]:EXCLUDE_USERS:_default' \
+'*--exclude-application=[Drop records of these applications]:EXCLUDE_APPLICATIONS:_default' \
+'*--exclude-host=[Drop records from these client hosts]:EXCLUDE_HOSTS:_default' \
+'--include-query=[Only records whose message or statement matches this regular expression]:INCLUDE_QUERY:_default' \
+'--exclude-query=[Drop records whose message or statement matches this regular expression]:EXCLUDE_QUERY:_default' \
+'*--pid=[Only records of these backend process ids]:PIDS:_default' \
+'--exclude-message=[Drop records whose message matches this regular expression (noise such as health checks)]:EXCLUDE_MESSAGE:_default' \
+'--between=[Only records inside this time of day, as \`HH\:MM-HH\:MM\` (wraps past midnight)]:BETWEEN:_default' \
+'*--exclude-hours=[Drop records in these hours of the day, as \`5-7\` (hours 5 to 7 inclusive); repeatable]:EXCLUDE_HOURS:_default' \
+'--weekdays=[Only records on these days\: \`mon-fri\`, \`sat,sun\`]:WEEKDAYS:_default' \
+'--tz=[Zone for \`--between\`, \`--exclude-hours\` and \`--weekdays\`\: an IANA name or \`UTC\` (default)]:TZ:_default' \
+'--anonymize-key=[Secret that decides the pseudonyms (default\: none, so common names are guessable)]:ANONYMIZE_KEY:_default' \
+'--lc-messages=[The language of the server'\''s messages (\`lc_messages\`)\: \`auto\` (default) looks at the log, \`en\` reads English, or one of \`pt_BR\`, \`es\`, \`fr\`, \`de\`]:LC_MESSAGES:_default' \
+'--messages-file=[A translation table for another language\: lines of \`locale<TAB>english<TAB>translated\`, as in the built-in one]:MESSAGES_FILE:_files' \
+'--force[Read and store files even when their content is already in the store]' \
+'--params[Keep the bind parameters of those executions; they can hold personal data]' \
+'--anonymize[Make the report safe to share\: users, databases, applications and hosts become stable pseudonyms, and literals, emails and addresses are removed from every text]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'*::files -- Log files (csvlog, jsonlog or stderr; compression is detected automatically):_files' \
+&& ret=0
+;;
+(report)
+_arguments "${_arguments_options[@]}" : \
+'--store=[The store file written by \`logs ingest\`]:STORE:_files' \
+'--slowest=[Slowest executions to list, at most what the ingest kept (20 unless it was told more)]:SLOWEST:_default' \
+'--since=[Start of the window (RFC 3339 or \`YYYY-MM-DD\`, UTC); rounded down to the hour]:SINCE:_default' \
+'--until=[End of the window; rounded up to the hour]:UNTIL:_default' \
+'--by=[Metric that orders the statement table]:BY:((total\:"Total execution time"
+calls\:"Number of calls"
+p95\:"95th percentile of the duration"
+max\:"Slowest single call"))' \
+'--top=[Statements to list (\`all\` for every statement)]:TOP:_default' \
+'--bucket=[Timeline resolution\: a multiple of one minute]:BUCKET:_default' \
+'--output=[Report format]:OUTPUT:(text json)' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+&& ret=0
+;;
+(fetch)
+_arguments "${_arguments_options[@]}" : \
+'--provider=[Log source]:PROVIDER:((aws-rds\:"Amazon RDS and Aurora PostgreSQL, through the \`aws\` CLI"
+aws-cloudwatch\:"RDS/Aurora logs exported to \`CloudWatch\` Logs (EXPERIMENTAL)"
+azure-flexible\:"Azure Database for PostgreSQL Flexible Server, through \`az\` (EXPERIMENTAL)"
+gcp-cloudsql\:"Google Cloud SQL for PostgreSQL, through \`gcloud\` (EXPERIMENTAL)"
+aiven\:"Aiven for PostgreSQL, through \`avn\` (EXPERIMENTAL)"
+heroku\:"Heroku Postgres, through \`heroku\`\: recent lines only (EXPERIMENTAL)"
+sql\:"The server'\''s own log directory over SQL (EXPERIMENTAL)"))' \
+'--instance=[The instance\: RDS instance identifier, Azure server name, Cloud SQL instance, Aiven service, or Heroku app]:INSTANCE:_default' \
+'--region=[AWS region; default from the AWS CLI configuration]:REGION:_default' \
+'--profile=[AWS CLI profile]:PROFILE:_default' \
+'--project=[Google Cloud project (\`gcp-cloudsql\`) or Aiven project (\`aiven\`)]:PROJECT:_default' \
+'--resource-group=[Azure resource group (\`azure-flexible\`)]:RESOURCE_GROUP:_default' \
+'--subscription=[Azure subscription (\`azure-flexible\`)]:SUBSCRIPTION:_default' \
+'--log-group=[\`CloudWatch\` log group (\`aws-cloudwatch\`); default \`/aws/rds/instance/<instance>/postgresql\`]:LOG_GROUP:_default' \
+'--bin=[Path of the vendor CLI executable (default\: \`aws\`, \`az\`, \`gcloud\`, \`avn\` or \`heroku\`)]:BIN:_files' \
+'--conn=[Connection for \`--provider sql\`]:CONN:_default' \
+'--password-env=[Environment variable that holds the password (default \`PGPASSWORD\`)]:PASSWORD_ENV:_default' \
+'--sslrootcert=[CA certificate (PEM) to trust]:SSLROOTCERT:_files' \
+'--since=[Start\: \`30m\`, \`24h\`, \`7d\`, \`2w\` back from now, or an RFC 3339 time or \`YYYY-MM-DD\` (UTC)]:SINCE:_default' \
+'--out=[Directory the files go to (created if missing); a rerun continues where this stopped]:OUT:_files' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_pgloupe__subcmd__logs__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:pgloupe-logs-help-command-$line[1]:"
+        case $line[1] in
+            (dump)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(analyze)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ingest)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(report)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(fetch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(report)
+_arguments "${_arguments_options[@]}" : \
+'--store=[A store written by \`logs ingest\`, instead of log files]:STORE:_files' \
+'--since=[With \`--store\`\: start of the log window (RFC 3339 or \`YYYY-MM-DD\`, UTC). Defaults to the snapshot interval; rounded down to the hour]:SINCE:_default' \
+'--until=[With \`--store\`\: end of the log window; rounded up to the hour]:UNTIL:_default' \
+'--before=[Older \`pg_stat_statements\` snapshot (CSV export)]:BEFORE:_files' \
+'--after=[Newer snapshot]:AFTER:_files' \
+'--before-info=[\`pg_stat_statements_info\` CSV taken with the older snapshot]:BEFORE_INFO:_files' \
+'--after-info=[\`pg_stat_statements_info\` CSV taken with the newer snapshot]:AFTER_INFO:_files' \
+'(--store)--format=[Log format of \`FILES\`; \`auto\` looks at each file'\''s first line]:FORMAT:((auto\:""
+csv\:""
+json\:""
+stderr\:""
+pgbouncer\:"The pgBouncer log (experimental)"))' \
+'(--store)--prefix=[The server'\''s \`log_line_prefix\` for \`FILES\`; inferred when omitted]:PREFIX:_default' \
+'(--store)--log-tz=[Offset for timezone abbreviations the log does not spell out, e.g. \`-03\` or \`+05\:30\`]:LOG_TZ:_default' \
+'(--store)--max-fingerprints=[Distinct statements kept before the rest fold into one overflow row (\`FILES\`)]:MAX_FINGERPRINTS:_default' \
+'(--store)--threads=[Worker threads for \`FILES\` (default\: all cores)]:THREADS:_default' \
+'--by=[Metric that orders the statement table]:BY:((total\:"Total execution time"
+calls\:"Number of calls"
+p95\:"95th percentile of the duration"
+max\:"Slowest single call"))' \
+'--top=[Statements to list (\`all\` for every statement)]:TOP:_default' \
+'--bucket=[Timeline resolution\: \`30s\`, \`1m\`, \`1h\` (a multiple of one minute with \`--store\`)]:BUCKET:_default' \
+'*--output=[Report format]:OUTPUT:((text\:""
+json\:""
+html\:"One self-contained HTML file"
+csv\:"The statement table, one row per statement"))' \
+'--baseline=[Compare with an earlier period of the store\: \`previous\` (the window just before this one, as long), or give \`--baseline-since\` and \`--baseline-until\`]:BASELINE:((previous\:"The window just before this one, as long"))' \
+'--baseline-since=[Start of the baseline window (needs \`--baseline-until\`)]:BASELINE_SINCE:_default' \
+'--baseline-until=[End of the baseline window]:BASELINE_UNTIL:_default' \
+'--settings=[\`pg_settings\` as CSV (\`name,setting\`, the export of \`SELECT * FROM pg_settings\`)\: the report then says exactly which settings limit it. \`snap\` writes one next to each snapshot, and it is picked up from beside \`--after\` when this is not given]:SETTINGS:_files' \
+'--vendor=[Where the server runs, to word advice about settings (\`rds\`; detected when it can be)]:VENDOR:_default' \
+'--display-tz=[Show times in this IANA zone in the HTML dashboard (default UTC); JSON and text stay UTC]:DISPLAY_TZ:_default' \
+'--out=[Write the report here instead of to standard output. With several \`--output\` formats this is a path prefix\: \`--output html,json --out report\` writes \`report.html\` and \`report.json\`]:OUT:_files' \
+'--slowest=[Slowest single executions to keep and list (default 20)]:SLOWEST:_default' \
+'*--database=[Only records of these databases (repeat or comma-separate)]:DATABASES:_default' \
+'*--user=[Only records of these users]:USERS:_default' \
+'*--application=[Only records of these applications (\`application_name\`)]:APPLICATIONS:_default' \
+'*--host=[Only records from these client hosts]:HOSTS:_default' \
+'*--exclude-database=[Drop records of these databases]:EXCLUDE_DATABASES:_default' \
+'*--exclude-user=[Drop records of these users]:EXCLUDE_USERS:_default' \
+'*--exclude-application=[Drop records of these applications]:EXCLUDE_APPLICATIONS:_default' \
+'*--exclude-host=[Drop records from these client hosts]:EXCLUDE_HOSTS:_default' \
+'--include-query=[Only records whose message or statement matches this regular expression]:INCLUDE_QUERY:_default' \
+'--exclude-query=[Drop records whose message or statement matches this regular expression]:EXCLUDE_QUERY:_default' \
+'*--pid=[Only records of these backend process ids]:PIDS:_default' \
+'--exclude-message=[Drop records whose message matches this regular expression (noise such as health checks)]:EXCLUDE_MESSAGE:_default' \
+'--between=[Only records inside this time of day, as \`HH\:MM-HH\:MM\` (wraps past midnight)]:BETWEEN:_default' \
+'*--exclude-hours=[Drop records in these hours of the day, as \`5-7\` (hours 5 to 7 inclusive); repeatable]:EXCLUDE_HOURS:_default' \
+'--weekdays=[Only records on these days\: \`mon-fri\`, \`sat,sun\`]:WEEKDAYS:_default' \
+'--tz=[Zone for \`--between\`, \`--exclude-hours\` and \`--weekdays\`\: an IANA name or \`UTC\` (default)]:TZ:_default' \
+'--anonymize-key=[Secret that decides the pseudonyms (default\: none, so common names are guessable)]:ANONYMIZE_KEY:_default' \
+'--lc-messages=[The language of the server'\''s messages (\`lc_messages\`)\: \`auto\` (default) looks at the log, \`en\` reads English, or one of \`pt_BR\`, \`es\`, \`fr\`, \`de\`]:LC_MESSAGES:_default' \
+'--messages-file=[A translation table for another language\: lines of \`locale<TAB>english<TAB>translated\`, as in the built-in one]:MESSAGES_FILE:_files' \
+'--params[Keep the bind parameters of those executions; they can hold personal data]' \
+'--anonymize[Make the report safe to share\: users, databases, applications and hosts become stable pseudonyms, and literals, emails and addresses are removed from every text]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'*::files -- Log files (csvlog, jsonlog or stderr; compression is detected automatically), analyzed on the fly:_files' \
+&& ret=0
+;;
+(snap)
+_arguments "${_arguments_options[@]}" : \
+'--conn=[Connection string\: \`postgres\://user@host\:5432/db\` or \`key=value\` pairs. The password comes from the string, \`PGPASSWORD\` (or \`--password-env\`), or \`~/.pgpass\`; prefer those to putting it on the command line]:CONN:_default' \
+'--password-env=[Environment variable that holds the password (default \`PGPASSWORD\`)]:PASSWORD_ENV:_default' \
+'--sslrootcert=[CA certificate (PEM) to trust; turns on full certificate and host name checking. For RDS, the regional bundle from AWS]:SSLROOTCERT:_files' \
+'--out=[Directory the snapshot files go to (created if missing)]:OUT:_files' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(doctor)
+_arguments "${_arguments_options[@]}" : \
+'--conn=[Connection string\: \`postgres\://user@host\:5432/db\` or \`key=value\` pairs. The password comes from the string, \`PGPASSWORD\` (or \`--password-env\`), or \`~/.pgpass\`; prefer those to putting it on the command line]:CONN:_default' \
+'--password-env=[Environment variable that holds the password (default \`PGPASSWORD\`)]:PASSWORD_ENV:_default' \
+'--sslrootcert=[CA certificate (PEM) to trust; turns on full certificate and host name checking. For RDS, the regional bundle from AWS]:SSLROOTCERT:_files' \
+'--vendor=[Say where settings live for this vendor]:VENDOR:((rds\:"Amazon RDS and Aurora PostgreSQL\: settings live in the parameter group"))' \
+'--output=[Output format]:OUTPUT:((text\:"Human-readable"
+json\:"One JSON document"))' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+&& ret=0
+;;
+(export)
+_arguments "${_arguments_options[@]}" : \
+'--conn=[Connection string\: \`postgres\://user@host\:5432/db\` or \`key=value\` pairs. The password comes from the string, \`PGPASSWORD\` (or \`--password-env\`), or \`~/.pgpass\`; prefer those to putting it on the command line]:CONN:_default' \
+'--password-env=[Environment variable that holds the password (default \`PGPASSWORD\`)]:PASSWORD_ENV:_default' \
+'--sslrootcert=[CA certificate (PEM) to trust; turns on full certificate and host name checking. For RDS, the regional bundle from AWS]:SSLROOTCERT:_files' \
+'--provider=[Log source]:PROVIDER:((aws-rds\:"Amazon RDS and Aurora PostgreSQL, through the \`aws\` CLI"
+aws-cloudwatch\:"RDS/Aurora logs exported to \`CloudWatch\` Logs (EXPERIMENTAL)"
+azure-flexible\:"Azure Database for PostgreSQL Flexible Server, through \`az\` (EXPERIMENTAL)"
+gcp-cloudsql\:"Google Cloud SQL for PostgreSQL, through \`gcloud\` (EXPERIMENTAL)"
+aiven\:"Aiven for PostgreSQL, through \`avn\` (EXPERIMENTAL)"
+heroku\:"Heroku Postgres, through \`heroku\`\: recent lines only (EXPERIMENTAL)"
+sql\:"The server'\''s own log directory over SQL (EXPERIMENTAL)"))' \
+'--instance=[The instance\: RDS instance identifier, Azure server name, Cloud SQL instance, Aiven service, or Heroku app]:INSTANCE:_default' \
+'--region=[AWS region; default from the AWS CLI configuration]:REGION:_default' \
+'--profile=[AWS CLI profile]:PROFILE:_default' \
+'--project=[Google Cloud project (\`gcp-cloudsql\`) or Aiven project (\`aiven\`)]:PROJECT:_default' \
+'--resource-group=[Azure resource group (\`azure-flexible\`)]:RESOURCE_GROUP:_default' \
+'--subscription=[Azure subscription (\`azure-flexible\`)]:SUBSCRIPTION:_default' \
+'--log-group=[\`CloudWatch\` log group (\`aws-cloudwatch\`); default \`/aws/rds/instance/<instance>/postgresql\`]:LOG_GROUP:_default' \
+'--bin=[Path of the vendor CLI executable (default\: \`aws\`, \`az\`, \`gcloud\`, \`avn\` or \`heroku\`)]:BIN:_files' \
+'--since=[How far back to fetch logs (see \`logs fetch --since\`)]:SINCE:_default' \
+'--out=[Directory for everything\: \`snapshots/\`, \`logs/\` and the fetch state]:OUT:_files' \
+'--report=[Also write the report here (HTML) from the logs and the two newest snapshots]:REPORT:_files' \
+'--prefix=[The server'\''s \`log_line_prefix\`, for stderr logs whose prefix cannot be inferred]:PREFIX:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+'--conn=[Connection string\: \`postgres\://user@host\:5432/db\` or \`key=value\` pairs. The password comes from the string, \`PGPASSWORD\` (or \`--password-env\`), or \`~/.pgpass\`; prefer those to putting it on the command line]:CONN:_default' \
+'--password-env=[Environment variable that holds the password (default \`PGPASSWORD\`)]:PASSWORD_ENV:_default' \
+'--sslrootcert=[CA certificate (PEM) to trust; turns on full certificate and host name checking. For RDS, the regional bundle from AWS]:SSLROOTCERT:_files' \
+'--provider=[Log source]:PROVIDER:((aws-rds\:"Amazon RDS and Aurora PostgreSQL, through the \`aws\` CLI"
+aws-cloudwatch\:"RDS/Aurora logs exported to \`CloudWatch\` Logs (EXPERIMENTAL)"
+azure-flexible\:"Azure Database for PostgreSQL Flexible Server, through \`az\` (EXPERIMENTAL)"
+gcp-cloudsql\:"Google Cloud SQL for PostgreSQL, through \`gcloud\` (EXPERIMENTAL)"
+aiven\:"Aiven for PostgreSQL, through \`avn\` (EXPERIMENTAL)"
+heroku\:"Heroku Postgres, through \`heroku\`\: recent lines only (EXPERIMENTAL)"
+sql\:"The server'\''s own log directory over SQL (EXPERIMENTAL)"))' \
+'--instance=[The instance\: RDS instance identifier, Azure server name, Cloud SQL instance, Aiven service, or Heroku app]:INSTANCE:_default' \
+'--region=[AWS region; default from the AWS CLI configuration]:REGION:_default' \
+'--profile=[AWS CLI profile]:PROFILE:_default' \
+'--project=[Google Cloud project (\`gcp-cloudsql\`) or Aiven project (\`aiven\`)]:PROJECT:_default' \
+'--resource-group=[Azure resource group (\`azure-flexible\`)]:RESOURCE_GROUP:_default' \
+'--subscription=[Azure subscription (\`azure-flexible\`)]:SUBSCRIPTION:_default' \
+'--log-group=[\`CloudWatch\` log group (\`aws-cloudwatch\`); default \`/aws/rds/instance/<instance>/postgresql\`]:LOG_GROUP:_default' \
+'--bin=[Path of the vendor CLI executable (default\: \`aws\`, \`az\`, \`gcloud\`, \`avn\` or \`heroku\`)]:BIN:_files' \
+'--interval=[Time between updates (\`30s\`, \`5m\`, \`1h\`)]:INTERVAL:_default' \
+'--window=[How far back the report looks (\`24h\`, \`7d\`)]:WINDOW:_default' \
+'--listen=[Address to serve the dashboard on (loopback only unless \`--allow-remote\`)]:LISTEN:_default' \
+'--state-dir=[Where snapshots, fetched logs and the store are kept]:STATE_DIR:_files' \
+'--keep-snapshots=[Snapshots to keep (288 is 24 hours at 5 minutes)]:KEEP_SNAPSHOTS:_default' \
+'--prefix=[The server'\''s \`log_line_prefix\`, if the logs are stderr and it cannot be inferred]:PREFIX:_default' \
+'--out=[Also write the HTML here after every update]:OUT:_files' \
+'--allow-remote[Allow \`--listen\` on an address other machines can reach. The page holds statement text]' \
+'--once[Run one cycle and exit instead of looping and serving]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_pgloupe__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:pgloupe-help-command-$line[1]:"
+        case $line[1] in
+            (stats)
+_arguments "${_arguments_options[@]}" : \
+":: :_pgloupe__subcmd__help__subcmd__stats_commands" \
+"*::: :->stats" \
+&& ret=0
+
+    case $state in
+    (stats)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:pgloupe-help-stats-command-$line[1]:"
+        case $line[1] in
+            (diff)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(logs)
+_arguments "${_arguments_options[@]}" : \
+":: :_pgloupe__subcmd__help__subcmd__logs_commands" \
+"*::: :->logs" \
+&& ret=0
+
+    case $state in
+    (logs)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:pgloupe-help-logs-command-$line[1]:"
+        case $line[1] in
+            (dump)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(analyze)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ingest)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(report)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(fetch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(report)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(snap)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(doctor)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(export)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(watch)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_pgloupe_commands] )) ||
+_pgloupe_commands() {
+    local commands; commands=(
+'stats:Work with \`pg_stat_statements\` snapshots' \
+'logs:Work with Postgres server logs' \
+'report:One report from logs and, optionally, two \`pg_stat_statements\` snapshots\: HTML, JSON or text, with the two joined per statement' \
+'snap:Take a \`pg_stat_statements\` snapshot from a live server (read-only; never resets anything)' \
+'doctor:Check what the server and the role lack for a useful report, and how to fix it' \
+'export:Check the server, take a snapshot and fetch logs into one directory; optionally the report' \
+'watch:Keep a report fresh from a live server and serve it locally' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'pgloupe commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__doctor_commands] )) ||
+_pgloupe__subcmd__doctor_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe doctor commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__export_commands] )) ||
+_pgloupe__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe export commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help_commands] )) ||
+_pgloupe__subcmd__help_commands() {
+    local commands; commands=(
+'stats:Work with \`pg_stat_statements\` snapshots' \
+'logs:Work with Postgres server logs' \
+'report:One report from logs and, optionally, two \`pg_stat_statements\` snapshots\: HTML, JSON or text, with the two joined per statement' \
+'snap:Take a \`pg_stat_statements\` snapshot from a live server (read-only; never resets anything)' \
+'doctor:Check what the server and the role lack for a useful report, and how to fix it' \
+'export:Check the server, take a snapshot and fetch logs into one directory; optionally the report' \
+'watch:Keep a report fresh from a live server and serve it locally' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'pgloupe help commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__doctor_commands] )) ||
+_pgloupe__subcmd__help__subcmd__doctor_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help doctor commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__export_commands] )) ||
+_pgloupe__subcmd__help__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help export commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__help_commands] )) ||
+_pgloupe__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help help commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__logs_commands] )) ||
+_pgloupe__subcmd__help__subcmd__logs_commands() {
+    local commands; commands=(
+'dump:Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON' \
+'analyze:Summarize one or more logs\: statements with percentiles, errors, locks, temp files, connections, checkpoints and autovacuum' \
+'ingest:Add logs to a store; files already ingested are skipped and grown ones replace their old version' \
+'report:Report on a time window of a store' \
+'fetch:Download a time range of log files from a managed service or server (resumable)' \
+    )
+    _describe -t commands 'pgloupe help logs commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__logs__subcmd__analyze_commands] )) ||
+_pgloupe__subcmd__help__subcmd__logs__subcmd__analyze_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help logs analyze commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__logs__subcmd__dump_commands] )) ||
+_pgloupe__subcmd__help__subcmd__logs__subcmd__dump_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help logs dump commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__logs__subcmd__fetch_commands] )) ||
+_pgloupe__subcmd__help__subcmd__logs__subcmd__fetch_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help logs fetch commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__logs__subcmd__ingest_commands] )) ||
+_pgloupe__subcmd__help__subcmd__logs__subcmd__ingest_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help logs ingest commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__logs__subcmd__report_commands] )) ||
+_pgloupe__subcmd__help__subcmd__logs__subcmd__report_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help logs report commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__report_commands] )) ||
+_pgloupe__subcmd__help__subcmd__report_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help report commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__snap_commands] )) ||
+_pgloupe__subcmd__help__subcmd__snap_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help snap commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__stats_commands] )) ||
+_pgloupe__subcmd__help__subcmd__stats_commands() {
+    local commands; commands=(
+'diff:Compare two snapshot CSV exports and rank the queries that changed' \
+    )
+    _describe -t commands 'pgloupe help stats commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__stats__subcmd__diff_commands] )) ||
+_pgloupe__subcmd__help__subcmd__stats__subcmd__diff_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help stats diff commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__help__subcmd__watch_commands] )) ||
+_pgloupe__subcmd__help__subcmd__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe help watch commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs_commands] )) ||
+_pgloupe__subcmd__logs_commands() {
+    local commands; commands=(
+'dump:Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON' \
+'analyze:Summarize one or more logs\: statements with percentiles, errors, locks, temp files, connections, checkpoints and autovacuum' \
+'ingest:Add logs to a store; files already ingested are skipped and grown ones replace their old version' \
+'report:Report on a time window of a store' \
+'fetch:Download a time range of log files from a managed service or server (resumable)' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'pgloupe logs commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__analyze_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__analyze_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs analyze commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__dump_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__dump_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs dump commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__fetch_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__fetch_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs fetch commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__help_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__help_commands() {
+    local commands; commands=(
+'dump:Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON' \
+'analyze:Summarize one or more logs\: statements with percentiles, errors, locks, temp files, connections, checkpoints and autovacuum' \
+'ingest:Add logs to a store; files already ingested are skipped and grown ones replace their old version' \
+'report:Report on a time window of a store' \
+'fetch:Download a time range of log files from a managed service or server (resumable)' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'pgloupe logs help commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__help__subcmd__analyze_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__help__subcmd__analyze_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs help analyze commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__help__subcmd__dump_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__help__subcmd__dump_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs help dump commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__help__subcmd__fetch_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__help__subcmd__fetch_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs help fetch commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__help__subcmd__help_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs help help commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__help__subcmd__ingest_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__help__subcmd__ingest_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs help ingest commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__help__subcmd__report_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__help__subcmd__report_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs help report commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__ingest_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__ingest_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs ingest commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__logs__subcmd__report_commands] )) ||
+_pgloupe__subcmd__logs__subcmd__report_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe logs report commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__report_commands] )) ||
+_pgloupe__subcmd__report_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe report commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__snap_commands] )) ||
+_pgloupe__subcmd__snap_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe snap commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__stats_commands] )) ||
+_pgloupe__subcmd__stats_commands() {
+    local commands; commands=(
+'diff:Compare two snapshot CSV exports and rank the queries that changed' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'pgloupe stats commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__stats__subcmd__diff_commands] )) ||
+_pgloupe__subcmd__stats__subcmd__diff_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe stats diff commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__stats__subcmd__help_commands] )) ||
+_pgloupe__subcmd__stats__subcmd__help_commands() {
+    local commands; commands=(
+'diff:Compare two snapshot CSV exports and rank the queries that changed' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'pgloupe stats help commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__stats__subcmd__help__subcmd__diff_commands] )) ||
+_pgloupe__subcmd__stats__subcmd__help__subcmd__diff_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe stats help diff commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__stats__subcmd__help__subcmd__help_commands] )) ||
+_pgloupe__subcmd__stats__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe stats help help commands' commands "$@"
+}
+(( $+functions[_pgloupe__subcmd__watch_commands] )) ||
+_pgloupe__subcmd__watch_commands() {
+    local commands; commands=()
+    _describe -t commands 'pgloupe watch commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_pgloupe" ]; then
+    _pgloupe "$@"
+else
+    compdef _pgloupe pgloupe
+fi

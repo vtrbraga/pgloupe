@@ -18,6 +18,8 @@ publish = false
 anyhow = "1"
 bzip2 = "0.6"
 clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
 csv = "1"
 flate2 = "1"
 lz4_flex = "0.14"

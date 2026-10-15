@@ -1,0 +1,46 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH pgloupe-doctor 1  "doctor " 
+.SH NAME
+pgloupe\-doctor \- Check what the server and the role lack for a useful report, and how to fix it
+.SH SYNOPSIS
+\fBpgloupe doctor\fR [\fB\-\-password\-env\fR] [\fB\-\-sslrootcert\fR] [\fB\-\-vendor\fR] [\fB\-\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-conn\fR> 
+.SH DESCRIPTION
+Check what the server and the role lack for a useful report, and how to fix it
+.SH OPTIONS
+.TP
+\fB\-\-conn\fR \fI<CONN>\fR
+Connection string: `postgres://user@host:5432/db` or `key=value` pairs. The password comes from the string, `PGPASSWORD` (or `\-\-password\-env`), or `~/.pgpass`; prefer those to putting it on the command line
+.TP
+\fB\-\-password\-env\fR \fI<PASSWORD_ENV>\fR
+Environment variable that holds the password (default `PGPASSWORD`)
+.TP
+\fB\-\-sslrootcert\fR \fI<SSLROOTCERT>\fR
+CA certificate (PEM) to trust; turns on full certificate and host name checking. For RDS, the regional bundle from AWS
+.TP
+\fB\-\-vendor\fR \fI<VENDOR>\fR
+Say where settings live for this vendor
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+rds: Amazon RDS and Aurora PostgreSQL: settings live in the parameter group
+.RE
+.TP
+\fB\-\-output\fR \fI<OUTPUT>\fR [default: text]
+Output format
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+text: Human\-readable
+.IP \(bu 2
+json: One JSON document
+.RE
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

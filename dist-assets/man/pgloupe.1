@@ -1,0 +1,46 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH pgloupe 1  "pgloupe 0.0.0" 
+.SH NAME
+pgloupe \- A close look at your Postgres logs and query stats.
+.SH SYNOPSIS
+\fBpgloupe\fR [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+A close look at your Postgres logs and query stats.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+pgloupe\-stats(1)
+Work with `pg_stat_statements` snapshots
+.TP
+pgloupe\-logs(1)
+Work with Postgres server logs
+.TP
+pgloupe\-report(1)
+One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or text, with the two joined per statement
+.TP
+pgloupe\-snap(1)
+Take a `pg_stat_statements` snapshot from a live server (read\-only; never resets anything)
+.TP
+pgloupe\-doctor(1)
+Check what the server and the role lack for a useful report, and how to fix it
+.TP
+pgloupe\-export(1)
+Check the server, take a snapshot and fetch logs into one directory; optionally the report
+.TP
+pgloupe\-watch(1)
+Keep a report fresh from a live server and serve it locally
+.TP
+pgloupe\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+Exit codes: 0 success; 1 the work failed (unreadable input, nothing decoded, a server or vendor error); 2 the command line is wrong.
+Postgres 14 to 18 are supported; logs may be stderr, csvlog or jsonlog, plain or gzip, zstd, xz, lz4 or bzip2.
+.SH VERSION
+v0.0.0
