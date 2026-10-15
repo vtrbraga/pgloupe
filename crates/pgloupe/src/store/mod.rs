@@ -14,7 +14,7 @@ use rusqlite::{Connection, OpenFlags, ffi::ErrorCode};
 use thiserror::Error;
 
 /// Version written to `PRAGMA user_version`; a store with another number is refused.
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// Written to `PRAGMA application_id` (the bytes `pglp`), so another program's database that
 /// happens to carry our version number is not mistaken for a store.
@@ -160,10 +160,10 @@ impl Store {
                     supported: SCHEMA_VERSION,
                 });
             }
-            (1, _) if has_inputs > 0 => {
+            (found, _) if (1..SCHEMA_VERSION).contains(&found) && (ours || has_inputs > 0) => {
                 return Err(StoreError::Outdated {
                     path: name,
-                    found: 1,
+                    found,
                     supported: SCHEMA_VERSION,
                 });
             }
@@ -270,6 +270,24 @@ mod tests {
             "{err}"
         );
         assert!(err.to_string().contains("ingest again"), "{err}");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn a_store_from_schema_2_is_refused_with_advice() {
+        let path = temp("schema2");
+        let _ = std::fs::remove_file(&path);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(schema::SCHEMA).unwrap();
+        conn.pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        conn.pragma_update(None, "user_version", 2).unwrap();
+        drop(conn);
+        let err = Store::create(&path).unwrap_err();
+        assert!(
+            matches!(err, StoreError::Outdated { found: 2, .. }),
+            "{err}"
+        );
         std::fs::remove_file(&path).unwrap();
     }
 

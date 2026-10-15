@@ -21,6 +21,7 @@
     return withStats.length ? fresh.length / withStats.length : 0;
   })();
   var hideNew = newShare > 0.8;
+  if (hideNew && state.flag === 'new') { state.flag = ''; }
   function visibleFlags(r) { return r.stats ? r.stats.flags.filter(function (f) { return !(hideNew && f === 'new'); }) : []; }
   var byFp = Object.create(null);
   rows.forEach(function (r) { byFp[r.fingerprint] = r; });
@@ -216,6 +217,7 @@
   var SECTION_FOR = { errors: 'errors', locks: 'locks', statements: 'statements' };
   function actionNode(a, index) {
     var links = (a.statements || []).map(function (fp) {
+      if (!byFp[fp]) { return h('span', { 'class': 'chip-off', title: 'Not among the statements shown (raise --top)', text: L.shortFp(fp) }); }
       return h('button', { title: 'Open the statement', onclick: function () { openStatement(fp); }, text: L.shortFp(fp) });
     });
     return h('div', { 'class': 'action ' + a.priority }, [
@@ -223,7 +225,7 @@
       h('div', { 'class': 'body' }, [
         h('div', { 'class': 'title' }, [a.title, ' ', badge(a.priority, a.priority === 'high' ? 'bad' : 'warn')]),
         h('div', { 'class': 'advice', text: a.advice }),
-        a.evidence ? h('code', { 'class': 'evidence', text: a.evidence }) : null,
+        a.evidence ? h('code', { 'class': 'evidence', text: (a.evidence_kind === 'statement' ? 'statement: ' : 'log: ') + a.evidence }) : null,
         h('div', { 'class': 'links' }, [
           links.length ? h('span', { 'class': 'muted', text: 'statements' }) : null, links,
           h('button', { 'class': 'btn small', onclick: function () { setState({ s: SECTION_FOR[a.section] || 'overview', fp: '' }); window.scrollTo(0, 0); }, text: 'Details' })
@@ -306,6 +308,7 @@
       h('div', null, [
         h('div', null, [h('span', { 'class': 'code', text: f.code }), ' ', f.message]),
         f.statements && f.statements.length ? h('div', { 'class': 'links' }, f.statements.map(function (fp) {
+          if (!byFp[fp]) { return h('span', { 'class': 'chip-off', title: 'Not among the statements shown (raise --top)', text: L.shortFp(fp) }); }
           return h('button', { title: 'Open the statement', onclick: function () { openStatement(fp); }, text: L.shortFp(fp) });
         })) : null
       ])
@@ -480,10 +483,11 @@
       body.appendChild(panel('Errors from this statement', h('div', { 'class': 'findings', id: 'drawer-errors' }, errs.map(function (x) {
         var e = x.error;
         return h('div', { 'class': 'finding' }, [h('span', { 'class': 'dot' }), h('div', null, [
-          h('div', null, [badge(e.sqlstate || e.level, 'bad'), ' ' + L.fmtInt(x.count) + '\u00d7 ', e.first_message.split('\n')[0]]),
+          h('div', null, [badge(e.sqlstate || e.level, 'bad'), ' ' + L.fmtInt(x.count) + '\u00d7 this error kind', (e.statements || []).length > 1 ? ' (shared by ' + e.statements.length + ' statements)' : '']),
+          h('div', { 'class': 'muted small', text: 'first of this kind: ' + e.first_message.split('\n')[0] }),
           e.detail ? h('div', { 'class': 'muted', text: e.detail }) : null,
           e.hint ? h('div', { 'class': 'muted', text: 'hint: ' + e.hint }) : null,
-          e.pid ? h('div', { 'class': 'muted', text: 'first logged by process ' + e.pid + ' at ' + L.fmtTime(e.first_seen, true) }) : null
+          e.pid ? h('div', { 'class': 'muted', text: 'first of this kind, from any statement: process ' + e.pid + ' at ' + L.fmtTime(e.first_seen, true) }) : null
         ])]);
       }))));
     }

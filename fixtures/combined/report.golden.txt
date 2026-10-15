@@ -7,9 +7,9 @@ overlap:   100%
 what to fix first
   1. [high] One statement takes 80% of the execution time (400 ms)
      Start here. Run EXPLAIN (ANALYZE, BUFFERS) on it, check for a missing index, and look at its lock waits and errors in the detail.
-     log: UPDATE film SET rental_rate = $1
+     statement: UPDATE film SET rental_rate = $1
      statements: f0e619a5
-  2. [medium] 1 error of 1 kind; most often 42P01 relation "nope" does not exist
+  2. [medium] 1 error: 42P01 relation "nope" does not exist
      A statement names a table or view that does not exist. Check that migrations ran, the search_path, and that the application connects to the right database.
      statements: b84a3d2a
 

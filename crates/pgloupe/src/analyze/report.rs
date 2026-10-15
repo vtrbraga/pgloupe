@@ -153,10 +153,12 @@ pub struct CancelledReport {
 /// Cancellations for one reason.
 #[derive(Debug, Clone, Serialize)]
 pub struct CancelReasonRow {
-    /// `statement_timeout`, `user_request`, `lock_timeout` or `other`.
+    /// `statement_timeout`, `user_request`, `lock_timeout`, `lock_not_available` or `other`.
     pub reason: String,
     /// Cancelled executions.
     pub count: u64,
+    /// The statements cancelled for this reason, most often first.
+    pub statements: Vec<ErrorStatementRow>,
 }
 
 /// A statement and how often it was cancelled.
@@ -704,6 +706,22 @@ fn cancelled(acc: &Accumulators) -> CancelledReport {
         .map(|(reason, count)| CancelReasonRow {
             reason: reason.clone(),
             count: *count,
+            statements: {
+                let mut busiest: Vec<(&u64, &u64)> = acc
+                    .totals
+                    .cancelled_statements
+                    .get(reason)
+                    .map(|m| m.iter().collect())
+                    .unwrap_or_default();
+                busiest.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+                busiest
+                    .into_iter()
+                    .map(|(id, count)| ErrorStatementRow {
+                        fingerprint: format!("{id:016x}"),
+                        count: *count,
+                    })
+                    .collect()
+            },
         })
         .collect();
     by_reason.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));

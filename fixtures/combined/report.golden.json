@@ -4,6 +4,7 @@
       "advice": "Start here. Run EXPLAIN (ANALYZE, BUFFERS) on it, check for a missing index, and look at its lock waits and errors in the detail.",
       "code": "dominant_statement",
       "evidence": "UPDATE film SET rental_rate = $1",
+      "evidence_kind": "statement",
       "priority": "high",
       "section": "statements",
       "statements": [
@@ -14,12 +15,13 @@
     {
       "advice": "A statement names a table or view that does not exist. Check that migrations ran, the search_path, and that the application connects to the right database.",
       "code": "errors",
+      "evidence_kind": "log",
       "priority": "medium",
       "section": "errors",
       "statements": [
         "b84a3d2aac05c480"
       ],
-      "title": "1 error of 1 kind; most often 42P01 relation \"nope\" does not exist"
+      "title": "1 error: 42P01 relation \"nope\" does not exist"
     }
   ],
   "findings": [

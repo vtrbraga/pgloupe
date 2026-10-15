@@ -9,6 +9,10 @@ use crate::analyze::report::Report;
 const LISTED: usize = 5;
 /// A statement this share of all execution time is worth starting with.
 const DOMINANT_SHARE_PCT: f64 = 50.0;
+/// A statement is only called out when at least this many statements have time recorded...
+const MIN_STATEMENTS_FOR_DOMINANT: usize = 3;
+/// ...and it took at least this long (milliseconds).
+const MIN_DOMINANT_MS: f64 = 100.0;
 /// Lock waits adding up to this much make the action urgent.
 const URGENT_LOCK_WAIT_MS: f64 = 5_000.0;
 
@@ -23,9 +27,11 @@ pub struct Action {
     pub title: String,
     /// What to do about it.
     pub advice: String,
-    /// A line from the log that shows it, when there is one.
+    /// A line that shows it, when there is one: from the log, or the statement itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+    /// What `evidence` is: `log` or `statement`.
+    pub evidence_kind: &'static str,
     /// The statements involved (fingerprints), worst first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub statements: Vec<String>,
@@ -110,6 +116,12 @@ fn error_advice(sqlstate: Option<&str>) -> &'static str {
     }
 }
 
+/// A deadlock error, with or without a SQLSTATE in the log (stderr without `%e` has none).
+fn is_deadlock(error: &crate::analyze::report::ErrorRow) -> bool {
+    error.sqlstate.as_deref() == Some("40P01")
+        || error.first_message.starts_with("deadlock detected")
+}
+
 fn fingerprints<'a>(rows: impl IntoIterator<Item = &'a JoinedRow>) -> Vec<String> {
     rows.into_iter()
         .take(LISTED)
@@ -141,16 +153,14 @@ fn deadlocks(logs: &Report, found: &mut Vec<Action>) {
     if n == 0 {
         return;
     }
-    let error = logs
-        .errors
-        .iter()
-        .find(|e| e.sqlstate.as_deref() == Some("40P01"));
+    let error = logs.errors.iter().find(|e| is_deadlock(e));
     found.push(Action {
         code: "deadlocks",
         priority: "high",
         title: format!("{}: Postgres cancelled one transaction each time", plural(n, "deadlock", "deadlocks")),
         advice: "Two transactions each held a lock the other needed. Make every code path take its locks in the same order (same tables, same row order), keep transactions short, and retry the cancelled one. The detail below names the processes and locks involved.".to_owned(),
         evidence: error.and_then(|e| e.detail.as_deref()).map(cut),
+        evidence_kind: "log",
         statements: error
             .map(|e| e.statements.iter().take(LISTED).map(|s| s.fingerprint.clone()).collect())
             .unwrap_or_default(),
@@ -182,6 +192,13 @@ fn cancellations(logs: &Report, found: &mut Vec<Action>) {
                 ),
                 "Someone or something cancelled these (Ctrl-C, pg_cancel_backend, a client timeout). If it is an application timeout, the statement is too slow for it: see the statements below.",
             ),
+            "lock_not_available" => (
+                format!(
+                    "{} could not get a lock they refused to wait for",
+                    plural(row.count, "statement", "statements")
+                ),
+                "These statements asked not to wait (NOWAIT, SKIP LOCKED or a zero lock_timeout) and the row or table was locked by someone else. If that is by design, retry in the application; if not, find who holds the locks (pg_locks, the log_lock_waits lines) and shorten that transaction.",
+            ),
             _ => (
                 format!(
                     "{} cancelled by the server",
@@ -200,8 +217,8 @@ fn cancellations(logs: &Report, found: &mut Vec<Action>) {
             title,
             advice: advice.to_owned(),
             evidence: None,
-            statements: logs
-                .cancelled
+            evidence_kind: "log",
+            statements: row
                 .statements
                 .iter()
                 .take(LISTED)
@@ -228,7 +245,16 @@ fn dominant_statement(joined: &Joined, found: &mut Vec<Action>) {
     let Some((row, time, share)) = top else {
         return;
     };
-    if share < DOMINANT_SHARE_PCT {
+    // One statement among a handful, or a few milliseconds in all, says nothing.
+    let timed_rows = joined
+        .rows
+        .iter()
+        .filter(|r| total(r).is_some_and(|(t, _)| t > 0.0))
+        .count();
+    if share < DOMINANT_SHARE_PCT
+        || timed_rows < MIN_STATEMENTS_FOR_DOMINANT
+        || time < MIN_DOMINANT_MS
+    {
         return;
     }
     found.push(Action {
@@ -237,6 +263,7 @@ fn dominant_statement(joined: &Joined, found: &mut Vec<Action>) {
         title: format!("One statement takes {share:.0}% of the execution time ({})", ms(time)),
         advice: "Start here. Run EXPLAIN (ANALYZE, BUFFERS) on it, check for a missing index, and look at its lock waits and errors in the detail.".to_owned(),
         evidence: Some(cut(&row.text)),
+        evidence_kind: "statement",
         statements: vec![row.fingerprint.clone()],
         section: "statements",
     });
@@ -269,6 +296,7 @@ fn lock_waits(logs: &Report, joined: &Joined, found: &mut Vec<Action>) {
         ),
         advice: "These statements queued behind transactions that held conflicting locks. Find what held them (the DETAIL of the log_lock_waits lines names the blocking process), then shorten or reorder those transactions; lock_timeout makes waiters fail fast instead of queueing.".to_owned(),
         evidence: None,
+        evidence_kind: "log",
         statements: fingerprints(waiting),
         section: "locks",
     });
@@ -300,10 +328,11 @@ fn temp_files(logs: &Report, joined: &Joined, found: &mut Vec<Action>) {
             bytes(t.max_bytes)
         ),
         advice: format!(
-            "Sorts, hashes or aggregates did not fit in work_mem and spilled. For the statements below: add an index that gives the order, reduce the rows they handle, or raise work_mem for that role or session (SET LOCAL). A work_mem comfortably above {} keeps the largest operation in memory.",
+            "Sorts, hashes or aggregates did not fit in work_mem and spilled. For the statements below: add an index that gives the order, reduce the rows they handle, or raise work_mem for that role or session (SET LOCAL). A work_mem of at least {} is needed to keep the largest operation in memory, and usually more: in-memory sorts and hashes take more room than they do on disk.",
             bytes(t.max_bytes)
         ),
         evidence: None,
+        evidence_kind: "log",
         statements: fingerprints(spilling),
         section: "locks",
     });
@@ -311,7 +340,8 @@ fn temp_files(logs: &Report, joined: &Joined, found: &mut Vec<Action>) {
 
 fn errors(logs: &Report, found: &mut Vec<Action>) {
     let own = |e: &&crate::analyze::report::ErrorRow| {
-        !matches!(e.sqlstate.as_deref(), Some("40P01" | "57014" | "55P03"))
+        !is_deadlock(e)
+            && !matches!(e.sqlstate.as_deref(), Some("57014" | "55P03"))
             && !e.first_message.starts_with("canceling statement")
     };
     let rest: Vec<_> = logs.errors.iter().filter(own).collect();
@@ -323,14 +353,19 @@ fn errors(logs: &Report, found: &mut Vec<Action>) {
         code: "errors",
         priority: "medium",
         title: format!(
-            "{} of {}; most often {} {}",
+            "{}{}: {} {}",
             plural(total, "error", "errors"),
-            plural(rest.len() as u64, "kind", "kinds"),
-            top.sqlstate.as_deref().unwrap_or("-"),
+            if rest.len() > 1 {
+                format!(" of {} kinds, most often", rest.len())
+            } else {
+                String::new()
+            },
+            top.sqlstate.as_deref().unwrap_or("no SQLSTATE"),
             cut(top.first_message.lines().next().unwrap_or(""))
         ),
         advice: error_advice(top.sqlstate.as_deref()).to_owned(),
         evidence: top.detail.as_deref().map(cut),
+        evidence_kind: "log",
         statements: top
             .statements
             .iter()
@@ -462,6 +497,7 @@ mod tests {
     fn a_statement_with_most_of_the_time_is_called_out() {
         let found = run(&[
             statement(1, 1.0, "SELECT 1 FROM a"),
+            statement(1, 1.0, "SELECT 1 FROM b"),
             statement(2, 990.0, "SELECT * FROM huge"),
         ]);
         let dominant = found
@@ -470,6 +506,75 @@ mod tests {
             .unwrap();
         assert!(dominant.title.contains("100%"), "{}", dominant.title);
         assert!(dominant.evidence.as_deref().unwrap().contains("huge"));
+        assert_eq!(dominant.evidence_kind, "statement");
+    }
+
+    #[test]
+    fn a_tiny_log_does_not_call_anything_dominant() {
+        let few = run(&[
+            statement(1, 990.0, "SELECT * FROM huge"),
+            statement(2, 1.0, "SELECT 1 FROM a"),
+        ]);
+        assert!(!codes(&few).contains(&"dominant_statement"), "{few:?}");
+        let fast = run(&[
+            statement(1, 40.0, "SELECT 1 FROM a"),
+            statement(2, 1.0, "SELECT 1 FROM b"),
+            statement(3, 1.0, "SELECT 1 FROM c"),
+        ]);
+        assert!(!codes(&fast).contains(&"dominant_statement"), "{fast:?}");
+    }
+
+    #[test]
+    fn each_cancellation_reason_lists_its_own_statements() {
+        let found = run(&[
+            statement(1, 1.0, "SELECT 1 FROM a"),
+            failure(
+                2,
+                "57014",
+                "canceling statement due to statement timeout",
+                "SELECT pg_sleep(60)",
+            ),
+            failure(
+                3,
+                "57014",
+                "canceling statement due to user request",
+                "SELECT 42",
+            ),
+        ]);
+        let cancelled: Vec<&Action> = found.iter().filter(|a| a.code == "cancelled").collect();
+        assert_eq!(cancelled.len(), 2);
+        assert!(
+            cancelled.iter().all(|a| a.statements.len() == 1),
+            "{cancelled:?}"
+        );
+        assert_ne!(cancelled[0].statements, cancelled[1].statements);
+    }
+
+    #[test]
+    fn nowait_failures_get_their_own_advice() {
+        let found = run(&[
+            statement(1, 1.0, "SELECT 1 FROM a"),
+            failure(
+                2,
+                "55P03",
+                "could not obtain lock on row in relation \"t\"",
+                "SELECT * FROM t FOR UPDATE NOWAIT",
+            ),
+        ]);
+        let action = found.iter().find(|a| a.code == "cancelled").unwrap();
+        assert!(action.advice.contains("NOWAIT"), "{}", action.advice);
+        assert!(!action.advice.contains("standby"));
+    }
+
+    #[test]
+    fn a_deadlock_without_a_sqlstate_is_still_a_deadlock() {
+        let mut error = LogRecord::new(at(2), Severity::Error, "deadlock detected");
+        error.statement = Some("UPDATE t SET a = 1".to_owned());
+        error.detail = Some("Process 1 waits for ShareLock".to_owned());
+        let found = run(&[statement(1, 1.0, "SELECT 1 FROM a"), error]);
+        assert_eq!(found[0].code, "deadlocks");
+        assert!(found[0].evidence.is_some());
+        assert!(!codes(&found).contains(&"errors"), "{found:?}");
     }
 
     #[test]

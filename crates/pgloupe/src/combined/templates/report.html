@@ -23,7 +23,7 @@
 <section id="actions">
 <h2>What to fix first</h2>
 <ol class="actions">
-{% for a in report.actions %}<li class="finding {{ 'warn' if a.priority == 'high' else 'info' }}"><b>{{ a.title }}</b> <code>{{ a.priority }}</code><div>{{ a.advice }}</div>{% if a.evidence %}<div>log: <code>{{ a.evidence }}</code></div>{% endif %}{% if a.statements %}<div>statements: {% for fp in a.statements %}<code>{{ fp|short }}</code> {% endfor %}</div>{% endif %}</li>
+{% for a in report.actions %}<li class="finding {{ 'warn' if a.priority == 'high' else 'info' }}"><b>{{ a.title }}</b> <code>{{ a.priority }}</code><div>{{ a.advice }}</div>{% if a.evidence %}<div>{{ 'statement' if a.evidence_kind == 'statement' else 'log' }}: <code>{{ a.evidence }}</code></div>{% endif %}{% if a.statements %}<div>statements: {% for fp in a.statements %}<code>{{ fp|short }}</code> {% endfor %}</div>{% endif %}</li>
 {% endfor %}</ol>
 </section>
 {% endif %}

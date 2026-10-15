@@ -36,7 +36,14 @@ pub fn text(report: &CombinedReport) -> String {
             ));
             lines.push(format!("     {}", action.advice));
             if let Some(evidence) = &action.evidence {
-                lines.push(format!("     log: {evidence}"));
+                lines.push(format!(
+                    "     {}: {evidence}",
+                    if action.evidence_kind == "statement" {
+                        "statement"
+                    } else {
+                        "log"
+                    }
+                ));
             }
             if !action.statements.is_empty() {
                 let short: Vec<&str> = action

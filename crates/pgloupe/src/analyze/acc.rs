@@ -514,6 +514,10 @@ pub struct Totals {
     pub unparsed_statements: u64,
     /// Cancelled statements by [`CancelReason`] name.
     pub cancelled: BTreeMap<String, u64>,
+    /// Reason name -> fingerprint of the cancelled statement -> times. Capped to the busiest few
+    /// per reason when a run ends.
+    #[serde(default)]
+    pub cancelled_statements: BTreeMap<String, BTreeMap<u64, u64>>,
 }
 
 impl Totals {
@@ -536,6 +540,7 @@ impl Totals {
             },
             unparsed_statements: 0,
             cancelled: BTreeMap::new(),
+            cancelled_statements: BTreeMap::new(),
         }
     }
 
@@ -649,6 +654,31 @@ impl Totals {
         }
     }
 
+    /// Notes that the cancellation `record` belongs to the statement with fingerprint `id`.
+    fn cancelled_statement(&mut self, record: &LogRecord, id: u64) {
+        if let Some(reason) = cancel_reason(record) {
+            *self
+                .cancelled_statements
+                .entry(reason.as_str().to_owned())
+                .or_default()
+                .entry(id)
+                .or_insert(0) += 1;
+        }
+    }
+
+    /// Keeps the busiest few statements per cancellation reason.
+    fn keep_busiest_cancelled(&mut self) {
+        for statements in self.cancelled_statements.values_mut() {
+            if statements.len() <= ERROR_STATEMENTS {
+                continue;
+            }
+            let mut ranked: Vec<(u64, u64)> = statements.iter().map(|(id, n)| (*id, *n)).collect();
+            ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            ranked.truncate(ERROR_STATEMENTS);
+            *statements = ranked.into_iter().collect();
+        }
+    }
+
     /// Notes that the error `record` belongs to the statement with fingerprint `id`.
     fn error_statement(&mut self, record: &LogRecord, id: u64) {
         let key = (record.level.label().to_owned(), record.sqlstate.clone());
@@ -679,6 +709,12 @@ impl Merge for Totals {
         self.unparsed_statements += other.unparsed_statements;
         for (reason, n) in other.cancelled {
             *self.cancelled.entry(reason).or_insert(0) += n;
+        }
+        for (reason, statements) in other.cancelled_statements {
+            let mine = self.cancelled_statements.entry(reason).or_default();
+            for (id, n) in statements {
+                *mine.entry(id).or_insert(0) += n;
+            }
         }
     }
 }
@@ -814,6 +850,7 @@ impl Accumulators {
             query.cancelled += u64::from(cancelled);
             let id = query.id;
             self.totals.error_statement(record, id);
+            self.totals.cancelled_statement(record, id);
         }
     }
 
@@ -903,11 +940,13 @@ impl Accumulators {
         for stat in self.totals.errors.values_mut() {
             stat.keep_busiest_statements();
         }
+        self.totals.keep_busiest_cancelled();
         // Only the people the kept examples point at: which ones a worker saw along the way
         // depends on how records were split.
         let used: std::collections::BTreeSet<u64> = self
             .queries
             .values()
+            .chain(std::iter::once(&self.overflow))
             .flat_map(|query| query.examples.rows().iter().map(|example| example.who))
             .collect();
         self.who.retain(|key, _| used.contains(key));

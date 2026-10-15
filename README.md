@@ -70,7 +70,7 @@ cargo run -p pgloupe -- logs report --store logs.db --since 2026-10-14 --until 2
 - Each file is identified by a hash of its decompressed bytes. The same file under another name, or compressed, prints `unchanged`; a log that grew since the last run prints `replaced` (the earlier version is dropped, nothing is counted twice).
 - A grown file is read in full again; resuming from a byte offset is not implemented.
 - Statistics are stored per UTC hour, so `--since` rounds down and `--until` rounds up to whole hours (the report prints the range it used). `--bucket` must be a multiple of `1m`.
-- The store keeps the top 1,000 values per breakdown dimension per hour, and the slowest executions and bind parameters that its ingest asked for (`--slowest`, `--params`). A store written by an older pgloupe (schema 1) is refused: delete it and ingest again.
+- The store keeps the top 1,000 values per breakdown dimension per hour, and the slowest executions and bind parameters that its ingest asked for (`--slowest`, `--params`). A store written by an older pgloupe (schema 1 or 2) is refused: delete it and ingest again.
 - `--force` re-ingests files already in the store, for example after fixing `--prefix`. A file that decodes to nothing is reported as `failed` and not stored.
 - One ingest runs at a time per store (a second one waits 5 s, then reports the store as locked). If a file's time range largely overlaps an earlier input that it does not extend, ingest prints a warning: an older partial copy of a stored log is counted twice.
 - Keep the store on the Linux filesystem; SQLite's WAL mode is unreliable on `/mnt/c`.

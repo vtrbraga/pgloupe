@@ -306,6 +306,9 @@ pub enum CancelReason {
     UserRequest,
     /// `lock_timeout` expired.
     LockTimeout,
+    /// A statement that asked not to wait (`NOWAIT`, `SKIP LOCKED`, `lock_timeout = 0` style
+    /// failures) found the lock taken: SQLSTATE `55P03` without a lock timeout.
+    LockNotAvailable,
     /// Any other cancellation (recovery conflict, autovacuum, ...).
     Other,
 }
@@ -318,6 +321,7 @@ impl CancelReason {
             CancelReason::StatementTimeout => "statement_timeout",
             CancelReason::UserRequest => "user_request",
             CancelReason::LockTimeout => "lock_timeout",
+            CancelReason::LockNotAvailable => "lock_not_available",
             CancelReason::Other => "other",
         }
     }
@@ -339,6 +343,8 @@ pub fn cancel_reason(record: &LogRecord) -> Option<CancelReason> {
         CancelReason::UserRequest
     } else if message.contains("lock timeout") {
         CancelReason::LockTimeout
+    } else if record.sqlstate.as_deref() == Some("55P03") {
+        CancelReason::LockNotAvailable
     } else {
         CancelReason::Other
     })
@@ -406,6 +412,13 @@ mod tests {
         assert_eq!(
             reason(None, "canceling statement due to conflict with recovery"),
             Some(CancelReason::Other)
+        );
+        assert_eq!(
+            reason(
+                Some("55P03"),
+                "could not obtain lock on row in relation \"t\""
+            ),
+            Some(CancelReason::LockNotAvailable)
         );
         assert_eq!(reason(Some("23505"), "duplicate key"), None);
         assert_eq!(reason(Some("25P03"), "idle-in-transaction timeout"), None);
