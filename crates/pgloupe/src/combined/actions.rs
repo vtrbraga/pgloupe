@@ -21,7 +21,7 @@ const URGENT_LOCK_WAIT_MS: f64 = 5_000.0;
 pub struct Action {
     /// Stable identifier, for tools and tests.
     pub code: &'static str,
-    /// `high` or `medium`.
+    /// `high`, `medium` or `low`.
     pub priority: &'static str,
     /// The problem in one line, with its numbers.
     pub title: String,
@@ -143,9 +143,14 @@ pub fn actions(logs: Option<&Report>, joined: &Joined) -> Vec<Action> {
         blockers(logs, joined, &mut found);
         temp_files(logs, joined, &mut found);
         errors(logs, &mut found);
+        probes(logs, &mut found);
     }
     // High first; the rules above already run in order of urgency within a priority.
-    found.sort_by_key(|action| action.priority != "high");
+    found.sort_by_key(|action| match action.priority {
+        "high" => 0,
+        "medium" => 1,
+        _ => 2,
+    });
     found
 }
 
@@ -377,9 +382,42 @@ fn temp_files(logs: &Report, joined: &Joined, found: &mut Vec<Action>) {
     });
 }
 
+/// Rejections of a connection before any login: port scanners, health checks and the like.
+fn is_probe(error: &crate::analyze::report::ErrorRow) -> bool {
+    const SHAPES: [&str; 4] = [
+        "unsupported frontend protocol",
+        "no PostgreSQL user name specified in startup packet",
+        "invalid length of startup packet",
+        "incomplete startup packet",
+    ];
+    SHAPES.iter().any(|s| error.first_message.starts_with(s))
+}
+
+fn probes(logs: &Report, found: &mut Vec<Action>) {
+    let seen: Vec<_> = logs.errors.iter().filter(|e| is_probe(e)).collect();
+    let total: u64 = seen.iter().map(|e| e.count).sum();
+    if total == 0 {
+        return;
+    }
+    found.push(Action {
+        code: "connection_probes",
+        priority: "low",
+        title: format!(
+            "{} rejected before login",
+            plural(total, "connection attempt", "connection attempts")
+        ),
+        advice: "Something connected and sent no valid startup packet: a port scanner, a load balancer health check or a client speaking another protocol. If the server is not meant to be reachable from where they come, restrict it in the security group or pg_hba.conf.".to_owned(),
+        evidence: seen.first().map(|e| cut(e.first_message.lines().next().unwrap_or(""))),
+        evidence_kind: "log",
+        statements: Vec::new(),
+        section: "errors",
+    });
+}
+
 fn errors(logs: &Report, found: &mut Vec<Action>) {
     let own = |e: &&crate::analyze::report::ErrorRow| {
-        !is_deadlock(e)
+        !is_probe(e)
+            && !is_deadlock(e)
             && !matches!(e.sqlstate.as_deref(), Some("57014" | "55P03"))
             && !e.first_message.starts_with("canceling statement")
     };
@@ -633,6 +671,41 @@ mod tests {
         assert_eq!(errors.priority, "medium");
         assert!(errors.advice.contains("ON CONFLICT"), "{}", errors.advice);
         assert!(errors.title.contains("23505"));
+    }
+
+    #[test]
+    fn connection_probes_are_a_low_priority_note_of_their_own() {
+        let probe = |second| {
+            LogRecord::new(
+                at(second),
+                Severity::Fatal,
+                "unsupported frontend protocol 255.255: server supports 3.0 to 3.0",
+            )
+        };
+        let only_probes = run(&[probe(1), probe(2), probe(3)]);
+        let note = only_probes
+            .iter()
+            .find(|a| a.code == "connection_probes")
+            .expect("a probe note");
+        assert_eq!(note.priority, "low");
+        assert!(note.title.contains('3'), "{}", note.title);
+        assert!(!codes(&only_probes).contains(&"errors"), "{only_probes:?}");
+        // Real errors keep their own action, and do not count the probes.
+        let mixed = run(&[
+            probe(1),
+            failure(
+                2,
+                "23505",
+                "duplicate key value violates unique constraint",
+                "INSERT INTO t VALUES (1)",
+            ),
+        ]);
+        let errors = mixed.iter().find(|a| a.code == "errors").unwrap();
+        assert!(errors.title.starts_with("1 error"), "{}", errors.title);
+        assert!(codes(&mixed).contains(&"connection_probes"));
+        // A low priority never goes above a medium one.
+        let order: Vec<_> = mixed.iter().map(|a| a.priority).collect();
+        assert_eq!(order.last(), Some(&"low"), "{order:?}");
     }
 
     #[test]

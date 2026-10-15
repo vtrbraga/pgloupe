@@ -901,7 +901,8 @@ fn kinds(acc: &Accumulators) -> Vec<KindRow> {
     let mut rows: Vec<KindRow> = QueryKind::ALL
         .iter()
         .filter_map(|&kind| {
-            let mut sums = (0, 0, 0);
+            // Calls, timed calls, execute time, and execute time plus parse, bind and fetch.
+            let mut sums = (0, 0, 0, 0);
             let members = acc
                 .queries
                 .values()
@@ -919,6 +920,7 @@ fn kinds(acc: &Accumulators) -> Vec<KindRow> {
                     sums.0 + query.calls,
                     sums.1 + query.timed,
                     sums.2 + query.total_us,
+                    sums.3 + query.total_us + query.phases.total_us(),
                 );
             }
             (sums.0 > 0).then(|| KindRow {
@@ -927,7 +929,7 @@ fn kinds(acc: &Accumulators) -> Vec<KindRow> {
                 timed_calls: sums.1,
                 total_ms: ms(sums.2),
                 mean_ms: (sums.1 > 0).then(|| ms(sums.2) / count(sums.1)),
-                share_pct: percent(sums.2, total),
+                share_pct: percent(sums.3, total),
             })
         })
         .collect();
