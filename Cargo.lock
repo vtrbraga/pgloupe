@@ -1108,6 +1108,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tiny_http",
  "tokio-postgres-rustls",
+ "ureq",
  "xxhash-rust",
  "xz2",
  "zstd",

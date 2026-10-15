@@ -32,5 +32,8 @@ rustls-native-certs.workspace = true
 tiny_http.workspace = true
 tokio-postgres-rustls.workspace = true
 
+[dev-dependencies]
+ureq.workspace = true
+
 [lints]
 workspace = true

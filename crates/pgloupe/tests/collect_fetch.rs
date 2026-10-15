@@ -332,3 +332,222 @@ fn experimental_providers_warn_every_time_and_ask_for_what_they_need() {
         );
     }
 }
+
+#[test]
+#[ignore = "needs Docker"]
+fn export_collects_snapshots_and_logs_and_builds_the_report() -> Result<(), String> {
+    let pg = support::Pg::start(16, &[])?;
+    pg.sql("CREATE TABLE t (a int); SELECT count(*) FROM t")?;
+    let fake = FakeCli::new("export-aws")
+        .on(
+            &["sts get-caller-identity"],
+            vec![Reply::Out("{}".to_owned())],
+        )
+        .on(
+            &["--version"],
+            vec![Reply::Out("aws-cli/2.17\n".to_owned())],
+        )
+        .on(
+            &["describe-db-log-files"],
+            vec![Reply::Out(list(&[(
+                "error/postgresql.log.2026-10-14-10",
+                5_000,
+                i64::try_from(RDS_LINES.len()).unwrap(),
+            )]))],
+        )
+        .on(
+            &["--marker 0 --no-paginate"],
+            vec![Reply::Out(portion(RDS_LINES, "1:1", false))],
+        )
+        .on(
+            &["--marker 1:1 --no-paginate"],
+            vec![Reply::Out(portion("", "1:1", false))],
+        );
+    let program = fake.program();
+    let dir = scratch("export");
+    let report = dir.join("report.html");
+    let dsn = pg.url();
+    let go = || {
+        run(
+            &[
+                "export",
+                "--provider",
+                "aws-rds",
+                "--instance",
+                "prod",
+                "--bin",
+                program.to_str().unwrap_or_default(),
+                "--since",
+                "2026-10-14",
+                "--out",
+                dir.to_str().unwrap_or_default(),
+                "--report",
+                report.to_str().unwrap_or_default(),
+            ],
+            &[("PGLOUPE_DSN", &dsn)],
+        )
+    };
+    let first = go();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stderr).contains("only one snapshot"));
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    pg.sql("SELECT count(*) FROM t WHERE a > 3")?;
+    let second = go();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let page = fs::read_to_string(&report).map_err(|e| e.to_string())?;
+    assert!(
+        page.contains("pgloupe-data") && page.contains("pg_stat_statements"),
+        "report missing"
+    );
+    assert_eq!(
+        fs::read_dir(dir.join("snapshots"))
+            .map_err(|e| e.to_string())?
+            .count(),
+        4,
+        "two snapshots and their info files"
+    );
+    for out in [&first, &second] {
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!all.contains(&pg.password));
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs Docker"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario read top to bottom"
+)]
+fn watch_serves_a_report_that_gains_its_statistics_side_on_the_second_cycle() -> Result<(), String>
+{
+    use std::io::{BufRead as _, BufReader};
+    use std::process::Stdio;
+
+    let pg = support::Pg::start(16, &[])?;
+    pg.sql("CREATE TABLE t (a int); SELECT count(*) FROM t")?;
+    let fake = FakeCli::new("watch-aws")
+        .on(
+            &["sts get-caller-identity"],
+            vec![Reply::Out("{}".to_owned())],
+        )
+        .on(
+            &["--version"],
+            vec![Reply::Out("aws-cli/2.17\n".to_owned())],
+        )
+        .on(
+            &["describe-db-log-files"],
+            vec![Reply::Out(list(&[(
+                "error/postgresql.log.2026-10-14-10",
+                5_000,
+                i64::try_from(RDS_LINES.len()).unwrap(),
+            )]))],
+        )
+        .on(
+            &["--marker 0 --no-paginate"],
+            vec![Reply::Out(portion(RDS_LINES, "1:1", false))],
+        )
+        .on(
+            &["--marker 1:1 --no-paginate"],
+            vec![Reply::Out(portion("", "1:1", false))],
+        );
+    let program = fake.program();
+    let dir = scratch("watch");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args([
+            "watch",
+            "--provider",
+            "aws-rds",
+            "--instance",
+            "prod",
+            "--bin",
+            program.to_str().unwrap_or_default(),
+            "--listen",
+            "127.0.0.1:0",
+            "--interval",
+            "2s",
+            "--window",
+            "9999d",
+            "--state-dir",
+            dir.to_str().unwrap_or_default(),
+        ])
+        .env("PGLOUPE_DSN", pg.url())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let mut lines = BufReader::new(child.stdout.take().ok_or("no stdout")?).lines();
+    let first = lines
+        .next()
+        .ok_or("no output")?
+        .map_err(|e| e.to_string())?;
+    let url = first
+        .strip_prefix("serving ")
+        .and_then(|rest| rest.split(' ').next())
+        .ok_or_else(|| format!("unexpected first line {first:?}"))?
+        .trim_end_matches('/')
+        .to_owned();
+    let get = |path: &str| -> Result<String, String> {
+        let mut response = ureq::get(&format!("{url}{path}"))
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .call()
+            .map_err(|e| e.to_string())?;
+        response
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| e.to_string())
+    };
+    let started = std::time::Instant::now();
+    let mut generation = 0;
+    while started.elapsed() < std::time::Duration::from_secs(40) {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if let Ok(status) = get("/status") {
+            let value: serde_json::Value = serde_json::from_str(&status).unwrap_or_default();
+            generation = value["generation"].as_u64().unwrap_or(0);
+            if generation >= 2 {
+                break;
+            }
+        }
+        if generation == 1 {
+            let _ = pg.sql("SELECT count(*) FROM t WHERE a > 5");
+        }
+    }
+    let json = get("/report.json");
+    let page = get("/");
+    let last_status = get("/status").unwrap_or_default();
+    drop(child.kill());
+    drop(child.wait());
+    assert!(
+        generation >= 2,
+        "only {generation} cycles in 40 s; status {last_status}"
+    );
+    let report: serde_json::Value = serde_json::from_str(&json?).map_err(|e| e.to_string())?;
+    assert_eq!(report["kind"], "pgloupe.report");
+    assert!(
+        report["inputs"]["stats"].is_object(),
+        "statistics side after two snapshots: {}",
+        report["inputs"]
+    );
+    assert_eq!(report["logs"]["overview"]["records"], 3);
+    assert!(page?.contains("pgloupe-data"));
+    assert!(!json_text_has(&report, &pg.password));
+    Ok(())
+}
+
+fn json_text_has(value: &serde_json::Value, needle: &str) -> bool {
+    value.to_string().contains(needle)
+}

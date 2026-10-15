@@ -19,7 +19,8 @@ use super::{
         heroku::Heroku,
         sql::SqlLogdir,
     },
-    sql,
+    serve, sql,
+    watch::{self, Built, Cycle, CycleError, Live, Settings, SystemClock},
 };
 use crate::cli::Exit;
 
@@ -458,4 +459,298 @@ mod tests {
         parse_since("soon", now()).unwrap_err();
         parse_since("12x", now()).unwrap_err();
     }
+}
+
+/// `export`: doctor warnings, a snapshot and the logs, into one directory; optionally the report.
+#[derive(Debug, Args)]
+pub struct ExportArgs {
+    #[command(flatten)]
+    conn: ConnArgs,
+    #[command(flatten)]
+    target: TargetArgs,
+    /// How far back to fetch logs (see `logs fetch --since`).
+    #[arg(long, default_value = "24h")]
+    since: String,
+    /// Directory for everything: `snapshots/`, `logs/` and the fetch state.
+    #[arg(long)]
+    out: PathBuf,
+    /// Also write the report here (HTML) from the logs and the two newest snapshots.
+    #[arg(long)]
+    report: Option<PathBuf>,
+}
+
+fn vendor_of(kind: ProviderKind) -> Option<&'static str> {
+    matches!(kind, ProviderKind::AwsRds | ProviderKind::AwsCloudwatch).then_some("rds")
+}
+
+/// Runs `export`.
+///
+/// # Errors
+///
+/// Fails at the first step that cannot be done, naming it; what earlier steps wrote stays.
+pub fn export(args: &ExportArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Result<Exit> {
+    let spec = args.conn.spec()?;
+    writeln!(err, "1/4 checking the server ({})", spec.describe())?;
+    let mut client = spec.connect().context("step 1 (connect)")?;
+    let facts = doctor::gather(&mut client).context("step 1 (doctor)")?;
+    for check in doctor::checks(&facts, vendor_of(args.target.provider)) {
+        writeln!(
+            err,
+            "  [{}] {}: {}",
+            check.severity, check.code, check.message
+        )?;
+    }
+    writeln!(err, "2/4 taking a snapshot")?;
+    let snapshots = args.out.join("snapshots");
+    let snapshot = sql::take(&mut client, &snapshots).context("step 2 (snapshot)")?;
+    writeln!(out, "wrote {}", snapshot.pgss.display())?;
+    drop(client);
+
+    writeln!(err, "3/4 fetching logs")?;
+    let provider = build_provider(&args.target, Some(spec.clone()))?;
+    let since = parse_since(&args.since, jiff::Timestamp::now()).map_err(anyhow::Error::msg)?;
+    let logs = args.out.join("logs");
+    fetch_with(provider.as_ref(), &logs, since, out, err).context("step 3 (logs)")?;
+
+    if let Some(report) = &args.report {
+        writeln!(err, "4/4 building the report")?;
+        build_report(&snapshots, &logs, report, out, err).context("step 4 (report)")?;
+    } else {
+        writeln!(
+            err,
+            "done. Next: pgloupe report {}/* --before <older snapshot> --after <newer snapshot> --output html --out report.html",
+            logs.display()
+        )?;
+    }
+    Ok(Exit::Ok)
+}
+
+fn build_report(
+    snapshots: &std::path::Path,
+    logs: &std::path::Path,
+    report: &std::path::Path,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> anyhow::Result<()> {
+    use clap::Parser as _;
+    let log_files: Vec<String> = std::fs::read_dir(logs)
+        .with_context(|| format!("reading {}", logs.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && !p
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        })
+        .map(|p| p.display().to_string())
+        .collect();
+    let mut argv: Vec<String> = vec!["pgloupe".to_owned(), "report".to_owned()];
+    argv.extend(log_files);
+    let snaps = super::watch::snapshot_files(snapshots);
+    if let [.., older, newer] = snaps.as_slice() {
+        argv.extend([
+            "--before".to_owned(),
+            older.display().to_string(),
+            "--after".to_owned(),
+            newer.display().to_string(),
+        ]);
+        let info = |p: &PathBuf| {
+            p.with_file_name(p.file_name().map_or_else(String::new, |n| {
+                n.to_string_lossy().replacen("pgss_", "pgss_info_", 1)
+            }))
+        };
+        let (bi, ai) = (info(older), info(newer));
+        if bi.exists() && ai.exists() {
+            argv.extend([
+                "--before-info".to_owned(),
+                bi.display().to_string(),
+                "--after-info".to_owned(),
+                ai.display().to_string(),
+            ]);
+        }
+    } else {
+        writeln!(
+            err,
+            "note: only one snapshot so far; run export again later to add the statistics side"
+        )?;
+    }
+    argv.extend([
+        "--output".to_owned(),
+        "html".to_owned(),
+        "--out".to_owned(),
+        report.display().to_string(),
+    ]);
+    let cli = crate::cli::Cli::try_parse_from(&argv)
+        .and_then(crate::cli::Cli::validate)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    crate::cli::run(&cli, out, err)?;
+    writeln!(out, "report: {}", report.display())?;
+    Ok(())
+}
+
+/// A span like `5m`, `24h` or `7d` as a duration.
+///
+/// # Errors
+///
+/// Fails if `text` is not a whole number followed by `s`, `m`, `h`, `d` or `w`.
+pub fn parse_span(text: &str) -> Result<std::time::Duration, String> {
+    let text = text.trim();
+    let bad = || format!("{text:?} is not a span like 30s, 5m, 24h or 7d");
+    let unit = text.chars().last().ok_or_else(bad)?;
+    let n: u64 = text[..text.len() - unit.len_utf8()]
+        .parse()
+        .map_err(|_unparsed| bad())?;
+    let per = match unit {
+        's' => 1,
+        'm' => 60,
+        'h' => 3_600,
+        'd' => 86_400,
+        'w' => 604_800,
+        _ => return Err(bad()),
+    };
+    Ok(std::time::Duration::from_secs(n.saturating_mul(per)))
+}
+
+/// `watch`: keep a report fresh and serve it.
+#[derive(Debug, Args)]
+pub struct WatchArgs {
+    #[command(flatten)]
+    conn: ConnArgs,
+    #[command(flatten)]
+    target: TargetArgs,
+    /// Time between updates (`30s`, `5m`, `1h`).
+    #[arg(long, default_value = "5m")]
+    interval: String,
+    /// How far back the report looks (`24h`, `7d`).
+    #[arg(long, default_value = "24h")]
+    window: String,
+    /// Address to serve the dashboard on (loopback only unless `--allow-remote`).
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    listen: String,
+    /// Allow `--listen` on an address other machines can reach. The page holds statement text.
+    #[arg(long)]
+    allow_remote: bool,
+    /// Where snapshots, fetched logs and the store are kept.
+    #[arg(long, default_value = "pgloupe-watch")]
+    state_dir: PathBuf,
+    /// Snapshots to keep (288 is 24 hours at 5 minutes).
+    #[arg(long, default_value_t = 288)]
+    keep_snapshots: usize,
+    /// The server's `log_line_prefix`, if the logs are stderr and it cannot be inferred.
+    #[arg(long)]
+    prefix: Option<String>,
+    /// Also write the HTML here after every update.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Run one cycle and exit instead of looping and serving.
+    #[arg(long)]
+    once: bool,
+}
+
+/// Writes the HTML to a file after each good cycle.
+struct Writing<'a> {
+    inner: &'a mut dyn Cycle,
+    out: Option<&'a PathBuf>,
+}
+
+impl Cycle for Writing<'_> {
+    fn run(&mut self) -> Result<Built, CycleError> {
+        let built = self.inner.run()?;
+        if let Some(path) = self.out {
+            let tmp = path.with_extension("html.part");
+            std::fs::write(&tmp, &built.html)
+                .and_then(|()| std::fs::rename(&tmp, path))
+                .map_err(|e| CycleError {
+                    step: "write",
+                    message: format!("{}: {e}", path.display()),
+                })?;
+        }
+        Ok(built)
+    }
+}
+
+/// Runs `watch`.
+///
+/// # Errors
+///
+/// Fails on bad options, when the address cannot be served, or (with `--once`) when the cycle
+/// fails; the loop itself keeps going through failed cycles.
+pub fn watch(args: &WatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Result<Exit> {
+    let spec = args.conn.spec()?;
+    let provider = build_provider(&args.target, Some(spec.clone()))?;
+    if provider.experimental() {
+        writeln!(
+            err,
+            "warning: provider {} is experimental (not yet confirmed against the real service)",
+            provider.name()
+        )?;
+    }
+    let interval = parse_span(&args.interval).map_err(anyhow::Error::msg)?;
+    let window = parse_span(&args.window).map_err(anyhow::Error::msg)?;
+    std::fs::create_dir_all(&args.state_dir)
+        .with_context(|| format!("creating {}", args.state_dir.display()))?;
+    let options = crate::analyze::pipeline::Options {
+        prefix: args.prefix.clone(),
+        ..crate::analyze::pipeline::Options::new()
+    };
+    let mut live = Live::new(
+        spec,
+        provider,
+        args.state_dir.clone(),
+        args.state_dir.join("store.db"),
+        window,
+        args.keep_snapshots,
+        options,
+    );
+    let mut cycle = Writing {
+        inner: &mut live,
+        out: args.out.as_ref(),
+    };
+    let shared: serve::Shared = std::sync::Arc::default();
+    let mut log = |line: &str| drop(writeln!(std::io::stderr(), "{line}"));
+    if args.once {
+        let settings = Settings {
+            interval,
+            max_cycles: Some(1),
+        };
+        watch::run(settings, &mut cycle, &SystemClock, &shared, &mut log);
+        let published = shared
+            .read()
+            .map_err(|_poisoned| anyhow::anyhow!("state lock poisoned"))?
+            .clone();
+        return match published.last_error {
+            Some(error) if published.generation == 0 => anyhow::bail!("{error}"),
+            _ => {
+                writeln!(
+                    out,
+                    "one cycle done{}",
+                    args.out
+                        .as_ref()
+                        .map_or_else(String::new, |p| format!("; report: {}", p.display()))
+                )?;
+                Ok(Exit::Ok)
+            }
+        };
+    }
+    let addr = serve::parse_listen(&args.listen, args.allow_remote)?;
+    let server = serve::bind(addr)?;
+    writeln!(
+        out,
+        "serving http://{}/ (updates every {})",
+        server.addr, args.interval
+    )?;
+    out.flush()?;
+    server.spawn(std::sync::Arc::clone(&shared));
+    watch::run(
+        Settings {
+            interval,
+            max_cycles: None,
+        },
+        &mut cycle,
+        &SystemClock,
+        &shared,
+        &mut log,
+    );
+    Ok(Exit::Ok)
 }

@@ -121,6 +121,10 @@ enum Command {
     Snap(collect::commands::SnapArgs),
     /// Check what the server and the role lack for a useful report, and how to fix it.
     Doctor(collect::commands::DoctorArgs),
+    /// Check the server, take a snapshot and fetch logs into one directory; optionally the report.
+    Export(Box<collect::commands::ExportArgs>),
+    /// Keep a report fresh from a live server and serve it locally.
+    Watch(Box<collect::commands::WatchArgs>),
 }
 
 #[derive(Debug, Subcommand)]
@@ -545,6 +549,8 @@ pub fn run(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Resul
         Command::Report(args) => report(args, out, err),
         Command::Snap(args) => collect::commands::snap(args, out, err),
         Command::Doctor(args) => collect::commands::doctor(args, out, err),
+        Command::Export(args) => collect::commands::export(args, out, err),
+        Command::Watch(args) => collect::commands::watch(args, out, err),
     }
 }
 
