@@ -28,6 +28,7 @@ use crate::{
     },
     combined::{self, LogData},
     stats::{
+        database::{self, DatabaseDelta, DatabaseSnapshot},
         delta,
         snapshot::{Info, Snapshot},
     },
@@ -303,11 +304,11 @@ impl Live {
                 None
             }
         };
-        let delta = match statistics(&self.snapshots_dir(), since) {
-            Ok(delta) => delta,
+        let (delta, database) = match statistics(&self.snapshots_dir(), since) {
+            Ok(found) => found.map_or((None, None), |(delta, database)| (Some(delta), database)),
             Err(note) => {
                 notes.push(note);
-                None
+                (None, None)
             }
         };
         if logs.is_none() && delta.is_none() {
@@ -315,6 +316,9 @@ impl Live {
             return Err(fail("report", format!("nothing to report yet: {why}")));
         }
         let mut combined = combined::build(logs, delta.as_ref(), &options);
+        if let Some(database) = &database {
+            combined = combined.with_database(database, delta.as_ref());
+        }
         let settings = snapshot_files(&self.snapshots_dir())
             .last()
             .and_then(|newest| combined::read_settings(&settings_path(newest)).ok());
@@ -340,7 +344,10 @@ impl Live {
 }
 
 /// The statistics delta between the oldest snapshot inside the window and the newest.
-fn statistics(dir: &Path, since: Timestamp) -> Result<Option<delta::Delta>, String> {
+fn statistics(
+    dir: &Path,
+    since: Timestamp,
+) -> Result<Option<(delta::Delta, Option<DatabaseDelta>)>, String> {
     let files = snapshot_files(dir);
     let Some(after) = files.last() else {
         return Ok(None);
@@ -367,9 +374,14 @@ fn statistics(dir: &Path, since: Timestamp) -> Result<Option<delta::Delta>, Stri
         }
         Ok(snapshot)
     };
-    delta::diff(&load(before)?, &load(after)?)
-        .map(Some)
-        .map_err(|e| format!("statistics: {e}"))
+    let delta =
+        delta::diff(&load(before)?, &load(after)?).map_err(|e| format!("statistics: {e}"))?;
+    // The per-database counters are a bonus: a missing or unreadable file leaves them out.
+    let database = DatabaseSnapshot::from_path(&database_path(before))
+        .and_then(|b| DatabaseSnapshot::from_path(&database_path(after)).map(|a| (b, a)))
+        .and_then(|(b, a)| database::diff(&b, &a))
+        .ok();
+    Ok(Some((delta, database)))
 }
 
 /// Deletes the oldest snapshots (and their info files) beyond `keep`.
@@ -379,6 +391,7 @@ fn prune_snapshots(dir: &Path, keep: usize) {
         drop(fs::remove_file(old));
         drop(fs::remove_file(info_path(old)));
         drop(fs::remove_file(settings_path(old)));
+        drop(fs::remove_file(database_path(old)));
     }
 }
 
@@ -420,6 +433,16 @@ impl Cycle for Live {
         }
         self.report(notes)
     }
+}
+
+/// The `pg_stat_database` file taken with a statistics snapshot.
+fn database_path(snapshot: &Path) -> PathBuf {
+    let name = snapshot
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .replacen("pgss_", "pg_stat_database_", 1);
+    snapshot.with_file_name(name)
 }
 
 /// The settings file taken with a statistics snapshot.
@@ -508,14 +531,39 @@ mod tests {
         let dir = scratch("window");
         snapshots(&dir);
         let at = |s: &str| s.parse::<Timestamp>().unwrap();
-        let wide = statistics(&dir, at("2026-10-14T08:00:00Z"))
+        let (wide, _) = statistics(&dir, at("2026-10-14T08:00:00Z"))
             .unwrap()
             .unwrap();
         assert_eq!(wide.before_at, at("2026-10-14T09:00:00Z"));
-        let narrow = statistics(&dir, at("2026-10-14T09:30:00Z"))
+        let (narrow, database) = statistics(&dir, at("2026-10-14T09:30:00Z"))
             .unwrap()
             .unwrap();
+        assert!(database.is_none(), "no pg_stat_database files yet");
         assert_eq!(narrow.before_at, at("2026-10-14T10:00:00Z"));
+    }
+
+    #[test]
+    fn the_database_counters_beside_the_snapshots_are_used_and_pruned_with_them() {
+        let dir = scratch("database");
+        snapshots(&dir);
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/stats");
+        fs::copy(
+            fixtures.join("db_before.csv"),
+            dir.join("pg_stat_database_20261014T100000Z.csv"),
+        )
+        .unwrap();
+        fs::copy(
+            fixtures.join("db_after.csv"),
+            dir.join("pg_stat_database_20261014T101000Z.csv"),
+        )
+        .unwrap();
+        let (_, database) = statistics(&dir, "2026-10-14T09:30:00Z".parse().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(database.unwrap().total.commits, 96_000);
+        prune_snapshots(&dir, 1);
+        assert!(!dir.join("pg_stat_database_20261014T100000Z.csv").exists());
+        assert!(dir.join("pg_stat_database_20261014T101000Z.csv").exists());
     }
 
     #[test]
