@@ -523,6 +523,13 @@ fn translator_for(sample: &str, options: &Options) -> Result<Option<(String, Tra
 
 /// Rewrites the message and the DETAIL of `record` as English when a rule recognizes them.
 fn translate(translator: &Translator, record: &mut LogRecord) {
+    if record.cursor_position.is_none()
+        && !matches!(record.level, Severity::Log | Severity::Debug)
+        && let Some((message, position)) = translator.split_position(&record.message)
+    {
+        record.cursor_position = Some(position);
+        record.message = message.to_owned();
+    }
     if let Some(english) = translator.apply(&record.message) {
         record.message = english;
     }

@@ -2,7 +2,9 @@
 
 use std::{io, path::PathBuf};
 
-use pgloupe::log::{DecodeStats, Format, LogRecord, Options, decoder_for, source};
+use pgloupe::log::{
+    DecodeStats, Format, LogRecord, Options, decoder_for, locale::Translator, source,
+};
 
 const PREFIX: &str = "%m [%p] %q%u@%d/%a %Q ";
 
@@ -68,7 +70,32 @@ fn the_three_formats_decode_to_the_same_events() -> io::Result<()> {
     let json = present("postgresql.json")
         .then(|| decode("postgresql.json", Format::Json))
         .transpose()?;
-    let (stderr, stderr_stats) = decode("postgresql.log", Format::Stderr)?;
+    let (mut stderr, stderr_stats) = decode("postgresql.log", Format::Stderr)?;
+    // The decoder splits ` at character N` off English errors only; the analysis does the rest.
+    let translators: Vec<Translator> = ["pt_BR", "es", "fr", "de"]
+        .iter()
+        .filter_map(|locale| Translator::new(locale, None).ok())
+        .collect();
+    for record in &mut stderr {
+        if record.cursor_position.is_some() {
+            continue;
+        }
+        // `LOG` lines keep the English suffix in the decoder (lock waits end that way).
+        let english = record
+            .message
+            .rsplit_once(" at character ")
+            .and_then(|(message, n)| Some((message.to_owned(), n.parse().ok()?)));
+        let split = english.or_else(|| {
+            translators.iter().find_map(|t| {
+                t.split_position(&record.message)
+                    .map(|(message, position)| (message.to_owned(), position))
+            })
+        });
+        if let Some((message, position)) = split {
+            record.message = message;
+            record.cursor_position = Some(position);
+        }
+    }
 
     for (name, stats) in [("csv", &csv_stats), ("stderr", &stderr_stats)] {
         assert_eq!(stats.skipped, 0, "{name}: {:?}", stats.first_skipped);

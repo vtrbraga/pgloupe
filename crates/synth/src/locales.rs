@@ -65,6 +65,7 @@ const WORDS: &[&str] = &[
     "parse",
     "bind",
     "execute fetch from",
+    " at character %d",
 ];
 
 /// The `msgid -> msgstr` pairs of a `.mo` file.

@@ -271,6 +271,8 @@ fn build(entry: &Entry) -> Option<Rule> {
 #[derive(Debug, Default)]
 pub struct Translator {
     rules: Vec<Rule>,
+    /// Matches the language's ` at character N` suffix: group 1 is the message, group 2 the number.
+    position: Option<Regex>,
 }
 
 impl Translator {
@@ -291,8 +293,21 @@ impl Translator {
         }
         // Longer templates first, so a message is not taken for a shorter one it starts with.
         entries.sort_by_key(|e| std::cmp::Reverse(e.translated.len()));
+        let position = entries
+            .iter()
+            .find(|e| e.english == " at character %d")
+            .and_then(|e| {
+                let (before, after) = e.translated.split_once("%d")?;
+                Regex::new(&format!(
+                    r"(?s)^(.*){}(\d+){}$",
+                    regex::escape(before),
+                    regex::escape(after)
+                ))
+                .ok()
+            });
         Ok(Translator {
             rules: entries.iter().filter_map(build).collect(),
+            position,
         })
     }
 
@@ -300,6 +315,14 @@ impl Translator {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rules.is_empty()
+    }
+
+    /// `message` without the language's ` at character N` suffix, and the number.
+    #[must_use]
+    pub fn split_position<'a>(&self, message: &'a str) -> Option<(&'a str, u32)> {
+        let caps = self.position.as_ref()?.captures(message)?;
+        let number = caps.get(2)?.as_str().parse().ok()?;
+        Some((caps.get(1)?.as_str(), number))
     }
 
     /// The English form of `message`, or `None` if no rule recognizes it.
@@ -366,6 +389,22 @@ mod tests {
 
     fn translator(locale: &str) -> Translator {
         Translator::new(locale, None).unwrap()
+    }
+
+    #[test]
+    fn a_localized_error_position_is_split_off() {
+        let es = translator("es");
+        assert_eq!(
+            es.split_position("no existe la relación «t» en carácter 15"),
+            Some(("no existe la relación «t»", 15))
+        );
+        let de = translator("de");
+        assert_eq!(
+            de.split_position("Relation »t« existiert nicht bei Zeichen 7"),
+            Some(("Relation »t« existiert nicht", 7))
+        );
+        assert_eq!(es.split_position("sin posición"), None);
+        assert_eq!(es.split_position("en carácter x"), None);
     }
 
     #[test]
