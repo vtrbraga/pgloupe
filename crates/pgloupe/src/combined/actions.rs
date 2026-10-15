@@ -17,7 +17,7 @@ const MIN_DOMINANT_MS: f64 = 100.0;
 const URGENT_LOCK_WAIT_MS: f64 = 5_000.0;
 
 /// One problem and what to do about it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Action {
     /// Stable identifier, for tools and tests.
     pub code: &'static str,

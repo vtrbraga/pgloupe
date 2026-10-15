@@ -14,7 +14,7 @@ pub const OTHER: &str = "(other)";
 pub const NONE: &str = "(none)";
 
 /// What one value of a dimension did.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DimStats {
     /// Statements run.
     pub statements: u64,

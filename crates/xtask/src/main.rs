@@ -19,6 +19,7 @@ const ASSETS: &str = "dist-assets";
 /// The generated page of the book.
 const COMMANDS_PAGE: &str = "docs/src/reference/commands.md";
 
+#[expect(clippy::print_stderr, reason = "output is the point of this command")]
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,

@@ -531,7 +531,7 @@ pub fn export(args: &ExportArgs, out: &mut dyn Write, err: &mut dyn Write) -> an
     drop(client);
 
     writeln!(err, "3/4 fetching logs")?;
-    let provider = build_provider(&args.target, Some(spec.clone()))?;
+    let provider = build_provider(&args.target, Some(spec))?;
     let since = parse_since(&args.since, jiff::Timestamp::now()).map_err(anyhow::Error::msg)?;
     let logs = args.out.join("logs");
     fetch_with(provider.as_ref(), &logs, since, out, err).context("step 3 (logs)")?;

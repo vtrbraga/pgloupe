@@ -26,6 +26,7 @@ impl Lcg {
     }
 }
 
+#[expect(clippy::print_stderr, reason = "output is the point of this command")]
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let parsed = (|| {

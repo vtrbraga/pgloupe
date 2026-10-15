@@ -113,7 +113,7 @@ pub struct StatsSide {
 }
 
 /// Something the report noticed about the data and wants the reader to know.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Finding {
     /// Stable identifier, for tools and tests.
     pub code: &'static str,

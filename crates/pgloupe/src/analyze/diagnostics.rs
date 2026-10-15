@@ -17,7 +17,7 @@ pub struct ShapeRow {
 }
 
 /// What the run could not understand, and settings that probably explain it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Diagnostics {
     pub lines: u64,
     pub records: u64,

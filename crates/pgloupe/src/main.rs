@@ -1,3 +1,5 @@
+//! The `pgloupe` command.
+
 use std::{
     io::{self, BufWriter, Write},
     process::ExitCode,
