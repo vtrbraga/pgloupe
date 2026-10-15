@@ -423,7 +423,10 @@ impl Report {
             autovacuum: autovacuum(acc),
             kinds: kinds(acc),
             histograms: HistogramsReport {
-                statements: histogram::buckets(&totals.durations, &histogram::STATEMENT_EDGES_MS),
+                statements: histogram::buckets(
+                    &acc.statement_durations(),
+                    &histogram::STATEMENT_EDGES_MS,
+                ),
                 sessions: histogram::buckets(
                     &totals.connections.session,
                     &histogram::SESSION_EDGES_MS,

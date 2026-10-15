@@ -155,13 +155,15 @@ impl Dimensions {
         ] {
             let map = self.of_mut(dimension);
             let key = label(value);
-            // Look up by `&str` first: nearly every record repeats a known value.
-            if !map.contains_key(key) {
-                map.insert(key.to_owned(), DimStats::default());
-            }
+            // Look up by `&str`: nearly every record repeats a known value, so the common case
+            // allocates nothing and searches once.
             if let Some(slot) = map.get_mut(key) {
                 slot.count(tally);
+                continue;
             }
+            let mut slot = DimStats::default();
+            slot.count(tally);
+            map.insert(key.to_owned(), slot);
         }
     }
 

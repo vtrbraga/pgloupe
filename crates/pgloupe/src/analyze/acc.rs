@@ -426,8 +426,6 @@ pub struct Totals {
     pub autovacuum: BTreeMap<String, TableStats>,
     pub timeline: Timeline,
     pub unparsed_statements: u64,
-    /// Durations of every statement that carried one, in milliseconds.
-    pub durations: Sketch,
     /// Cancelled statements by [`CancelReason`] name.
     pub cancelled: BTreeMap<String, u64>,
 }
@@ -451,7 +449,6 @@ impl Totals {
                 buckets: BTreeMap::new(),
             },
             unparsed_statements: 0,
-            durations: Sketch::new(),
             cancelled: BTreeMap::new(),
         }
     }
@@ -472,15 +469,8 @@ impl Totals {
         match event {
             Event::Statement {
                 kind: StatementKind::Statement | StatementKind::Execute,
-                duration_ms,
                 ..
-            } => {
-                self.timeline.add(ts, |b| b.statements += 1);
-                if let Some(ms) = duration_ms {
-                    self.durations.add(*ms);
-                }
-            }
-            Event::Duration { duration_ms } => self.durations.add(*duration_ms),
+            } => self.timeline.add(ts, |b| b.statements += 1),
             Event::LockWait { .. } => {
                 self.locks.waits += 1;
                 self.timeline.add(ts, |b| b.lock_waits += 1);
@@ -589,7 +579,6 @@ impl Merge for Totals {
         add_maps(&mut self.autovacuum, other.autovacuum);
         self.timeline.merge(other.timeline);
         self.unparsed_statements += other.unparsed_statements;
-        self.durations.merge(other.durations);
         for (reason, n) in other.cancelled {
             *self.cancelled.entry(reason).or_insert(0) += n;
         }
@@ -626,6 +615,16 @@ impl Accumulators {
             capture_params: false,
             limit: limit.max(1),
         }
+    }
+
+    /// The durations of every statement that carried one, in milliseconds, as one sketch.
+    #[must_use]
+    pub fn statement_durations(&self) -> Sketch {
+        let mut all = Sketch::new();
+        for query in self.queries.values().chain(std::iter::once(&self.overflow)) {
+            all.merge(query.sketch.clone());
+        }
+        all
     }
 
     /// Keeps the `slowest` slowest executions, with their bind parameters when `params` is set.
@@ -1297,14 +1296,14 @@ mod tests {
     }
 
     #[test]
-    fn statement_durations_feed_the_global_sketch() {
+    fn statement_durations_can_be_summed_over_all_fingerprints() {
         let mut a = acc();
         a.add_record(&statement(1, 3.0, "SELECT 1"));
         a.add_record(&statement(2, 30.0, "SELECT 2"));
-        a.add_record(&log(3, "duration: 300.000 ms"));
+        a.add_record(&statement(3, 300.0, "SELECT 2"));
         a.add_record(&log(4, "statement: SELECT 3"));
-        assert_eq!(a.totals.durations.count(), 3);
-        assert!(a.totals.durations.max().unwrap() >= 299.0);
+        assert_eq!(a.statement_durations().count(), 3);
+        assert!(a.statement_durations().max().unwrap() >= 299.0);
     }
 
     #[test]
