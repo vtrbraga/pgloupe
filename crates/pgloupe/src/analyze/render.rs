@@ -5,8 +5,8 @@ use std::time::Duration;
 use super::{
     histogram::HistogramBucket,
     report::{
-        CancelledReport, CheckpointRow, DimensionRow, ErrorRow, KindRow, Quantiles, Report,
-        SlowestReport, StatementRow, TableRow, TimelineRow,
+        CancelledReport, CheckpointRow, DdlReport, DimensionRow, DisconnectsReport, ErrorRow,
+        KindRow, MessageRow, Quantiles, Report, SlowestReport, StatementRow, TableRow, TimelineRow,
     },
 };
 
@@ -58,6 +58,18 @@ pub fn sections(report: &Report, statements_table: bool) -> Vec<String> {
     section(&mut lines, "connections", connections(report));
     section(&mut lines, "checkpoints", checkpoints(&report.checkpoints));
     section(&mut lines, "autovacuum", autovacuum(&report.autovacuum));
+    let abrupt = disconnects(&report.disconnects);
+    if !abrupt.is_empty() {
+        section(&mut lines, "abrupt endings", abrupt);
+    }
+    let schema = ddl(&report.ddl);
+    if !schema.is_empty() {
+        section(&mut lines, "schema changes", schema);
+    }
+    let chatter = messages(&report.messages);
+    if !chatter.is_empty() {
+        section(&mut lines, "most frequent other messages", chatter);
+    }
     section(&mut lines, "query types", kinds(&report.kinds));
     section(
         &mut lines,
@@ -388,8 +400,14 @@ fn checkpoints(rows: &[CheckpointRow]) -> Vec<String> {
                 .map(|(reason, n)| format!("{reason}={n}"))
                 .collect::<Vec<_>>()
                 .join(" ");
+            let distance = row.distance_kb.as_ref().map_or(String::new(), |d| {
+                format!(
+                    "; WAL between them mean {:.0} kB, max {} kB (estimate up to {} kB)",
+                    d.mean_kb, d.max_kb, d.estimate_max_kb
+                )
+            });
             format!(
-                "{}: started {}, completed {}, buffers {}; total p50 {} ms, p95 {} ms; reasons: {}",
+                "{}: started {}, completed {}, buffers {}; total p50 {} ms, p95 {} ms; reasons: {}{distance}",
                 row.kind,
                 row.started,
                 row.completed,
@@ -402,16 +420,64 @@ fn checkpoints(rows: &[CheckpointRow]) -> Vec<String> {
         .collect()
 }
 
+fn disconnects(report: &DisconnectsReport) -> Vec<String> {
+    if report.reasons.is_empty() {
+        return Vec::new();
+    }
+    let mut cells = vec![vec![
+        "count".to_owned(),
+        "reason".to_owned(),
+        "application".to_owned(),
+    ]];
+    for row in report.by_application.iter().take(10) {
+        cells.push(vec![
+            row.count.to_string(),
+            row.reason.clone(),
+            row.application.clone(),
+        ]);
+    }
+    align(&cells, &[true, false, false])
+}
+
+fn ddl(report: &DdlReport) -> Vec<String> {
+    let mut lines: Vec<String> = report
+        .tags
+        .iter()
+        .map(|row| format!("{:>6}x  {}  {} ms", row.calls, row.tag, num(row.total_ms)))
+        .collect();
+    if !report.temp_tables.is_empty() {
+        lines.push("temporary tables created by application:".to_owned());
+        lines.extend(
+            report
+                .temp_tables
+                .iter()
+                .take(10)
+                .map(|row| format!("  {:>6}x  {}", row.count, row.name)),
+        );
+    }
+    lines
+}
+
+fn messages(rows: &[MessageRow]) -> Vec<String> {
+    rows.iter()
+        .take(10)
+        .map(|row| format!("{:>8}x  {}", row.count, cut(&row.shape)))
+        .collect()
+}
+
 fn autovacuum(rows: &[TableRow]) -> Vec<String> {
     rows.iter()
         .map(|row| {
             format!(
-                "{}  vacuums {}, analyzes {}, total {} ms, longest {} ms",
+                "{}  vacuums {}, analyzes {}, total {} ms, longest {} ms; removed {} tuples, {} pages, {} index passes",
                 row.table,
                 row.vacuums,
                 row.analyzes,
                 num(row.total_ms),
-                num(row.max_ms)
+                num(row.max_ms),
+                row.tuples_removed,
+                row.pages_removed,
+                row.index_scans
             )
         })
         .collect()

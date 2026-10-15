@@ -231,6 +231,63 @@ pub fn statement_kind(sql: &str) -> QueryKind {
     }
 }
 
+/// The command tag of a schema-changing statement (`CREATE TABLE`, `CREATE TEMP TABLE`,
+/// `ALTER TABLE`, `DROP`, ...), or `None` for anything else. Meant for statements already known
+/// to be DDL, so it parses.
+#[must_use]
+pub fn statement_tag(sql: &str) -> Option<String> {
+    use pg_query::NodeEnum as N;
+    let parsed = pg_query::parse(sql).ok()?;
+    let node = parsed
+        .protobuf
+        .stmts
+        .first()?
+        .stmt
+        .as_ref()?
+        .node
+        .as_ref()?;
+    let temporary = |persistence: &str| persistence == "t";
+    let tag = match node {
+        N::CreateStmt(create) => {
+            let temp = create
+                .relation
+                .as_ref()
+                .is_some_and(|r| temporary(&r.relpersistence));
+            if temp {
+                "CREATE TEMP TABLE"
+            } else {
+                "CREATE TABLE"
+            }
+        }
+        N::CreateTableAsStmt(create) => {
+            let temp = create
+                .into
+                .as_ref()
+                .and_then(|into| into.rel.as_ref())
+                .is_some_and(|r| temporary(&r.relpersistence));
+            if temp {
+                "CREATE TEMP TABLE"
+            } else {
+                "CREATE TABLE AS"
+            }
+        }
+        N::AlterTableStmt(_) => "ALTER TABLE",
+        N::DropStmt(_) => "DROP",
+        N::IndexStmt(_) => "CREATE INDEX",
+        N::ViewStmt(_) => "CREATE VIEW",
+        N::TruncateStmt(_) => "TRUNCATE",
+        N::RenameStmt(_) => "RENAME",
+        N::CreateSchemaStmt(_) => "CREATE SCHEMA",
+        N::CreateSeqStmt(_) | N::AlterSeqStmt(_) => "SEQUENCE",
+        N::CreateFunctionStmt(_) | N::AlterFunctionStmt(_) => "FUNCTION",
+        N::CreateTrigStmt(_) => "CREATE TRIGGER",
+        N::CreateExtensionStmt(_) | N::AlterExtensionStmt(_) => "EXTENSION",
+        N::CommentStmt(_) => "COMMENT",
+        _ => "OTHER DDL",
+    };
+    Some(tag.to_owned())
+}
+
 fn parsed_kind(sql: &str) -> QueryKind {
     use pg_query::NodeEnum as N;
     let Ok(parsed) = pg_query::parse(sql) else {
@@ -329,6 +386,22 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_changes_get_a_command_tag_and_temporary_tables_are_told_apart() {
+        let tag = |sql: &str| statement_tag(sql).unwrap();
+        assert_eq!(tag("CREATE TABLE t (id int)"), "CREATE TABLE");
+        assert_eq!(tag("CREATE TEMP TABLE t (id int)"), "CREATE TEMP TABLE");
+        assert_eq!(
+            tag("CREATE TEMPORARY TABLE t AS SELECT 1"),
+            "CREATE TEMP TABLE"
+        );
+        assert_eq!(tag("CREATE TABLE t AS SELECT 1"), "CREATE TABLE AS");
+        assert_eq!(tag("ALTER TABLE t ADD COLUMN c int"), "ALTER TABLE");
+        assert_eq!(tag("DROP TABLE t"), "DROP");
+        assert_eq!(tag("CREATE INDEX i ON t (id)"), "CREATE INDEX");
+        assert_eq!(statement_tag("SELEC"), None);
+    }
 
     #[test]
     fn statements_are_classified() {

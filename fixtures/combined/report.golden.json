@@ -77,6 +77,11 @@
       "total": 0
     },
     "checkpoints": [],
+    "connection_hosts": {
+      "bucket_secs": 60,
+      "buckets": [],
+      "hosts": []
+    },
     "connections": {
       "authenticated": 0,
       "authorized": 0,
@@ -88,6 +93,10 @@
         "p50": null,
         "p95": null
       }
+    },
+    "ddl": {
+      "tags": [],
+      "temp_tables": []
     },
     "diagnostics": {
       "filtered": 0,
@@ -154,6 +163,10 @@
           "value": "postgres"
         }
       ]
+    },
+    "disconnects": {
+      "by_application": [],
+      "reasons": []
     },
     "errors": [
       {
@@ -311,6 +324,7 @@
       "total_wait_ms": 0.0,
       "waits": 0
     },
+    "messages": [],
     "overview": {
       "events": {
         "error": 1,
@@ -322,7 +336,7 @@
       },
       "records": 9
     },
-    "schema_version": 1,
+    "schema_version": 2,
     "slowest": {
       "has_params": false,
       "rows": [
@@ -427,67 +441,103 @@
       "bucket_secs": 60,
       "buckets": [
         {
+          "aborts": 0,
+          "checkpoints": 0,
           "connections": 0,
+          "ddl": 0,
           "errors": 0,
           "lock_waits": 0,
           "start": "2026-10-14T10:01:00Z",
-          "statements": 1
+          "statements": 1,
+          "wal_kb": 0
         },
         {
+          "aborts": 0,
+          "checkpoints": 0,
           "connections": 0,
+          "ddl": 0,
           "errors": 0,
           "lock_waits": 0,
           "start": "2026-10-14T10:02:00Z",
-          "statements": 1
+          "statements": 1,
+          "wal_kb": 0
         },
         {
+          "aborts": 0,
+          "checkpoints": 0,
           "connections": 0,
+          "ddl": 0,
           "errors": 0,
           "lock_waits": 0,
           "start": "2026-10-14T10:03:00Z",
-          "statements": 1
+          "statements": 1,
+          "wal_kb": 0
         },
         {
+          "aborts": 0,
+          "checkpoints": 0,
           "connections": 0,
+          "ddl": 0,
           "errors": 0,
           "lock_waits": 0,
           "start": "2026-10-14T10:04:00Z",
-          "statements": 1
+          "statements": 1,
+          "wal_kb": 0
         },
         {
+          "aborts": 0,
+          "checkpoints": 0,
           "connections": 0,
+          "ddl": 0,
           "errors": 0,
           "lock_waits": 0,
           "start": "2026-10-14T10:05:00Z",
-          "statements": 1
+          "statements": 1,
+          "wal_kb": 0
         },
         {
+          "aborts": 0,
+          "checkpoints": 0,
           "connections": 0,
+          "ddl": 0,
           "errors": 0,
           "lock_waits": 0,
           "start": "2026-10-14T10:06:00Z",
-          "statements": 1
+          "statements": 1,
+          "wal_kb": 0
         },
         {
+          "aborts": 0,
+          "checkpoints": 0,
           "connections": 0,
+          "ddl": 0,
           "errors": 0,
           "lock_waits": 0,
           "start": "2026-10-14T10:07:00Z",
-          "statements": 1
+          "statements": 1,
+          "wal_kb": 0
         },
         {
+          "aborts": 0,
+          "checkpoints": 0,
           "connections": 0,
+          "ddl": 0,
           "errors": 0,
           "lock_waits": 0,
           "start": "2026-10-14T10:08:00Z",
-          "statements": 1
+          "statements": 1,
+          "wal_kb": 0
         },
         {
+          "aborts": 0,
+          "checkpoints": 0,
           "connections": 0,
+          "ddl": 0,
           "errors": 1,
           "lock_waits": 0,
           "start": "2026-10-14T10:09:00Z",
-          "statements": 0
+          "statements": 0,
+          "wal_kb": 0
         }
       ]
     },
@@ -496,7 +546,7 @@
       "last": "2026-10-14T10:09:00.1Z"
     }
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "statements": [
     {
       "coverage": 0.5,

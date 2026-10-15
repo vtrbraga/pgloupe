@@ -159,12 +159,11 @@ var PgLib = (function () {
     var out = [];
     for (var i = 0; i < buckets.length; i += group) {
       var chunk = buckets.slice(i, i + group);
-      var merged = { start: chunk[0].start, span: chunk.length, statements: 0, errors: 0, connections: 0, lock_waits: 0 };
+      var merged = { start: chunk[0].start, span: chunk.length };
       chunk.forEach(function (b) {
-        merged.statements += b.statements;
-        merged.errors += b.errors;
-        merged.connections += b.connections;
-        merged.lock_waits += b.lock_waits;
+        Object.keys(b).forEach(function (key) {
+          if (key !== 'start' && key !== 'span' && isNum(b[key])) { merged[key] = (merged[key] || 0) + b[key]; }
+        });
       });
       out.push(merged);
     }

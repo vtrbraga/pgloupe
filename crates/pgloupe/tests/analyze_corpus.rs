@@ -407,3 +407,62 @@ fn the_generator_s_lock_waits_name_their_holders() -> io::Result<()> {
     assert_eq!(lock_table, 2);
     Ok(())
 }
+
+#[test]
+#[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
+fn background_work_abrupt_endings_and_schema_changes_show_up() -> io::Result<()> {
+    let path = corpus().join("log").join(reference());
+    let out = pipeline::run(std::slice::from_ref(&path), &Options::new()).map_err(io_err)?;
+    let report = pgloupe::analyze::report::Report::build(
+        &out,
+        &pgloupe::analyze::report::ReportOptions {
+            by: pgloupe::analyze::report::SortBy::Total,
+            top: 1,
+        },
+    );
+    let reasons: BTreeMap<&str, u64> = report
+        .disconnects
+        .reasons
+        .iter()
+        .map(|r| (r.reason.as_str(), r.count))
+        .collect();
+    assert_eq!(reasons.get("client_gone_in_transaction"), Some(&2));
+    assert_eq!(reasons.get("idle_in_transaction_timeout"), Some(&1));
+    assert_eq!(reasons.get("idle_session_timeout"), Some(&1));
+    let temp = report
+        .ddl
+        .tags
+        .iter()
+        .find(|t| t.tag == "CREATE TEMP TABLE");
+    assert_eq!(temp.map(|t| t.calls), Some(10));
+    assert_eq!(report.ddl.temp_tables.len(), 2);
+    assert!(report.ddl.temp_tables.iter().all(|t| t.count == 5));
+    let vacuumed: Vec<_> = out
+        .acc
+        .totals
+        .autovacuum
+        .iter()
+        .filter(|(table, _)| table.contains("synth_vac_"))
+        .collect();
+    assert_eq!(vacuumed.len(), 2, "{vacuumed:?}");
+    assert!(
+        vacuumed
+            .iter()
+            .all(|(_, t)| t.vacuums >= 1 && t.tuples_removed > 0)
+    );
+    let distance = report.checkpoints[0]
+        .distance_kb
+        .as_ref()
+        .expect("distance");
+    assert!(distance.max_kb > 10_000, "{distance:?}");
+    // The same SQLSTATE splits by constraint.
+    let fk: Vec<_> = report
+        .errors
+        .iter()
+        .filter(|e| e.sqlstate.as_deref() == Some("23503"))
+        .collect();
+    assert!(fk.len() >= 2, "one row per constraint: {fk:?}");
+    assert!(fk.iter().any(|e| e.first_message.contains("actor_id_fkey")));
+    assert!(fk.iter().any(|e| e.first_message.contains("film_id_fkey")));
+    Ok(())
+}

@@ -1,0 +1,73 @@
+2026-10-14 10:00:00 UTC:10.0.0.1(50000):app@db:[100]:LOG:  sync step 0 finished for batch 4000 in 0.0 s
+2026-10-14 10:00:01 UTC:10.0.0.9(60001):app@db:[200]:LOG:  cache warmed: "table_0"
+2026-10-14 10:00:01 UTC:10.0.0.9(60001):app@db:[200]:CONTEXT:  PL/pgSQL function warm(text) line 4 at RAISE
+2026-10-14 10:00:01 UTC:10.0.0.9(60001):app@db:[200]:STATEMENT:  SELECT warm('x')
+2026-10-14 10:01:00 UTC:10.0.0.2(50001):app@db:[101]:LOG:  sync step 1 finished for batch 4001 in 0.1 s
+2026-10-14 10:02:00 UTC:10.0.0.3(50002):app@db:[102]:LOG:  sync step 2 finished for batch 4002 in 0.3 s
+2026-10-14 10:03:00 UTC:10.0.0.4(50003):app@db:[100]:LOG:  sync step 3 finished for batch 4003 in 0.4 s
+2026-10-14 10:04:00 UTC:10.0.0.5(50004):app@db:[101]:LOG:  sync step 4 finished for batch 4004 in 0.6 s
+2026-10-14 10:05:00 UTC:10.0.0.1(50005):app@db:[102]:LOG:  sync step 5 finished for batch 4005 in 0.7 s
+2026-10-14 10:06:00 UTC:10.0.0.2(50006):app@db:[100]:LOG:  sync step 6 finished for batch 4006 in 0.9 s
+2026-10-14 10:07:00 UTC:10.0.0.3(50007):app@db:[101]:LOG:  sync step 7 finished for batch 4007 in 1.0 s
+2026-10-14 10:08:00 UTC:10.0.0.4(50008):app@db:[102]:LOG:  sync step 8 finished for batch 4008 in 1.1 s
+2026-10-14 10:09:00 UTC:10.0.0.5(50009):app@db:[100]:LOG:  sync step 9 finished for batch 4009 in 1.3 s
+2026-10-14 10:10:00 UTC:10.0.0.1(50010):app@db:[101]:LOG:  sync step 10 finished for batch 4010 in 1.4 s
+2026-10-14 10:11:00 UTC:10.0.0.2(50011):app@db:[102]:LOG:  sync step 11 finished for batch 4011 in 1.6 s
+2026-10-14 10:12:00 UTC:10.0.0.3(50012):app@db:[100]:LOG:  sync step 12 finished for batch 4012 in 1.7 s
+2026-10-14 10:13:00 UTC:10.0.0.4(50013):app@db:[101]:LOG:  sync step 13 finished for batch 4013 in 1.9 s
+2026-10-14 10:14:00 UTC:10.0.0.5(50014):app@db:[102]:LOG:  sync step 14 finished for batch 4014 in 2.0 s
+2026-10-14 10:15:00 UTC:10.0.0.1(50015):app@db:[100]:LOG:  sync step 15 finished for batch 4015 in 2.1 s
+2026-10-14 10:16:00 UTC:10.0.0.2(50016):app@db:[101]:LOG:  sync step 16 finished for batch 4016 in 2.3 s
+2026-10-14 10:17:00 UTC:10.0.0.3(50017):app@db:[102]:LOG:  sync step 17 finished for batch 4017 in 2.4 s
+2026-10-14 10:18:00 UTC:10.0.0.4(50018):app@db:[100]:LOG:  sync step 18 finished for batch 4018 in 2.6 s
+2026-10-14 10:19:00 UTC:10.0.0.5(50019):app@db:[101]:LOG:  sync step 19 finished for batch 4019 in 2.7 s
+2026-10-14 10:20:00 UTC:10.0.0.1(50020):app@db:[102]:LOG:  sync step 20 finished for batch 4020 in 2.9 s
+2026-10-14 10:20:01 UTC:10.0.0.9(60001):app@db:[200]:LOG:  cache warmed: "table_20"
+2026-10-14 10:20:01 UTC:10.0.0.9(60001):app@db:[200]:CONTEXT:  PL/pgSQL function warm(text) line 4 at RAISE
+2026-10-14 10:20:01 UTC:10.0.0.9(60001):app@db:[200]:STATEMENT:  SELECT warm('x')
+2026-10-14 10:21:00 UTC:10.0.0.2(50021):app@db:[100]:LOG:  sync step 21 finished for batch 4021 in 3.0 s
+2026-10-14 10:22:00 UTC:10.0.0.3(50022):app@db:[101]:LOG:  sync step 22 finished for batch 4022 in 3.1 s
+2026-10-14 10:23:00 UTC:10.0.0.4(50023):app@db:[102]:LOG:  sync step 23 finished for batch 4023 in 3.3 s
+2026-10-14 10:24:00 UTC:10.0.0.5(50024):app@db:[100]:LOG:  sync step 24 finished for batch 4024 in 3.4 s
+2026-10-14 10:25:00 UTC:10.0.0.1(50025):app@db:[101]:LOG:  sync step 25 finished for batch 4025 in 3.6 s
+2026-10-14 10:26:00 UTC:10.0.0.2(50026):app@db:[102]:LOG:  sync step 26 finished for batch 4026 in 3.7 s
+2026-10-14 10:27:00 UTC:10.0.0.3(50027):app@db:[100]:LOG:  sync step 27 finished for batch 4027 in 3.9 s
+2026-10-14 10:28:00 UTC:10.0.0.4(50028):app@db:[101]:LOG:  sync step 28 finished for batch 4028 in 4.0 s
+2026-10-14 10:29:00 UTC:10.0.0.5(50029):app@db:[102]:LOG:  sync step 29 finished for batch 4029 in 4.1 s
+2026-10-14 10:30:00 UTC:10.0.0.1(50030):app@db:[100]:LOG:  sync step 30 finished for batch 4030 in 4.3 s
+2026-10-14 10:31:00 UTC:10.0.0.2(50031):app@db:[101]:LOG:  sync step 31 finished for batch 4031 in 4.4 s
+2026-10-14 10:32:00 UTC:10.0.0.3(50032):app@db:[102]:LOG:  sync step 32 finished for batch 4032 in 4.6 s
+2026-10-14 10:33:00 UTC:10.0.0.4(50033):app@db:[100]:LOG:  sync step 33 finished for batch 4033 in 4.7 s
+2026-10-14 10:34:00 UTC:10.0.0.5(50034):app@db:[101]:LOG:  sync step 34 finished for batch 4034 in 4.9 s
+2026-10-14 10:35:00 UTC:10.0.0.1(50035):app@db:[102]:LOG:  sync step 35 finished for batch 4035 in 5.0 s
+2026-10-14 10:36:00 UTC:10.0.0.2(50036):app@db:[100]:LOG:  sync step 36 finished for batch 4036 in 5.1 s
+2026-10-14 10:37:00 UTC:10.0.0.3(50037):app@db:[101]:LOG:  sync step 37 finished for batch 4037 in 5.3 s
+2026-10-14 10:38:00 UTC:10.0.0.4(50038):app@db:[102]:LOG:  sync step 38 finished for batch 4038 in 5.4 s
+2026-10-14 10:39:00 UTC:10.0.0.5(50039):app@db:[100]:LOG:  sync step 39 finished for batch 4039 in 5.6 s
+2026-10-14 10:40:00 UTC:10.0.0.1(50040):app@db:[101]:LOG:  sync step 40 finished for batch 4040 in 5.7 s
+2026-10-14 10:40:01 UTC:10.0.0.9(60001):app@db:[200]:LOG:  cache warmed: "table_40"
+2026-10-14 10:40:01 UTC:10.0.0.9(60001):app@db:[200]:CONTEXT:  PL/pgSQL function warm(text) line 4 at RAISE
+2026-10-14 10:40:01 UTC:10.0.0.9(60001):app@db:[200]:STATEMENT:  SELECT warm('x')
+2026-10-14 10:41:00 UTC:10.0.0.2(50041):app@db:[102]:LOG:  sync step 41 finished for batch 4041 in 5.9 s
+2026-10-14 10:42:00 UTC:10.0.0.3(50042):app@db:[100]:LOG:  sync step 42 finished for batch 4042 in 6.0 s
+2026-10-14 10:43:00 UTC:10.0.0.4(50043):app@db:[101]:LOG:  sync step 43 finished for batch 4043 in 6.1 s
+2026-10-14 10:44:00 UTC:10.0.0.5(50044):app@db:[102]:LOG:  sync step 44 finished for batch 4044 in 6.3 s
+2026-10-14 10:45:00 UTC:10.0.0.1(50045):app@db:[100]:LOG:  sync step 45 finished for batch 4045 in 6.4 s
+2026-10-14 10:46:00 UTC:10.0.0.2(50046):app@db:[101]:LOG:  sync step 46 finished for batch 4046 in 6.6 s
+2026-10-14 10:47:00 UTC:10.0.0.3(50047):app@db:[102]:LOG:  sync step 47 finished for batch 4047 in 6.7 s
+2026-10-14 10:48:00 UTC:10.0.0.4(50048):app@db:[100]:LOG:  sync step 48 finished for batch 4048 in 6.9 s
+2026-10-14 10:49:00 UTC:10.0.0.5(50049):app@db:[101]:LOG:  sync step 49 finished for batch 4049 in 7.0 s
+2026-10-14 10:50:00 UTC:10.0.0.1(50050):app@db:[102]:LOG:  sync step 50 finished for batch 4050 in 7.1 s
+2026-10-14 10:51:00 UTC:10.0.0.2(50051):app@db:[100]:LOG:  sync step 51 finished for batch 4051 in 7.3 s
+2026-10-14 10:52:00 UTC:10.0.0.3(50052):app@db:[101]:LOG:  sync step 52 finished for batch 4052 in 7.4 s
+2026-10-14 10:53:00 UTC:10.0.0.4(50053):app@db:[102]:LOG:  sync step 53 finished for batch 4053 in 7.6 s
+2026-10-14 10:54:00 UTC:10.0.0.5(50054):app@db:[100]:LOG:  sync step 54 finished for batch 4054 in 7.7 s
+2026-10-14 10:55:00 UTC:10.0.0.1(50055):app@db:[101]:LOG:  sync step 55 finished for batch 4055 in 7.9 s
+2026-10-14 10:56:00 UTC:10.0.0.2(50056):app@db:[102]:LOG:  sync step 56 finished for batch 4056 in 8.0 s
+2026-10-14 10:57:00 UTC:10.0.0.3(50057):app@db:[100]:LOG:  sync step 57 finished for batch 4057 in 8.1 s
+2026-10-14 10:58:00 UTC:10.0.0.4(50058):app@db:[101]:LOG:  sync step 58 finished for batch 4058 in 8.3 s
+2026-10-14 10:59:00 UTC:10.0.0.5(50059):app@db:[102]:LOG:  sync step 59 finished for batch 4059 in 8.4 s
+2026-10-14 11:00:00 UTC:10.0.0.9(60001):app@db:[201]:LOG:  a very long message that the server cut short
+[Your log message was truncated]
+2026-10-14 11:00:00 UTC:10.0.0.9(60001):app@db:[201]:CONTEXT:  PL/pgSQL function big() line 9 at RAISE
+2026-10-14 11:00:00 UTC:10.0.0.9(60001):app@db:[201]:STATEMENT:  CREATE TEMPORARY TABLE t AS SELECT 1

@@ -8,8 +8,10 @@ use serde::{Deserialize, Serialize};
 use super::{
     Merge,
     dimensions::{self, Attributes, Dimensions, Tally},
-    event::{Event, StatementKind, cancel_reason, classify, parameters},
-    fingerprint::{display_text, fingerprint, sql_hash, statement_kind},
+    event::{
+        Event, StatementKind, cancel_reason, classify, disconnect_reason, error_group, parameters,
+    },
+    fingerprint::{display_text, fingerprint, sql_hash, statement_kind, statement_tag},
     kind::QueryKind,
     sketch::Sketch,
     slowest::{self, Example, Examples, Execution, Slowest, Who, who_key},
@@ -351,6 +353,18 @@ pub struct ErrorStat {
     pub statements: BTreeMap<u64, u64>,
 }
 
+/// The key errors are counted under.
+fn error_key(record: &LogRecord) -> (String, Option<String>, String) {
+    (
+        record.level.label().to_owned(),
+        record.sqlstate.clone(),
+        error_group(record.sqlstate.as_deref(), &record.message),
+    )
+}
+
+/// Message shapes kept in a finished run.
+const MESSAGES_KEPT: usize = 100;
+
 /// Blocker and waiter pairs kept.
 const BLOCKER_PAIRS: usize = 200;
 
@@ -479,6 +493,16 @@ pub struct CheckpointStats {
     pub write: Sketch,
     pub sync: Sketch,
     pub total: Sketch,
+    /// Checkpoints that reported a distance.
+    #[serde(default)]
+    pub distances: u64,
+    /// Sum of the distances, in kilobytes.
+    #[serde(default)]
+    pub distance_kb: u64,
+    #[serde(default)]
+    pub distance_max_kb: u64,
+    #[serde(default)]
+    pub estimate_max_kb: u64,
 }
 
 impl Merge for CheckpointStats {
@@ -492,6 +516,10 @@ impl Merge for CheckpointStats {
         self.write.merge(other.write);
         self.sync.merge(other.sync);
         self.total.merge(other.total);
+        self.distances += other.distances;
+        self.distance_kb += other.distance_kb;
+        self.distance_max_kb = self.distance_max_kb.max(other.distance_max_kb);
+        self.estimate_max_kb = self.estimate_max_kb.max(other.estimate_max_kb);
     }
 }
 
@@ -501,6 +529,12 @@ pub struct TableStats {
     pub analyzes: u64,
     pub total_us: u64,
     pub max_us: u64,
+    #[serde(default)]
+    pub tuples_removed: u64,
+    #[serde(default)]
+    pub pages_removed: u64,
+    #[serde(default)]
+    pub index_scans: u64,
 }
 
 impl Merge for TableStats {
@@ -509,7 +543,201 @@ impl Merge for TableStats {
         self.analyzes += other.analyzes;
         self.total_us += other.total_us;
         self.max_us = self.max_us.max(other.max_us);
+        self.tuples_removed += other.tuples_removed;
+        self.pages_removed += other.pages_removed;
+        self.index_scans += other.index_scans;
     }
+}
+
+/// Time spent in one kind of schema-changing statement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DdlStat {
+    pub calls: u64,
+    pub total_us: u64,
+}
+
+/// A message the server logs that is not a statement, an error or a known event, counted by shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageStat {
+    pub count: u64,
+    pub first_seen: Timestamp,
+    /// The first message of this shape, cut short.
+    pub example: String,
+}
+
+/// Distinct message shapes tracked while reading (exact below this, and the busiest few are kept
+/// at the end).
+const MESSAGE_SHAPES: usize = 50_000;
+/// Applications tracked per counter.
+const NAMED_LIMIT: usize = 5_000;
+/// Hosts tracked in the connection series; the rest count as `(other)`.
+const HOST_LIMIT: usize = 5_000;
+
+/// What the log says about the clients and the server that the other tallies do not: abrupt
+/// endings, schema changes, who connects when, and the messages nothing else claims.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Observed {
+    /// Abrupt endings by [`disconnect_reason`].
+    pub disconnects: BTreeMap<String, u64>,
+    /// `(reason, application)` -> count.
+    #[serde(with = "pairs")]
+    pub disconnect_apps: BTreeMap<(String, String), u64>,
+    /// Schema-changing statements by command tag.
+    pub ddl: BTreeMap<String, DdlStat>,
+    /// Temporary tables created, by application.
+    pub temp_tables: BTreeMap<String, u64>,
+    /// Connections authorized: host -> bucket start (Unix seconds) -> count.
+    pub hosts: BTreeMap<String, BTreeMap<i64, u64>>,
+    /// Messages by shape (see [`message_shape`]).
+    pub messages: BTreeMap<String, MessageStat>,
+}
+
+impl Observed {
+    fn disconnect(&mut self, reason: &str, application: Option<&str>) {
+        *self.disconnects.entry(reason.to_owned()).or_insert(0) += 1;
+        let app = application.unwrap_or("(none)").to_owned();
+        if self.disconnect_apps.len() < NAMED_LIMIT
+            || self
+                .disconnect_apps
+                .contains_key(&(reason.to_owned(), app.clone()))
+        {
+            *self
+                .disconnect_apps
+                .entry((reason.to_owned(), app))
+                .or_insert(0) += 1;
+        }
+    }
+
+    fn connection(&mut self, host: &str, bucket: i64) {
+        let key = if self.hosts.contains_key(host) || self.hosts.len() < HOST_LIMIT {
+            host
+        } else {
+            "(other)"
+        };
+        *self
+            .hosts
+            .entry(key.to_owned())
+            .or_default()
+            .entry(bucket)
+            .or_insert(0) += 1;
+    }
+
+    fn message(&mut self, record: &LogRecord) {
+        let shape = message_shape(&record.message);
+        if let Some(stat) = self.messages.get_mut(&shape) {
+            stat.count += 1;
+            let example = cut_message(&record.message);
+            // Earliest wins, then the smaller text: the choice cannot depend on arrival order.
+            if (record.ts, &example) < (stat.first_seen, &stat.example) {
+                stat.first_seen = record.ts;
+                stat.example = example;
+            }
+        } else if self.messages.len() < MESSAGE_SHAPES {
+            self.messages.insert(
+                shape,
+                MessageStat {
+                    count: 1,
+                    first_seen: record.ts,
+                    example: cut_message(&record.message),
+                },
+            );
+        }
+    }
+
+    /// Keeps the busiest message shapes.
+    fn recap(&mut self, keep: usize) {
+        if self.messages.len() <= keep {
+            return;
+        }
+        let mut ranked: Vec<(String, MessageStat)> =
+            std::mem::take(&mut self.messages).into_iter().collect();
+        ranked.sort_by(|a, b| b.1.count.cmp(&a.1.count).then_with(|| a.0.cmp(&b.0)));
+        ranked.truncate(keep);
+        self.messages = ranked.into_iter().collect();
+    }
+}
+
+impl Merge for Observed {
+    fn merge(&mut self, other: Self) {
+        add_counts(&mut self.disconnects, other.disconnects);
+        add_counts(&mut self.disconnect_apps, other.disconnect_apps);
+        for (tag, stat) in other.ddl {
+            let mine = self.ddl.entry(tag).or_default();
+            mine.calls += stat.calls;
+            mine.total_us += stat.total_us;
+        }
+        add_counts(&mut self.temp_tables, other.temp_tables);
+        for (host, buckets) in other.hosts {
+            let mine = self.hosts.entry(host).or_default();
+            for (bucket, n) in buckets {
+                *mine.entry(bucket).or_insert(0) += n;
+            }
+        }
+        for (shape, stat) in other.messages {
+            match self.messages.get_mut(&shape) {
+                Some(mine) => {
+                    mine.count += stat.count;
+                    if (stat.first_seen, &stat.example) < (mine.first_seen, &mine.example) {
+                        mine.first_seen = stat.first_seen;
+                        mine.example = stat.example;
+                    }
+                }
+                None => {
+                    self.messages.insert(shape, stat);
+                }
+            }
+        }
+    }
+}
+
+/// Adds the counts of `from` into `into`.
+fn add_counts<K: Ord>(into: &mut BTreeMap<K, u64>, from: BTreeMap<K, u64>) {
+    for (key, n) in from {
+        *into.entry(key).or_insert(0) += n;
+    }
+}
+
+/// A server message with its values taken out, so that repeats of one message group together:
+/// numbers and quoted text become `?`, and only the first line counts.
+#[must_use]
+pub fn message_shape(message: &str) -> String {
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    let mut after_digit = false;
+    for c in message.lines().next().unwrap_or_default().chars().take(300) {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+                out.push(q);
+            }
+            continue;
+        }
+        if c == '\'' || c == '"' {
+            quote = Some(c);
+            out.push(c);
+            out.push('?');
+            after_digit = false;
+        } else if c.is_ascii_digit() || (after_digit && c == '.') {
+            if !after_digit {
+                out.push('?');
+            }
+            after_digit = true;
+        } else {
+            after_digit = false;
+            out.push(c);
+        }
+    }
+    out.chars().take(160).collect()
+}
+
+fn cut_message(message: &str) -> String {
+    message
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -518,6 +746,31 @@ pub struct Bucket {
     pub errors: u64,
     pub connections: u64,
     pub lock_waits: u64,
+    /// Checkpoints that finished.
+    #[serde(default)]
+    pub checkpoints: u64,
+    /// WAL written between checkpoints, in kilobytes, summed over the checkpoints that finished.
+    #[serde(default)]
+    pub wal_kb: u64,
+    /// Sessions that ended abruptly (see [`disconnect_reason`]).
+    #[serde(default)]
+    pub aborts: u64,
+    /// Schema-changing statements.
+    #[serde(default)]
+    pub ddl: u64,
+}
+
+impl Bucket {
+    fn absorb(&mut self, other: &Bucket) {
+        self.statements += other.statements;
+        self.errors += other.errors;
+        self.connections += other.connections;
+        self.lock_waits += other.lock_waits;
+        self.checkpoints += other.checkpoints;
+        self.wal_kb += other.wal_kb;
+        self.aborts += other.aborts;
+        self.ddl += other.ddl;
+    }
 }
 
 /// Event counts per time bucket (`bucket_secs` wide).
@@ -549,10 +802,7 @@ impl Timeline {
                 .buckets
                 .entry(start.div_euclid(width) * width)
                 .or_default();
-            into.statements += bucket.statements;
-            into.errors += bucket.errors;
-            into.connections += bucket.connections;
-            into.lock_waits += bucket.lock_waits;
+            into.absorb(&bucket);
         }
         wider
     }
@@ -561,11 +811,7 @@ impl Timeline {
 impl Merge for Timeline {
     fn merge(&mut self, other: Self) {
         for (start, bucket) in other.buckets {
-            let into = self.buckets.entry(start).or_default();
-            into.statements += bucket.statements;
-            into.errors += bucket.errors;
-            into.connections += bucket.connections;
-            into.lock_waits += bucket.lock_waits;
+            self.buckets.entry(start).or_default().absorb(&bucket);
         }
     }
 }
@@ -580,9 +826,9 @@ pub struct Totals {
     pub events: BTreeMap<String, u64>,
     /// Records per severity label.
     pub levels: BTreeMap<String, u64>,
-    /// Records at `ERROR` or above, by `(level, sqlstate)`.
+    /// Records at `ERROR` or above, by `(level, sqlstate, group)` (see [`error_group`]).
     #[serde(with = "pairs")]
-    pub errors: BTreeMap<(String, Option<String>), ErrorStat>,
+    pub errors: BTreeMap<(String, Option<String>, String), ErrorStat>,
     pub locks: LockStats,
     pub temp: TempStats,
     pub connections: ConnStats,
@@ -602,6 +848,9 @@ pub struct Totals {
     /// statement of. Capped to the longest waits when a run ends.
     #[serde(default, with = "pairs")]
     pub blockers: BTreeMap<(u64, u64), BlockStat>,
+    /// Abrupt endings, schema changes, connection hosts and unclaimed messages.
+    #[serde(default)]
+    pub observed: Observed,
 }
 
 impl Totals {
@@ -626,7 +875,36 @@ impl Totals {
             cancelled: BTreeMap::new(),
             cancelled_statements: BTreeMap::new(),
             blockers: BTreeMap::new(),
+            observed: Observed::default(),
         }
+    }
+
+    fn checkpoint_done(
+        &mut self,
+        ts: Timestamp,
+        restart: bool,
+        (buffers, write_ms, sync_ms, total_ms): (u64, f64, f64, f64),
+        (distance_kb, estimate_kb): (Option<u64>, Option<u64>),
+    ) {
+        let stats = self.checkpoints.entry(restart).or_default();
+        stats.done += 1;
+        stats.buffers += buffers;
+        stats.write.add(write_ms);
+        stats.sync.add(sync_ms);
+        stats.total.add(total_ms);
+        if let Some(kb) = distance_kb {
+            stats.distances += 1;
+            stats.distance_kb += kb;
+            stats.distance_max_kb = stats.distance_max_kb.max(kb);
+        }
+        if let Some(kb) = estimate_kb {
+            stats.estimate_max_kb = stats.estimate_max_kb.max(kb);
+        }
+        let wal = distance_kb.unwrap_or(0);
+        self.timeline.add(ts, |b| {
+            b.checkpoints += 1;
+            b.wal_kb += wal;
+        });
     }
 
     /// Keeps the pairs that made others wait longest.
@@ -686,20 +964,26 @@ impl Totals {
                 write_ms,
                 sync_ms,
                 total_ms,
-            } => {
-                let stats = self.checkpoints.entry(*restart).or_default();
-                stats.done += 1;
-                stats.buffers += buffers;
-                stats.write.add(*write_ms);
-                stats.sync.add(*sync_ms);
-                stats.total.add(*total_ms);
-            }
+                distance_kb,
+                estimate_kb,
+            } => self.checkpoint_done(
+                ts,
+                *restart,
+                (*buffers, *write_ms, *sync_ms, *total_ms),
+                (*distance_kb, *estimate_kb),
+            ),
             Event::Autovacuum {
                 analyze,
                 table,
                 elapsed_ms,
+                pages_removed,
+                tuples_removed,
+                index_scans,
             } => {
                 let stats = self.autovacuum.entry(table.clone()).or_default();
+                stats.pages_removed += pages_removed.unwrap_or(0);
+                stats.tuples_removed += tuples_removed.unwrap_or(0);
+                stats.index_scans += index_scans.unwrap_or(0);
                 if *analyze {
                     stats.analyzes += 1;
                 } else {
@@ -714,12 +998,23 @@ impl Totals {
             Event::ConnectionAuthorized => {
                 self.connections.authorized += 1;
                 self.timeline.add(ts, |b| b.connections += 1);
+                if let Some(host) = record.host.as_deref() {
+                    let width = self.timeline.bucket_secs;
+                    self.observed
+                        .connection(host, ts.as_second().div_euclid(width) * width);
+                }
             }
             Event::Disconnection { session_ms } => {
                 self.connections.disconnections += 1;
                 self.connections.session.add(*session_ms);
             }
+            Event::Other if !record.level.is_error() => self.observed.message(record),
             _ => {}
+        }
+        if let Some(reason) = disconnect_reason(record) {
+            self.observed
+                .disconnect(reason, record.application.as_deref());
+            self.timeline.add(ts, |b| b.aborts += 1);
         }
     }
 
@@ -732,7 +1027,7 @@ impl Totals {
                 .or_insert(0) += 1;
         }
         self.timeline.add(ts, |b| b.errors += 1);
-        let key = (record.level.label().to_owned(), record.sqlstate.clone());
+        let key = error_key(record);
         let this = ErrorStat {
             count: 1,
             first_message: record.message.clone(),
@@ -778,7 +1073,7 @@ impl Totals {
 
     /// Notes that the error `record` belongs to the statement with fingerprint `id`.
     fn error_statement(&mut self, record: &LogRecord, id: u64) {
-        let key = (record.level.label().to_owned(), record.sqlstate.clone());
+        let key = error_key(record);
         if let Some(stat) = self.errors.get_mut(&key) {
             *stat.statements.entry(id).or_insert(0) += 1;
         }
@@ -802,6 +1097,7 @@ impl Merge for Totals {
         self.connections.merge(other.connections);
         add_maps(&mut self.checkpoints, other.checkpoints);
         add_maps(&mut self.autovacuum, other.autovacuum);
+        self.observed.merge(other.observed);
         self.timeline.merge(other.timeline);
         self.unparsed_statements += other.unparsed_statements;
         for (reason, n) in other.cancelled {
@@ -977,6 +1273,23 @@ impl Accumulators {
         }
     }
 
+    /// Counts a schema-changing statement under its command tag, and temporary tables by
+    /// application.
+    fn add_ddl(&mut self, record: &LogRecord, text: &str, duration_ms: Option<f64>) {
+        let tag = statement_tag(text).unwrap_or_else(|| "OTHER DDL".to_owned());
+        let stat = self.totals.observed.ddl.entry(tag.clone()).or_default();
+        stat.calls += 1;
+        stat.total_us += duration_ms.map_or(0, to_micros);
+        if tag == "CREATE TEMP TABLE" {
+            let app = record.application.as_deref().unwrap_or("(none)").to_owned();
+            let temp = &mut self.totals.observed.temp_tables;
+            if temp.len() < NAMED_LIMIT || temp.contains_key(&app) {
+                *temp.entry(app).or_insert(0) += 1;
+            }
+        }
+        self.totals.timeline.add(record.ts, |b| b.ddl += 1);
+    }
+
     /// Counts the lock waits `record` settles, by the statement that held and the one that waited.
     fn add_blocks(&mut self, record: &LogRecord) {
         let ts = record.ts;
@@ -1010,7 +1323,17 @@ impl Accumulators {
         let capture_params = self.capture_params;
         let query = self.query_for(text, ts, record.query_id);
         query.call(duration_ms, ts, kind);
-        let (fingerprint, parsed) = (query.id, query.parsed);
+        let (fingerprint, parsed, ddl) = (query.id, query.parsed, query.kind == QueryKind::Ddl);
+        if ddl {
+            self.add_ddl(record, text, duration_ms);
+        }
+        let Some(query) = self
+            .queries
+            .get_mut(&fingerprint)
+            .or(Some(&mut self.overflow))
+        else {
+            return;
+        };
         if let Some(ms) = duration_ms {
             let us = to_micros(ms);
             let wanted = fingerprint != 0 && us >= EXAMPLE_MIN_US && query.examples.wants(us);
@@ -1138,6 +1461,7 @@ impl Accumulators {
         }
         self.totals.keep_busiest_cancelled();
         self.totals.keep_longest_blockers();
+        self.totals.observed.recap(MESSAGES_KEPT);
         // Only the people the kept examples point at: which ones a worker saw along the way
         // depends on how records were split.
         let used: std::collections::BTreeSet<u64> = self
@@ -1214,8 +1538,7 @@ mod tests {
         let bucket = |statements| Bucket {
             statements,
             errors: 1,
-            connections: 0,
-            lock_waits: 0,
+            ..Bucket::default()
         };
         let minutes = Timeline {
             bucket_secs: 60,
@@ -1324,10 +1647,7 @@ mod tests {
         assert_eq!(q.errors, 1);
         assert_eq!((q.lock_waits, q.lock_wait_us), (1, 400_250));
         assert_eq!((q.temp_files, q.temp_bytes), (1, 1_000));
-        assert_eq!(
-            a.totals.errors[&("ERROR".to_owned(), Some("23505".to_owned()))].count,
-            1
-        );
+        assert_eq!(error_stat(&a, "23505").count, 1);
         assert_eq!(a.totals.locks.waits, 1);
         assert_eq!(a.totals.locks.acquired, 1);
         assert_eq!(a.totals.locks.wait_max_us, 400_250);
@@ -1342,10 +1662,7 @@ mod tests {
         a.add_record(&r);
         assert_eq!(a.totals.locks.deadlocks, 1);
         assert_eq!(a.totals.events["deadlock"], 1);
-        assert_eq!(
-            a.totals.errors[&("ERROR".to_owned(), Some("40P01".to_owned()))].count,
-            1
-        );
+        assert_eq!(error_stat(&a, "40P01").count, 1);
     }
 
     #[test]
@@ -1575,7 +1892,7 @@ mod tests {
         merged.merge(accumulate(&[second]));
         assert_eq!(both, swapped);
         assert_eq!(both, merged);
-        let stat = &both.totals.errors[&("ERROR".to_owned(), Some("23505".to_owned()))];
+        let stat = error_stat(&both, "23505");
         assert_eq!(stat.first_message, "aaa");
     }
 
@@ -1807,6 +2124,16 @@ mod tests {
         assert!(a.who.is_empty());
     }
 
+    /// The one error kind with this SQLSTATE.
+    fn error_stat<'a>(acc: &'a Accumulators, code: &str) -> &'a ErrorStat {
+        acc.totals
+            .errors
+            .iter()
+            .find(|((_, state, _), _)| state.as_deref() == Some(code))
+            .map(|(_, stat)| stat)
+            .expect("an error with that SQLSTATE")
+    }
+
     fn linked(mut record: LogRecord, sql: &str, phase: Phase, timing_only: bool) -> LogRecord {
         record.correlation = Some(crate::log::Correlation {
             sql: sql.to_owned(),
@@ -1903,5 +2230,38 @@ mod tests {
         ));
         let q = a.queries.values().next().unwrap();
         assert_eq!((q.calls, q.timed, q.total_us), (1, 1, 9_000));
+    }
+
+    #[test]
+    fn message_shapes_drop_numbers_and_quoted_text() {
+        assert_eq!(
+            message_shape("sync step 17 finished for batch 4242 in 12.5 s"),
+            "sync step ? finished for batch ? in ? s"
+        );
+        assert_eq!(
+            message_shape("cache warmed: \"table_9\" and 'x y'"),
+            "cache warmed: \"?\" and '?'"
+        );
+        assert_eq!(message_shape("first line\nsecond 2"), "first line");
+        assert_eq!(message_shape(&"x".repeat(500)).len(), 160);
+    }
+
+    #[test]
+    fn connections_are_counted_per_host_and_bucket_with_an_overflow_host() {
+        let mut observed = Observed::default();
+        observed.connection("10.0.0.1", 0);
+        observed.connection("10.0.0.1", 0);
+        observed.connection("10.0.0.2", 60);
+        assert_eq!(observed.hosts["10.0.0.1"][&0], 2);
+        for i in 0..HOST_LIMIT - 2 {
+            observed.connection(&format!("h{i}"), 0);
+        }
+        observed.connection("one-too-many", 0);
+        assert_eq!(observed.hosts["(other)"][&0], 1);
+        // Merging adds buckets.
+        let mut other = Observed::default();
+        other.connection("10.0.0.1", 0);
+        observed.merge(other);
+        assert_eq!(observed.hosts["10.0.0.1"][&0], 3);
     }
 }

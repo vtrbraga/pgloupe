@@ -587,6 +587,14 @@
       }));
       out.push(h('div', { 'class': 'grid cols-2' }, [panel('Cancelled by reason', reasons), panel('Cancelled most often', list)]));
     }
+    var chatter = logs.messages || [];
+    if (chatter.length) {
+      out.push(h('h2', { text: 'Most frequent other messages' }));
+      out.push(h('p', { 'class': 'muted', text: 'Messages the server logs that are not statements, errors or events pgloupe knows, grouped with their numbers and quoted text taken out. A message that repeats thousands of times is usually application code logging on purpose.' }));
+      out.push(simpleTable([{ label: 'Times', num: true }, { label: 'First seen' }, { label: 'Message' }], chatter.map(function (m) {
+        return h('tr', null, [h('td', { 'class': 'num', text: L.fmtInt(m.count) }), h('td', { 'class': 'nowrap', text: L.fmtTime(m.first_seen, true) }), h('td', { 'class': 'mono', title: m.example, text: m.shape })]);
+      })));
+    }
     return out;
   }
   function viewLocks() {
@@ -635,24 +643,78 @@
       ]),
       panel('Connections over time', host),
       histogramPanel('Session durations', logs.histograms.sessions, 'var(--c-connections)')
-    ];
+    ].concat(hostPanel(), abruptPanel());
+  }
+  function hostPanel() {
+    var series = logs.connection_hosts;
+    if (!series || !series.hosts.length || !series.buckets.length) { return []; }
+    var palette = ['#4f7cff', '#12a594', '#f0a020', '#e5484d', '#8b5cf6', '#d946ef', '#64748b', '#0ea5e9', '#94a3b8'];
+    var rows2 = series.buckets.map(function (b) {
+      var row = { start: b.start };
+      b.counts.forEach(function (n, i) { row['h' + i] = n; });
+      return row;
+    });
+    var cells = L.downsample(rows2, 240);
+    var host = h('div', { 'class': 'chart-host' });
+    setTimeout(function () {
+      C.timeline(host, { buckets: cells, series: series.hosts.map(function (name, i) { return { key: 'h' + i, label: name, color: palette[i % palette.length] }; }), range: null });
+    }, 0);
+    return [panel('Connections by host', host)];
+  }
+  function abruptPanel() {
+    var d = logs.disconnects;
+    if (!d || !d.reasons.length) { return []; }
+    var names = {
+      client_reset: 'client reset the connection', client_gone: 'client vanished', client_gone_in_transaction: 'client vanished with a transaction open',
+      client_unreachable: 'could not send to the client', client_lost: 'connection to the client lost', idle_in_transaction_timeout: 'idle in transaction timeout',
+      idle_session_timeout: 'idle session timeout', terminated_by_admin: 'ended by an administrator', recovery_conflict: 'conflict with recovery',
+      protocol_error: 'protocol error', authentication_timeout: 'authentication timed out'
+    };
+    var out = [h('h2', { text: 'Sessions that ended abruptly' }), h('p', { 'class': 'muted', text: 'Idle time per session is not in the log; these are the endings the server reports.' })];
+    out.push(simpleTable([{ label: 'Reason' }, { label: 'Times', num: true }], d.reasons.map(function (r) {
+      return h('tr', null, [h('td', { text: names[r.reason] || r.reason }), h('td', { 'class': 'num', text: L.fmtInt(r.count) })]);
+    })));
+    out.push(simpleTable([{ label: 'Application' }, { label: 'Reason' }, { label: 'Times', num: true }], d.by_application.slice(0, 15).map(function (r) {
+      return h('tr', null, [h('td', { text: r.application }), h('td', { text: names[r.reason] || r.reason }), h('td', { 'class': 'num', text: L.fmtInt(r.count) })]);
+    })));
+    return out;
   }
   function viewMaintenance() {
     var out = [];
     out.push(logs.checkpoints.length ? simpleTable(
-      [{ label: 'Kind' }, { label: 'Started', num: true }, { label: 'Completed', num: true }, { label: 'Reasons' }, { label: 'Buffers', num: true }, { label: 'Write p95', num: true }, { label: 'Sync p95', num: true }, { label: 'Total p95', num: true }],
+      [{ label: 'Kind' }, { label: 'Started', num: true }, { label: 'Completed', num: true }, { label: 'Reasons' }, { label: 'Buffers', num: true }, { label: 'WAL between (mean / max)', num: true }, { label: 'Write p95', num: true }, { label: 'Sync p95', num: true }, { label: 'Total p95', num: true }],
       logs.checkpoints.map(function (c) {
         return h('tr', null, [h('td', { text: c.kind }), h('td', { 'class': 'num', text: L.fmtInt(c.started) }), h('td', { 'class': 'num', text: L.fmtInt(c.completed) }),
           h('td', null, Object.keys(c.reasons).map(function (k) { return badge(k + ' ×' + c.reasons[k]); })), h('td', { 'class': 'num', text: L.fmtInt(c.buffers) }),
+          h('td', { 'class': 'num', text: c.distance_kb ? L.fmtBytes(c.distance_kb.mean_kb * 1024) + ' / ' + L.fmtBytes(c.distance_kb.max_kb * 1024) : '\u2014' }),
           h('td', { 'class': 'num', text: L.fmtMs(c.write_ms.p95) }), h('td', { 'class': 'num', text: L.fmtMs(c.sync_ms.p95) }), h('td', { 'class': 'num', text: L.fmtMs(c.total_ms.p95) })]);
       })) : panel('Checkpoints', emptyNote('No checkpoints were logged. Set log_checkpoints = on.')));
     var av = logs.autovacuum;
     var maxAv = Math.max.apply(null, av.map(function (t) { return t.total_ms; }).concat([1]));
-    out.push(av.length ? simpleTable([{ label: 'Table' }, { label: 'Vacuums', num: true }, { label: 'Analyzes', num: true }, { label: 'Total time', num: true }, { label: 'Longest', num: true }],
+    out.push(av.length ? simpleTable([{ label: 'Table' }, { label: 'Vacuums', num: true }, { label: 'Analyzes', num: true }, { label: 'Total time', num: true }, { label: 'Longest', num: true }, { label: 'Tuples removed', num: true }, { label: 'Pages removed', num: true }],
       av.map(function (t) {
         return h('tr', null, [h('td', { 'class': 'mono', text: t.table }), h('td', { 'class': 'num', text: L.fmtInt(t.vacuums) }), h('td', { 'class': 'num', text: L.fmtInt(t.analyzes) }),
-          h('td', { 'class': 'num bar-cell' }, [h('span', { 'class': 'bar', style: { width: (t.total_ms / maxAv * 100) + '%' } }), h('span', { text: L.fmtMs(t.total_ms) })]), h('td', { 'class': 'num', text: L.fmtMs(t.max_ms) })]);
+          h('td', { 'class': 'num bar-cell' }, [h('span', { 'class': 'bar', style: { width: (t.total_ms / maxAv * 100) + '%' } }), h('span', { text: L.fmtMs(t.total_ms) })]), h('td', { 'class': 'num', text: L.fmtMs(t.max_ms) }), h('td', { 'class': 'num', text: L.fmtInt(t.tuples_removed) }), h('td', { 'class': 'num', text: L.fmtInt(t.pages_removed) })]);
       })) : panel('Autovacuum', emptyNote('No autovacuum runs were logged (log_autovacuum_min_duration).')));
+    var wal = display.some(function (b) { return b.checkpoints; });
+    if (wal) {
+      var strip = h('div', { 'class': 'chart-host' });
+      setTimeout(function () { C.timeline(strip, { buckets: display, series: [{ key: 'checkpoints', label: 'Checkpoints', color: 'var(--c-connections)' }, { key: 'wal_kb', label: 'WAL between checkpoints (kB)', color: 'var(--c-statements)' }], range: null }); }, 0);
+      out.push(panel('Checkpoints over time', strip));
+    }
+    var schema = logs.ddl || { tags: [], temp_tables: [] };
+    if (schema.tags.length) {
+      out.push(h('h2', { text: 'Schema changes' }));
+      out.push(simpleTable([{ label: 'Command' }, { label: 'Times', num: true }, { label: 'Total time', num: true }], schema.tags.map(function (t) {
+        return h('tr', null, [h('td', { 'class': 'mono', text: t.tag }), h('td', { 'class': 'num', text: L.fmtInt(t.calls) }), h('td', { 'class': 'num', text: L.fmtMs(t.total_ms) })]);
+      })));
+      if (schema.temp_tables.length) {
+        out.push(h('p', { 'class': 'muted', text: 'Temporary tables are created and dropped in the system catalogs; many of them bloat pg_class and pg_attribute.' }));
+        out.push(simpleTable([{ label: 'Application' }, { label: 'Temporary tables created', num: true }], schema.temp_tables.map(function (t) {
+          return h('tr', null, [h('td', { text: t.name }), h('td', { 'class': 'num', text: L.fmtInt(t.count) })]);
+        })));
+      }
+    }
     return out;
   }
   var breakdownMetric = 'time';

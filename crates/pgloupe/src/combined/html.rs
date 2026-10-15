@@ -469,6 +469,10 @@ mod tests {
                     errors: u64::from(i % 11 == 0),
                     connections: 0,
                     lock_waits: 0,
+                    checkpoints: 0,
+                    wal_kb: 0,
+                    aborts: 0,
+                    ddl: 0,
                 })
                 .collect(),
         }

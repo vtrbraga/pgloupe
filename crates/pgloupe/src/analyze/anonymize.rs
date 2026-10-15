@@ -206,7 +206,15 @@ impl Anonymizer {
                 *field = Some(pseudonym);
             }
         }
-        record.message = self.text(&record.message);
+        // A message nothing recognizes is free text, often written by an application
+        // (`RAISE LOG`): no pattern can tell its secrets from its words, so it goes whole.
+        let unclaimed = !record.level.is_error()
+            && matches!(super::event::classify(record), super::event::Event::Other);
+        record.message = if unclaimed {
+            "<redacted message>".to_owned()
+        } else {
+            self.text(&record.message)
+        };
         if let Some(c) = &mut record.correlation {
             c.sql = scrub(&c.sql);
         }

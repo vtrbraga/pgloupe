@@ -57,11 +57,18 @@ pub enum Event {
         write_ms: f64,
         sync_ms: f64,
         total_ms: f64,
+        /// WAL written since the previous checkpoint, in kilobytes.
+        distance_kb: Option<u64>,
+        /// What the server expects the next distance to be.
+        estimate_kb: Option<u64>,
     },
     Autovacuum {
         analyze: bool,
         table: String,
         elapsed_ms: Option<f64>,
+        pages_removed: Option<u64>,
+        tuples_removed: Option<u64>,
+        index_scans: Option<u64>,
     },
     ConnectionReceived {
         host: Option<String>,
@@ -201,6 +208,8 @@ fn checkpoint_event(message: &str) -> Option<Event> {
                 write_ms: seconds_ms(rest, "write=")?,
                 sync_ms: seconds_ms(rest, "sync=")?,
                 total_ms: seconds_ms(rest, "total=")?,
+                distance_kb: number_after(rest, "distance="),
+                estimate_kb: number_after(rest, "estimate="),
             });
         }
     }
@@ -216,10 +225,23 @@ fn autovacuum_event(message: &str) -> Option<Event> {
         analyze,
         table: table.to_owned(),
         elapsed_ms: seconds_ms(message, "elapsed: "),
+        pages_removed: number_after(message, "pages: "),
+        tuples_removed: number_after(message, "tuples: "),
+        index_scans: number_after(message, "index scans: "),
     })
 }
 
 /// The seconds value after `key` (`write=0.003 s`), in milliseconds.
+/// The whole number right after `key`, if there is one.
+fn number_after(text: &str, key: &str) -> Option<u64> {
+    let start = text.find(key)? + key.len();
+    let digits: String = text[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
 fn seconds_ms(text: &str, key: &str) -> Option<f64> {
     let start = text.find(key)? + key.len();
     let number: String = text[start..]
@@ -367,6 +389,110 @@ pub fn parameters(record: &LogRecord) -> Option<&str> {
         .strip_prefix("parameters: ")
         .map(str::trim)
         .filter(|params| !params.is_empty())
+}
+
+/// Why a client or backend went away abruptly, from the log record that says so. These are the
+/// signs of crashed applications, dropped networks and a server ending sessions.
+#[must_use]
+pub fn disconnect_reason(record: &LogRecord) -> Option<&'static str> {
+    let message = record.message.as_str();
+    let reasons: [(&str, &str); 11] = [
+        ("could not receive data from client", "client_reset"),
+        (
+            "unexpected EOF on client connection with an open transaction",
+            "client_gone_in_transaction",
+        ),
+        ("unexpected EOF on client connection", "client_gone"),
+        ("could not send data to client", "client_unreachable"),
+        ("connection to client lost", "client_lost"),
+        (
+            "terminating connection due to idle-in-transaction timeout",
+            "idle_in_transaction_timeout",
+        ),
+        (
+            "terminating connection due to idle-session timeout",
+            "idle_session_timeout",
+        ),
+        (
+            "terminating connection due to administrator command",
+            "terminated_by_admin",
+        ),
+        (
+            "terminating connection due to conflict with recovery",
+            "recovery_conflict",
+        ),
+        (
+            "terminating connection because protocol synchronization was lost",
+            "protocol_error",
+        ),
+        (
+            "canceling authentication due to timeout",
+            "authentication_timeout",
+        ),
+    ];
+    reasons
+        .iter()
+        .find(|(prefix, _)| message.starts_with(prefix))
+        .map(|(_, reason)| *reason)
+}
+
+/// What makes two errors "the same".
+///
+/// The SQLSTATE and the message with its values taken out, so that `42 rows` and `43 rows` or `'a'`
+/// and `'b'` group together. Constraint, table and column names stay, so foreign-key violations
+/// of different constraints stay apart; for the classes where quoted text is a value (data
+/// exceptions, authentication, syntax errors) it goes too.
+#[must_use]
+pub fn error_group(sqlstate: Option<&str>, message: &str) -> String {
+    let drop_double =
+        sqlstate.is_some_and(|c| c.starts_with("22") || c.starts_with("28") || c == "42601");
+    let mut out = String::with_capacity(message.len());
+    let mut chars = message
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {
+                for next in chars.by_ref() {
+                    if next == '\'' {
+                        break;
+                    }
+                }
+                out.push_str("'?'");
+            }
+            '"' if drop_double => {
+                for next in chars.by_ref() {
+                    if next == '"' {
+                        break;
+                    }
+                }
+                out.push_str("\"?\"");
+            }
+            '"' => {
+                out.push('"');
+                for next in chars.by_ref() {
+                    out.push(next);
+                    if next == '"' {
+                        break;
+                    }
+                }
+            }
+            d if d.is_ascii_digit() => {
+                while chars
+                    .peek()
+                    .is_some_and(|n| n.is_ascii_digit() || *n == '.')
+                {
+                    chars.next();
+                }
+                out.push('?');
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -748,7 +874,9 @@ mod tests {
                 buffers: 3,
                 write_ms: 3.0,
                 sync_ms: 1.0,
-                total_ms: 12.0
+                total_ms: 12.0,
+                distance_kb: Some(0),
+                estimate_kb: Some(0),
             }
         );
         // PG13 format (no lsn)
@@ -761,7 +889,9 @@ mod tests {
                 buffers: 10,
                 write_ms: 1_500.0,
                 sync_ms: 10.0,
-                total_ms: 1_520.0
+                total_ms: 1_520.0,
+                distance_kb: Some(0),
+                estimate_kb: Some(0),
             }
         );
         assert_eq!(
@@ -778,10 +908,84 @@ mod tests {
                 buffers: 3,
                 write_ms: 3.0,
                 sync_ms: 1.0,
-                total_ms: 12.0
+                total_ms: 12.0,
+                distance_kb: Some(0),
+                estimate_kb: Some(0),
             }
         );
         assert_eq!(log("checkpoint complete: nothing useful"), Event::Other);
+    }
+
+    #[test]
+    fn checkpoint_distance_and_estimate_are_read() {
+        let done = log(
+            "checkpoint complete: wrote 4679 buffers (28.6%); 0 WAL file(s) added, 0 removed, 2 recycled; write=0.016 s, sync=0.001 s, total=0.017 s; sync files=796, longest=0.001 s, average=0.000 s; distance=36899 kB, estimate=40000 kB; lsn=0/38F8528, redo lsn=0/38F84D0",
+        );
+        let Event::CheckpointDone {
+            distance_kb,
+            estimate_kb,
+            ..
+        } = done
+        else {
+            panic!("not a checkpoint: {done:?}");
+        };
+        assert_eq!((distance_kb, estimate_kb), (Some(36_899), Some(40_000)));
+    }
+
+    #[test]
+    fn abrupt_endings_and_error_groups() {
+        let reason = |level, message: &str| {
+            disconnect_reason(&LogRecord::new(Timestamp::UNIX_EPOCH, level, message))
+        };
+        assert_eq!(
+            reason(
+                Severity::Log,
+                "could not receive data from client: Connection reset by peer"
+            ),
+            Some("client_reset")
+        );
+        assert_eq!(
+            reason(
+                Severity::Log,
+                "unexpected EOF on client connection with an open transaction"
+            ),
+            Some("client_gone_in_transaction")
+        );
+        assert_eq!(
+            reason(
+                Severity::Fatal,
+                "terminating connection due to idle-in-transaction timeout"
+            ),
+            Some("idle_in_transaction_timeout")
+        );
+        assert_eq!(reason(Severity::Log, "checkpoint starting: time"), None);
+        // Values go, constraint names stay.
+        let group = error_group;
+        assert_eq!(
+            group(
+                Some("23503"),
+                "insert or update on table \"film_actor\" violates foreign key constraint \"film_actor_actor_id_fkey\""
+            ),
+            "insert or update on table \"film_actor\" violates foreign key constraint \"film_actor_actor_id_fkey\""
+        );
+        assert_ne!(
+            group(Some("23503"), "violates foreign key constraint \"a\""),
+            group(Some("23503"), "violates foreign key constraint \"b\"")
+        );
+        assert_eq!(
+            group(
+                Some("22P02"),
+                "invalid input syntax for type integer: \"4111\""
+            ),
+            group(
+                Some("22P02"),
+                "invalid input syntax for type integer: \"abc\""
+            )
+        );
+        assert_eq!(
+            group(None, "process 123 acquired lock after 42.5 ms"),
+            group(None, "process 456 acquired lock after 7 ms")
+        );
     }
 
     #[test]
@@ -792,7 +996,10 @@ mod tests {
             Event::Autovacuum {
                 analyze: false,
                 table: "pagila.public.film".to_owned(),
-                elapsed_ms: Some(50.0)
+                elapsed_ms: Some(50.0),
+                pages_removed: Some(0),
+                tuples_removed: Some(5),
+                index_scans: Some(1),
             }
         );
         let analyze = "automatic analyze of table \"pagila.public.film\"\navg read rate: 0.000 MB/s, avg write rate: 0.000 MB/s\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.01 s";
@@ -801,7 +1008,10 @@ mod tests {
             Event::Autovacuum {
                 analyze: true,
                 table: "pagila.public.film".to_owned(),
-                elapsed_ms: Some(10.0)
+                elapsed_ms: Some(10.0),
+                pages_removed: None,
+                tuples_removed: None,
+                index_scans: None,
             }
         );
         assert_eq!(
@@ -811,7 +1021,10 @@ mod tests {
             Event::Autovacuum {
                 analyze: false,
                 table: "d.s.t".to_owned(),
-                elapsed_ms: None
+                elapsed_ms: None,
+                pages_removed: None,
+                tuples_removed: None,
+                index_scans: Some(0),
             }
         );
         assert_eq!(
@@ -827,6 +1040,7 @@ mod tests {
                 analyze,
                 table,
                 elapsed_ms,
+                ..
             } => (analyze, table, elapsed_ms),
             other => panic!("not an autovacuum event: {other:?}"),
         };

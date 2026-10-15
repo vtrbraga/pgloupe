@@ -67,7 +67,7 @@ fn json_report_is_versioned() -> io::Result<()> {
     let out = analyze(&["--output", "json"], &[fixtures().join("logs/sample.csv")])?;
     assert!(out.status.success(), "{}", stderr(&out));
     let value: serde_json::Value = serde_json::from_str(&stdout(&out))?;
-    assert_eq!(value["schema_version"], 1);
+    assert_eq!(value["schema_version"], 2);
     assert_eq!(value["overview"]["records"], 8);
     assert_eq!(value["overview"]["events"]["statement"], 2);
     assert_eq!(value["overview"]["events"]["temp_file"], 1);
@@ -667,5 +667,43 @@ fn files_are_correlated_on_their_own_and_filters_take_their_durations_with_them(
         )?,
         0.0
     );
+    Ok(())
+}
+
+#[test]
+fn repeated_application_messages_are_listed_by_shape_and_truncation_is_reported() -> io::Result<()>
+{
+    let log = fixtures().join("logs/chatter.log");
+    let prefix = ["--prefix", "%t:%r:%u@%d:[%p]:", "--output", "json"];
+    let out = analyze(&prefix, std::slice::from_ref(&log))?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    let messages = report["messages"].as_array().expect("messages");
+    assert_eq!(
+        messages[0]["shape"],
+        "sync step ? finished for batch ? in ? s"
+    );
+    assert_eq!(messages[0]["count"], 60);
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["shape"] == "cache warmed: \"?\"" && m["count"] == 3)
+    );
+    // The marker does not break the entry: its context and statement are kept, nothing skipped.
+    assert_eq!(report["diagnostics"]["skipped"], 0);
+    let warnings = report["diagnostics"]["warnings"].to_string();
+    assert!(warnings.contains("cut short"), "{warnings}");
+    // Under --anonymize the free text is gone, the counts stay.
+    let mut hidden = prefix.to_vec();
+    hidden.push("--anonymize");
+    let out = analyze(&hidden, &[log])?;
+    let text = stdout(&out);
+    assert!(
+        !text.contains("sync step") && !text.contains("cache warmed"),
+        "{text}"
+    );
+    let report: serde_json::Value = serde_json::from_str(&text)?;
+    assert_eq!(report["messages"][0]["shape"], "<redacted message>");
+    assert_eq!(report["messages"][0]["count"], 64);
     Ok(())
 }

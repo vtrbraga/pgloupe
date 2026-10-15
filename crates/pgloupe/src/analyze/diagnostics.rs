@@ -63,6 +63,12 @@ pub fn build(output: &Output) -> Diagnostics {
             totals.unparsed_statements
         ));
     }
+    let truncated: u64 = output.files.iter().map(|f| f.stats.truncated).sum();
+    if truncated > 0 {
+        diagnostics.warnings.push(format!(
+            "{truncated} log entries were cut short by the server (Amazon RDS does this to very long ones), so some statements and contexts are incomplete"
+        ));
+    }
     timezone_warning(&output.files, &mut diagnostics.warnings);
     diagnostics
 }

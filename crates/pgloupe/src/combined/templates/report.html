@@ -132,6 +132,42 @@
 {% endif %}
 </section>
 
+{% if report.logs.disconnects.reasons %}
+<section id="abrupt-endings">
+<h2>Sessions that ended abruptly</h2>
+<table>
+<thead><tr><th>Reason</th><th class="num">Times</th></tr></thead>
+<tbody>
+{% for r in report.logs.disconnects.reasons %}<tr><td>{{ r.reason }}</td><td class="num">{{ r.count|n }}</td></tr>
+{% endfor %}</tbody>
+</table>
+</section>
+{% endif %}
+
+{% if report.logs.ddl.tags %}
+<section id="schema-changes">
+<h2>Schema changes</h2>
+<table>
+<thead><tr><th>Command</th><th class="num">Times</th><th class="num">Total ms</th></tr></thead>
+<tbody>
+{% for t in report.logs.ddl.tags %}<tr><td>{{ t.tag }}</td><td class="num">{{ t.calls|n }}</td><td class="num">{{ t.total_ms|ms }}</td></tr>
+{% endfor %}</tbody>
+</table>
+</section>
+{% endif %}
+
+{% if report.logs.messages %}
+<section id="messages">
+<h2>Most frequent other messages</h2>
+<table>
+<thead><tr><th class="num">Times</th><th>Message</th></tr></thead>
+<tbody>
+{% for m in report.logs.messages %}<tr><td class="num">{{ m.count|n }}</td><td><code>{{ m.shape|cut(140) }}</code></td></tr>
+{% endfor %}</tbody>
+</table>
+</section>
+{% endif %}
+
 <section id="temp-files">
 <h2>Temp files</h2>
 <p>{{ report.logs.temp_files.files|int }} files, {{ report.logs.temp_files.bytes|bytes }} in total, largest {{ report.logs.temp_files.max_bytes|bytes }}.</p>

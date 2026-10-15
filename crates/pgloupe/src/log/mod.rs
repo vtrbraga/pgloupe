@@ -63,6 +63,8 @@ pub struct DecodeStats {
     pub first_skipped: Option<Skipped>,
     /// Lines whose prefix matched but whose severity label is unknown (often a localized server).
     pub no_label: u64,
+    /// Entries a server cut short and said so (Amazon RDS does this to very long ones).
+    pub truncated: u64,
     /// Skipped lines whose shape was not tracked because [`MAX_SHAPES`] was reached.
     pub other_shapes: u64,
     pub(crate) shapes: HashMap<String, Shape>,

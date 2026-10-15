@@ -52,10 +52,13 @@ connections
   session time p50 149000.00 ms, p95 149000.00 ms, max 149000.00 ms
 
 checkpoints
-  checkpoint: started 1, completed 1, buffers 100; total p50 4700.00 ms, p95 4700.00 ms; reasons: time=1
+  checkpoint: started 1, completed 1, buffers 100; total p50 4700.00 ms, p95 4700.00 ms; reasons: time=1; WAL between them mean 100 kB, max 100 kB (estimate up to 100 kB)
 
 autovacuum
-  shop.public.orders  vacuums 1, analyzes 1, total 600.00 ms, longest 500.00 ms
+  shop.public.orders  vacuums 1, analyzes 1, total 600.00 ms, longest 500.00 ms; removed 0 tuples, 0 pages, 1 index passes
+
+most frequent other messages
+         1x  starting PostgreSQL ?
 
 query types
   kind    calls  total_ms  mean_ms  share%

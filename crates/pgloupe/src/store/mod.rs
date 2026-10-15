@@ -14,7 +14,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension as _, ffi::ErrorCode};
 use thiserror::Error;
 
 /// Version written to `PRAGMA user_version`; a store with another number is refused.
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 4;
 
 /// Written to `PRAGMA application_id` (the bytes `pglp`), so another program's database that
 /// happens to carry our version number is not mistaken for a store.

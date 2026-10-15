@@ -18,7 +18,7 @@ use super::{
 use crate::log::Format;
 
 /// Version of the JSON layout; bump when a field changes meaning.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 /// Tables listed in the autovacuum section.
 const TOP_TABLES: usize = 10;
 /// Values listed per breakdown dimension.
@@ -56,6 +56,14 @@ pub struct Report {
     pub connections: ConnectionsReport,
     pub checkpoints: Vec<CheckpointRow>,
     pub autovacuum: Vec<TableRow>,
+    /// Sessions that ended abruptly.
+    pub disconnects: DisconnectsReport,
+    /// Schema-changing statements and temporary tables.
+    pub ddl: DdlReport,
+    /// Connections per host over time.
+    pub connection_hosts: HostSeries,
+    /// The most frequent messages nothing else claims.
+    pub messages: Vec<MessageRow>,
     /// Statements by what they do, busiest first.
     pub kinds: Vec<KindRow>,
     /// Statement and session durations in fixed ranges.
@@ -433,6 +441,18 @@ pub struct CheckpointRow {
     pub write_ms: Quantiles,
     pub sync_ms: Quantiles,
     pub total_ms: Quantiles,
+    /// WAL between checkpoints, when the log reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_kb: Option<DistanceRow>,
+}
+
+/// How much WAL the checkpoints covered.
+#[derive(Debug, Clone, Serialize)]
+pub struct DistanceRow {
+    pub mean_kb: f64,
+    pub max_kb: u64,
+    /// The largest estimate the server made of the next distance.
+    pub estimate_max_kb: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -442,6 +462,12 @@ pub struct TableRow {
     pub analyzes: u64,
     pub total_ms: f64,
     pub max_ms: f64,
+    /// Dead tuples vacuum removed.
+    pub tuples_removed: u64,
+    /// Pages vacuum gave back.
+    pub pages_removed: u64,
+    /// Passes over the indexes.
+    pub index_scans: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -451,6 +477,79 @@ pub struct TimelineRow {
     pub errors: u64,
     pub connections: u64,
     pub lock_waits: u64,
+    pub checkpoints: u64,
+    pub wal_kb: u64,
+    pub aborts: u64,
+    pub ddl: u64,
+}
+
+/// Why sessions ended abruptly, and who they belonged to.
+#[derive(Debug, Clone, Serialize)]
+pub struct DisconnectsReport {
+    /// Reason -> times, most frequent first.
+    pub reasons: Vec<ReasonRow>,
+    /// Reason and application, most frequent first.
+    pub by_application: Vec<ReasonAppRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReasonRow {
+    pub reason: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReasonAppRow {
+    pub reason: String,
+    pub application: String,
+    pub count: u64,
+}
+
+/// Schema-changing statements.
+#[derive(Debug, Clone, Serialize)]
+pub struct DdlReport {
+    pub tags: Vec<DdlRow>,
+    /// Temporary tables created per application, most first.
+    pub temp_tables: Vec<NamedCount>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DdlRow {
+    pub tag: String,
+    pub calls: u64,
+    pub total_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NamedCount {
+    pub name: String,
+    pub count: u64,
+}
+
+/// Connections authorized per host over time: the busiest hosts and everything else.
+#[derive(Debug, Clone, Serialize)]
+pub struct HostSeries {
+    pub hosts: Vec<String>,
+    pub bucket_secs: i64,
+    pub buckets: Vec<HostBucket>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HostBucket {
+    pub start: String,
+    /// One count per entry of `hosts`.
+    pub counts: Vec<u64>,
+}
+
+/// A message the server logs that nothing else claims, with how often it appears.
+#[derive(Debug, Clone, Serialize)]
+pub struct MessageRow {
+    /// The message with its values replaced by `?`.
+    pub shape: String,
+    pub count: u64,
+    pub first_seen: String,
+    /// The first message of this shape.
+    pub example: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -538,6 +637,10 @@ impl Report {
             },
             checkpoints: checkpoints(acc),
             autovacuum: autovacuum(acc),
+            disconnects: disconnects(acc),
+            ddl: ddl(acc),
+            connection_hosts: connection_hosts(acc),
+            messages: messages(acc),
             kinds: kinds(acc),
             histograms: HistogramsReport {
                 statements: histogram::buckets(
@@ -722,7 +825,7 @@ fn errors(acc: &Accumulators) -> Vec<ErrorRow> {
         .totals
         .errors
         .iter()
-        .map(|((level, sqlstate), stat)| ErrorRow {
+        .map(|((level, sqlstate, _group), stat)| ErrorRow {
             level: level.clone(),
             sqlstate: sqlstate.clone(),
             count: stat.count,
@@ -913,6 +1016,11 @@ fn checkpoints(acc: &Accumulators) -> Vec<CheckpointRow> {
                     write_ms: quantiles(&stats.write),
                     sync_ms: quantiles(&stats.sync),
                     total_ms: quantiles(&stats.total),
+                    distance_kb: (stats.distances > 0).then(|| DistanceRow {
+                        mean_kb: count(stats.distance_kb) / count(stats.distances),
+                        max_kb: stats.distance_max_kb,
+                        estimate_max_kb: stats.estimate_max_kb,
+                    }),
                 })
         })
         .collect()
@@ -934,6 +1042,9 @@ fn autovacuum(acc: &Accumulators) -> Vec<TableRow> {
             analyzes: stats.analyzes,
             total_ms: ms(stats.total_us),
             max_ms: ms(stats.max_us),
+            tuples_removed: stats.tuples_removed,
+            pages_removed: stats.pages_removed,
+            index_scans: stats.index_scans,
         })
         .collect()
 }
@@ -952,9 +1063,137 @@ fn timeline(acc: &Accumulators) -> TimelineReport {
                 errors: bucket.errors,
                 connections: bucket.connections,
                 lock_waits: bucket.lock_waits,
+                checkpoints: bucket.checkpoints,
+                wal_kb: bucket.wal_kb,
+                aborts: bucket.aborts,
+                ddl: bucket.ddl,
             })
             .collect(),
     }
+}
+
+fn disconnects(acc: &Accumulators) -> DisconnectsReport {
+    let observed = &acc.totals.observed;
+    let mut reasons: Vec<ReasonRow> = observed
+        .disconnects
+        .iter()
+        .map(|(reason, count)| ReasonRow {
+            reason: reason.clone(),
+            count: *count,
+        })
+        .collect();
+    reasons.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+    let mut by_application: Vec<ReasonAppRow> = observed
+        .disconnect_apps
+        .iter()
+        .map(|((reason, application), count)| ReasonAppRow {
+            reason: reason.clone(),
+            application: application.clone(),
+            count: *count,
+        })
+        .collect();
+    by_application.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.reason.cmp(&b.reason))
+            .then_with(|| a.application.cmp(&b.application))
+    });
+    by_application.truncate(TOP_TABLES);
+    DisconnectsReport {
+        reasons,
+        by_application,
+    }
+}
+
+fn ddl(acc: &Accumulators) -> DdlReport {
+    let observed = &acc.totals.observed;
+    let mut tags: Vec<DdlRow> = observed
+        .ddl
+        .iter()
+        .map(|(tag, stat)| DdlRow {
+            tag: tag.clone(),
+            calls: stat.calls,
+            total_ms: ms(stat.total_us),
+        })
+        .collect();
+    tags.sort_by(|a, b| b.calls.cmp(&a.calls).then_with(|| a.tag.cmp(&b.tag)));
+    let mut temp_tables: Vec<NamedCount> = observed
+        .temp_tables
+        .iter()
+        .map(|(name, count)| NamedCount {
+            name: name.clone(),
+            count: *count,
+        })
+        .collect();
+    temp_tables.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.name.cmp(&b.name)));
+    temp_tables.truncate(TOP_TABLES);
+    DdlReport { tags, temp_tables }
+}
+
+/// Hosts shown in the connection series; the rest are summed as `(other)`.
+const SERIES_HOSTS: usize = 8;
+
+fn connection_hosts(acc: &Accumulators) -> HostSeries {
+    let width = acc.totals.timeline.bucket_secs;
+    let mut ranked: Vec<(&String, u64)> = acc
+        .totals
+        .observed
+        .hosts
+        .iter()
+        .map(|(host, buckets)| (host, buckets.values().sum()))
+        .collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let shown: Vec<&String> = ranked.iter().take(SERIES_HOSTS).map(|(h, _)| *h).collect();
+    let mut hosts: Vec<String> = shown.iter().map(|h| (*h).clone()).collect();
+    let has_other = ranked.len() > shown.len();
+    if has_other {
+        hosts.push("(other)".to_owned());
+    }
+    let mut by_bucket: BTreeMap<i64, Vec<u64>> = BTreeMap::new();
+    for (host, buckets) in &acc.totals.observed.hosts {
+        let column = shown
+            .iter()
+            .position(|h| *h == host)
+            .unwrap_or(hosts.len().saturating_sub(1));
+        for (start, n) in buckets {
+            by_bucket
+                .entry(*start)
+                .or_insert_with(|| vec![0; hosts.len()])[column] += n;
+        }
+    }
+    HostSeries {
+        hosts,
+        bucket_secs: width,
+        buckets: by_bucket
+            .into_iter()
+            .map(|(start, counts)| HostBucket {
+                start: Timestamp::from_second(start)
+                    .map_or_else(|_err| start.to_string(), |ts| ts.to_string()),
+                counts,
+            })
+            .collect(),
+    }
+}
+
+/// Message shapes listed.
+const TOP_MESSAGES: usize = 20;
+
+fn messages(acc: &Accumulators) -> Vec<MessageRow> {
+    let mut rows: Vec<MessageRow> = acc
+        .totals
+        .observed
+        .messages
+        .iter()
+        .map(|(shape, stat)| MessageRow {
+            shape: shape.clone(),
+            count: stat.count,
+            first_seen: stat.first_seen.to_string(),
+            example: stat.example.clone(),
+        })
+        .collect();
+    rows.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.shape.cmp(&b.shape)));
+    rows.truncate(TOP_MESSAGES);
+    rows
 }
 
 #[cfg(test)]
@@ -1088,7 +1327,7 @@ mod tests {
     #[test]
     fn sections_are_filled() {
         let report = build_with(SortBy::Total, 10);
-        assert_eq!(report.schema_version, 1);
+        assert_eq!(report.schema_version, 2);
         assert_eq!(report.errors.len(), 1);
         assert_eq!(report.errors[0].sqlstate.as_deref(), Some("42P01"));
         assert_eq!(report.errors[0].count, 1);
@@ -1113,7 +1352,7 @@ mod tests {
     fn json_is_versioned_and_typed() {
         let json = build_with(SortBy::Total, 10).to_json().unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert!(value["statements"][0]["fingerprint"].is_string());
         assert!(value["statements"][0]["total_ms"].is_number());
         assert!(value["statements"][0]["query_id"].is_null());

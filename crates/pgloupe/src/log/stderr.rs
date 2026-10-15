@@ -21,6 +21,9 @@ use super::{
 /// Entries held at once before the oldest is emitted.
 const DEFAULT_MAX_OPEN: usize = 10_000;
 
+/// The line Amazon RDS writes after an entry it cut short.
+const TRUNCATED: &str = "[Your log message was truncated]";
+
 /// Which field of a held entry a tab-indented continuation line extends.
 #[derive(Debug, Clone, Copy)]
 enum Field {
@@ -356,6 +359,12 @@ impl<R: BufRead> Decoder for StderrDecoder<R> {
                 self.continue_field(rest, &line);
                 continue;
             }
+            if line == TRUNCATED {
+                // Amazon RDS cuts a very long entry and says so on a line of its own; the rest
+                // of the entry (CONTEXT, STATEMENT) still follows.
+                self.stats.truncated += 1;
+                continue;
+            }
             let mut record = LogRecord::new(Timestamp::UNIX_EPOCH, Severity::Log, String::new());
             match self.prefix.parse_line(&line, &mut record, self.fallback) {
                 Err(reason) => self.skip_line(&reason, record.pid, Some(&line)),
@@ -389,6 +398,28 @@ mod tests {
 
     fn decode(text: &str) -> (Vec<LogRecord>, DecodeStats) {
         decode_with(SYNTH, text)
+    }
+
+    #[test]
+    fn the_rds_truncation_marker_is_counted_and_the_entry_keeps_its_context() {
+        let text = format!(
+            "{SESSION} LOG:  a very long message\n\
+             [Your log message was truncated]\n\
+             {SESSION} CONTEXT:  PL/pgSQL function f() line 3\n\
+             {SESSION} STATEMENT:  CREATE TEMPORARY TABLE t AS SELECT 1\n\
+             2026-10-14 10:20:13.000 UTC [44] LOG:  checkpoint starting\n"
+        );
+        let (records, stats) = decode(&text);
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0].context.as_deref(),
+            Some("PL/pgSQL function f() line 3")
+        );
+        assert_eq!(
+            records[0].statement.as_deref(),
+            Some("CREATE TEMPORARY TABLE t AS SELECT 1")
+        );
+        assert_eq!((stats.truncated, stats.skipped), (1, 0));
     }
 
     #[test]

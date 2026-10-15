@@ -97,7 +97,7 @@ pub struct Finding {
 }
 
 /// Version of the JSON layout; bump when a field changes meaning.
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// The whole report: what the inputs were, what they say, and what the reader should know.
 #[derive(Debug, Clone, Serialize)]
@@ -531,7 +531,7 @@ mod tests {
             &options(SortBy::Total, 20),
         );
         let mut value: Value = serde_json::from_str(&report.to_json().unwrap()).unwrap();
-        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["schema_version"], 2);
         assert_eq!(value["kind"], "pgloupe.report");
         // Machine- and version-dependent values.
         value["generator"] = Value::String("pgloupe".to_owned());

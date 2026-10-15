@@ -68,7 +68,7 @@ fn logs_only_report_in_every_format() -> io::Result<()> {
     let log = logs();
     let report = json(&[s(&log)])?;
     assert_eq!(report["kind"], "pgloupe.report");
-    assert_eq!(report["schema_version"], 1);
+    assert_eq!(report["schema_version"], 2);
     assert!(links(&report).iter().all(|l| *l == "log"));
     assert!(report["inputs"]["stats"].is_null());
     let text = pgloupe(&["report", s(&log)])?;
