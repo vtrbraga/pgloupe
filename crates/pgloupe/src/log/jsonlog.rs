@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::{
     DecodeError, DecodeStats, Decoder,
+    line::{Line, MAX_LINE_BYTES, read_line_capped},
     record::{LogRecord, Severity, host, query_id, sqlstate, text},
     time::parse_log_time,
 };
@@ -67,9 +68,15 @@ impl<R: BufRead> JsonDecoder<R> {
 impl<R: BufRead> Decoder for JsonDecoder<R> {
     fn next_record(&mut self) -> Result<Option<LogRecord>, DecodeError> {
         loop {
-            self.buf.clear();
-            if self.reader.read_until(b'\n', &mut self.buf)? == 0 {
-                return Ok(None);
+            match read_line_capped(&mut self.reader, &mut self.buf, MAX_LINE_BYTES)? {
+                Line::End => return Ok(None),
+                Line::Complete => {}
+                Line::TooLong => {
+                    self.line_no += 1;
+                    self.stats.lines += 1;
+                    self.stats.skip(self.line_no, "line longer than 16 MiB");
+                    continue;
+                }
             }
             self.line_no += 1;
             self.stats.lines += 1;
@@ -159,6 +166,18 @@ mod tests {
 
     fn at(text: &str) -> jiff::Timestamp {
         text.parse().unwrap()
+    }
+
+    #[test]
+    fn a_line_longer_than_the_limit_is_skipped_and_the_next_one_reads() {
+        let giant = "x".repeat(MAX_LINE_BYTES + 5);
+        let ok = r#"{"timestamp":"2026-10-14 10:20:09.289 UTC","error_severity":"LOG","message":"fine"}"#;
+        let text = format!("{{\"message\":\"{giant}\"}}\n{ok}\n");
+        let mut decoder = JsonDecoder::new(text.as_bytes(), None);
+        let record = decoder.next_record().unwrap().unwrap();
+        assert_eq!(record.message, "fine");
+        assert!(decoder.next_record().unwrap().is_none());
+        assert_eq!(decoder.stats().skipped, 1);
     }
 
     #[test]

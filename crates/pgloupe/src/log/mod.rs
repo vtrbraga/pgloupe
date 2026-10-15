@@ -8,6 +8,7 @@ use thiserror::Error;
 pub mod csvlog;
 pub mod infer;
 pub mod jsonlog;
+pub mod line;
 pub mod locale;
 pub mod pgbouncer;
 pub mod prefix;

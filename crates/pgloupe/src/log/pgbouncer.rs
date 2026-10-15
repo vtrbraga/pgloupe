@@ -7,7 +7,11 @@ use std::io::BufRead;
 
 use jiff::{Timestamp, tz::Offset};
 
-use super::{DecodeError, DecodeStats, Decoder, LogRecord, Severity, time::parse_log_time};
+use super::{
+    DecodeError, DecodeStats, Decoder, LogRecord, Severity,
+    line::{Line, MAX_LINE_BYTES, read_line_capped},
+    time::parse_log_time,
+};
 
 /// Reads a pgBouncer log, one line per record.
 #[derive(Debug)]
@@ -92,24 +96,28 @@ fn parse_line(line: &str, fallback: Option<Offset>) -> Option<LogRecord> {
 
 impl<R: BufRead> Decoder for PgbouncerDecoder<R> {
     fn next_record(&mut self) -> Result<Option<LogRecord>, DecodeError> {
-        let mut buf = String::new();
+        let mut buf = Vec::new();
         loop {
-            buf.clear();
-            match self.reader.read_line(&mut buf) {
-                Ok(0) => return Ok(None),
-                Ok(_) => {}
-                // Invalid UTF-8 is a skipped line, not the end of the run.
-                Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            match read_line_capped(&mut self.reader, &mut buf, MAX_LINE_BYTES)
+                .map_err(DecodeError::Io)?
+            {
+                Line::End => return Ok(None),
+                Line::Complete => {}
+                Line::TooLong => {
                     self.line_no += 1;
                     self.stats.lines += 1;
-                    self.stats.skip(self.line_no, "line is not valid UTF-8");
+                    self.stats.skip(self.line_no, "line longer than 16 MiB");
                     continue;
                 }
-                Err(error) => return Err(DecodeError::Io(error)),
             }
             self.line_no += 1;
             self.stats.lines += 1;
-            let line = buf.trim_end_matches(['\n', '\r']);
+            // Invalid UTF-8 is a skipped line, not the end of the run.
+            let Ok(text) = std::str::from_utf8(&buf) else {
+                self.stats.skip(self.line_no, "line is not valid UTF-8");
+                continue;
+            };
+            let line = text.trim_end_matches(['\n', '\r']);
             if line.trim().is_empty() {
                 continue;
             }

@@ -14,6 +14,7 @@ use jiff::{Timestamp, tz::Offset};
 
 use super::{
     DecodeError, DecodeStats, Decoder,
+    line::{Line, MAX_LINE_BYTES, read_line_capped},
     prefix::{Label, Prefix},
     record::{LogRecord, Severity},
 };
@@ -168,9 +169,17 @@ impl<R: BufRead> StderrDecoder<R> {
     /// The next non-blank line, or `None` at the end of input. Invalid UTF-8 is skipped.
     fn read_line(&mut self) -> Result<Option<String>, DecodeError> {
         loop {
-            self.buf.clear();
-            if self.reader.read_until(b'\n', &mut self.buf)? == 0 {
-                return Ok(None);
+            match read_line_capped(&mut self.reader, &mut self.buf, MAX_LINE_BYTES)? {
+                Line::End => return Ok(None),
+                Line::Complete => {}
+                Line::TooLong => {
+                    self.line_no += 1;
+                    self.stats.lines += 1;
+                    self.stats
+                        .skip_with(self.line_no, "line longer than 16 MiB", None);
+                    self.continuation = None;
+                    continue;
+                }
             }
             self.line_no += 1;
             self.stats.lines += 1;
@@ -233,8 +242,14 @@ impl<R: BufRead> StderrDecoder<R> {
             }
         };
         if let Some(target) = target {
-            target.push('\n');
-            target.push_str(extra);
+            if target.len() + extra.len() < MAX_LINE_BYTES {
+                target.push('\n');
+                target.push_str(extra);
+            } else {
+                // One entry cannot grow without bound however many lines it spans.
+                self.stats
+                    .skip_with(self.line_no, "entry longer than 16 MiB", None);
+            }
         }
     }
 
@@ -421,6 +436,41 @@ mod tests {
             Some("CREATE TEMPORARY TABLE t AS SELECT 1")
         );
         assert_eq!((stats.truncated, stats.skipped), (1, 0));
+    }
+
+    #[test]
+    fn a_line_longer_than_the_limit_is_skipped_and_the_log_goes_on() {
+        let giant = "x".repeat(MAX_LINE_BYTES + 10);
+        let text = format!(
+            "{SESSION} LOG:  before\n{SESSION} LOG:  statement: {giant}\n{SESSION} LOG:  after\n"
+        );
+        let (records, stats) = decode(&text);
+        let messages: Vec<&str> = records.iter().map(|r| r.message.as_str()).collect();
+        assert_eq!(messages, ["before", "after"]);
+        assert_eq!(stats.skipped, 1);
+        assert_eq!(stats.first_skipped.as_ref().unwrap().line, 2);
+    }
+
+    #[test]
+    fn an_entry_cannot_grow_past_the_limit_by_continuation_lines() {
+        let chunk = "y".repeat(1024 * 1024);
+        let mut text = format!("{SESSION} LOG:  start\n");
+        for _ in 0..20 {
+            text.push('\t');
+            text.push_str(&chunk);
+            text.push('\n');
+        }
+        text.push_str(SESSION);
+        text.push_str(" LOG:  after\n");
+        let (records, stats) = decode(&text);
+        assert_eq!(records.len(), 2);
+        assert!(
+            records[0].message.len() <= MAX_LINE_BYTES,
+            "{}",
+            records[0].message.len()
+        );
+        assert!(stats.skipped >= 1);
+        assert_eq!(records[1].message, "after");
     }
 
     #[test]
