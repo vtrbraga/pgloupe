@@ -534,11 +534,11 @@
       var st = row.stats;
       body.appendChild(panel('What pg_stat_statements saw', facts([
         ['Calls', L.fmtInt(st.calls)], ['Total', L.fmtMs(st.total_exec_ms)], ['Mean', L.fmtMs(st.mean_ms)], ['Share', L.fmtPct(st.share_pct)],
-        ['Rows', L.fmtInt(st.rows)], ['Plans', L.fmtInt(st.plans)], ['Shared hit', L.fmtInt(st.shared_blks_hit)], ['Shared read', L.fmtInt(st.shared_blks_read)],
-        ['Temp read', L.fmtInt(st.temp_blks_read)], ['Temp written', L.fmtInt(st.temp_blks_written)], ['WAL', L.fmtBytes(st.wal_bytes)], ['Nested calls', L.fmtInt(st.nested_calls)],
+        ['Rows', L.fmtInt(st.rows)], st.plans ? ['Plans', L.fmtInt(st.plans)] : null, ['Shared hit', L.fmtInt(st.shared_blks_hit)], ['Shared read', L.fmtInt(st.shared_blks_read)],
+        ['Temp read', L.fmtInt(st.temp_blks_read)], ['Temp written', L.fmtInt(st.temp_blks_written)], ['WAL', L.fmtBytes(st.wal_bytes)], st.nested_calls ? ['Nested calls', L.fmtInt(st.nested_calls)] : null,
         ['Entries', L.fmtInt(st.entries)], ['Query ids', st.queryids.join(', ') + (st.queryid_count > st.queryids.length ? ' (+' + (st.queryid_count - st.queryids.length) + ')' : '')],
         ['Flags', visibleFlags(row).length ? visibleFlags(row).join(', ') : 'none']
-      ])));
+      ].filter(Boolean))));
     }
     if (row.coverage !== null && row.coverage !== undefined) {
       body.appendChild(panel('Coverage', h('p', { 'class': 'muted', text: 'The log recorded ' + L.fmtCoverage(row.coverage) + ' of the calls pg_stat_statements counted' + (row.query_id_matches === true ? '; the logged query_id matches.' : row.query_id_matches === false ? '; the logged query_id does not match.' : '.') })));
