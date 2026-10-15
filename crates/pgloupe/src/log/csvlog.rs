@@ -94,7 +94,10 @@ impl<R: BufRead> Decoder for CsvDecoder<R> {
                     let line = err.position().map_or(0, csv::Position::line);
                     let reason = err.to_string();
                     if let csv::ErrorKind::Io(io) = err.into_kind() {
-                        if io.get_ref().is_some_and(|e| e.is::<RecordTooLong>()) {
+                        if io
+                            .get_ref()
+                            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<RecordTooLong>)
+                        {
                             // The rest of the file is inside the open quote: count it and stop.
                             self.stats.lines += 1;
                             self.stats.skip(line, reason);
