@@ -39,11 +39,12 @@
       { id: 'locks', label: 'Locks & temp files', show: !!logs },
       { id: 'sessions', label: 'Sessions', show: !!logs },
       { id: 'maintenance', label: 'Maintenance', show: !!logs },
-      { id: 'breakdowns', label: 'Breakdowns', show: !!logs },
+      { id: 'breakdowns', label: 'Breakdowns', show: !!logs || !!(stats && stats.by_database && stats.by_database.length) },
       { id: 'slowest', label: 'Slowest', show: !!(logs && logs.slowest && logs.slowest.rows.length) },
       { id: 'pooler', label: 'Pooler', show: !!(logs && logs.pooler) },
       { id: 'comparison', label: 'Comparison', show: !!D.comparison },
       { id: 'advice', label: 'Settings', show: advice.length > 0 },
+      { id: 'sources', label: 'Sources', show: true },
       { id: 'findings', label: 'Data caveats', show: findings.length > 0 }
     ].filter(function (s) { return s.show; });
     if (!sections.some(function (s) { return s.id === state.s; })) { state.s = 'overview'; }
@@ -121,6 +122,8 @@
       spark || null
     ]);
   }
+  /** A sparkline only when the series moves: a flat 0-or-1 line says nothing. */
+  function sparkIf(key, color) { var v = series(key); return Math.max.apply(null, v.concat([0])) > 2 ? C.sparkline(v, color) : null; }
   function series(key) { return display.map(function (b) { return b[key] || 0; }); }
   function emptyNote(message) { return h('div', { 'class': 'empty', text: message }); }
   function openStatement(fp) { setState({ fp: fp }); }
@@ -169,11 +172,11 @@
     ]);
     var meta = h('div', { 'class': 'meta' }, [D.generator, h('br'), 'schema ' + D.schema_version, h('br'), 'keys: / search, j k, 1-' + sections.length]);
     var rail = h('aside', { 'class': 'rail' }, [logo, nav, h('div', { 'class': 'spacer' }), meta]);
-    var subs = [];
-    subs.push(h('span', { text: 'times in ' + (D.display_tz || 'UTC') }));
-    if (D.windows && D.windows.logs) { subs.push(h('span', { text: 'Logs ' + L.fmtTime(D.windows.logs.from, true) + ' → ' + L.fmtTime(D.windows.logs.to, true) })); }
-    if (D.windows && D.windows.stats) { subs.push(h('span', { text: 'pg_stat_statements ' + L.fmtTime(D.windows.stats.from, true) + ' → ' + L.fmtTime(D.windows.stats.to, true) })); }
-    if (D.windows && D.windows.overlap_pct !== null && D.windows.overlap_pct !== undefined) { subs.push(h('span', { text: 'overlap ' + Math.round(D.windows.overlap_pct) + '%' })); }
+    var parts = ['times in ' + (D.display_tz || 'UTC')];
+    if (D.windows && D.windows.logs) { parts.push('logs ' + L.fmtTime(D.windows.logs.from, true) + ' \u2192 ' + L.fmtTime(D.windows.logs.to, true)); }
+    if (D.windows && D.windows.stats) { parts.push('statistics ' + L.fmtTime(D.windows.stats.from, true) + ' \u2192 ' + L.fmtTime(D.windows.stats.to, true)); }
+    if (D.windows && D.windows.overlap_pct !== null && D.windows.overlap_pct !== undefined) { parts.push('overlap ' + Math.round(D.windows.overlap_pct) + '%'); }
+    var subs = [h('span', { text: parts.join(' \u00b7 ') })];
     var filtered = logs && logs.diagnostics ? logs.diagnostics.filtered : 0;
     if (filtered) { subs.push(badge('filtered: ' + L.fmtInt(filtered) + ' records dropped', 'warn')); }
     var themeName = theme() || 'auto';
@@ -217,7 +220,7 @@
     var out = [];
     if (logs) {
       var errors = sum('errors');
-      out.push(kpi('Errors', L.fmtCompact(errors), scope, C.sparkline(series('errors'), 'var(--c-errors)'), errors > 0 ? 'bad' : ''));
+      out.push(kpi('Errors', L.fmtCompact(errors), scope, sparkIf('errors', 'var(--c-errors)'), errors > 0 ? 'bad' : ''));
       var cancelled = logs.cancelled ? logs.cancelled.total : 0;
       out.push(kpi('Cancelled', L.fmtInt(cancelled), cancelled ? reasonsText(logs.cancelled) : 'none', null, cancelled ? 'warn' : ''));
     } else {
@@ -225,7 +228,7 @@
       out.push(offKpi('Cancelled', 'no log was given'));
     }
     if (logs && !(notLogged('lock waits') && !logs.locks.waits)) {
-      out.push(kpi('Lock waits', L.fmtCompact(sum('lock_waits')), 'total wait ' + L.fmtMs(logs.locks.total_wait_ms) + ', ' + logs.locks.deadlocks + ' deadlocks', C.sparkline(series('lock_waits'), 'var(--c-locks)'), logs.locks.deadlocks ? 'warn' : ''));
+      out.push(kpi('Lock waits', L.fmtCompact(sum('lock_waits')), 'total wait ' + L.fmtMs(logs.locks.total_wait_ms) + ', ' + logs.locks.deadlocks + ' deadlocks', sparkIf('lock_waits', 'var(--c-locks)'), logs.locks.deadlocks ? 'warn' : ''));
     } else if (db) {
       out.push(kpi('Deadlocks', L.fmtInt(db.deadlocks), 'from pg_stat_database; lock waits are not logged', null, db.deadlocks ? 'warn' : ''));
     } else {
@@ -250,18 +253,28 @@
   }
   function loadKpis() {
     var db = D.database;
-    if (!db) { return null; }
-    var t = db.total;
-    var out = [
-      kpi('Running statements', t.avg_active.toFixed(1), 'average sessions over ' + L.fmtInt(db.window_secs) + ' s'),
-      kpi('Idle in transaction', t.avg_idle_in_transaction.toFixed(1), 'average sessions', null, t.avg_idle_in_transaction >= 1 ? 'warn' : ''),
-      kpi('Connected', t.avg_sessions.toFixed(1), 'average sessions, ' + L.fmtInt(t.backends_now) + ' at the end'),
-      kpi('Cache hit', pctText(t.hit_pct), L.fmtInt(t.blocks_read) + ' blocks read')
-    ];
+    var totals = stats && stats.totals;
+    if (!db && !totals) { return null; }
+    var out = [];
+    if (db) {
+      var t = db.total;
+      out.push(kpi('Running statements', t.avg_active.toFixed(1), 'average sessions over ' + L.fmtInt(db.window_secs) + ' s'));
+      out.push(kpi('Idle in transaction', t.avg_idle_in_transaction.toFixed(1), 'average sessions', null, t.avg_idle_in_transaction >= 1 ? 'warn' : ''));
+      out.push(kpi('Connected', t.avg_sessions.toFixed(1), 'average sessions, ' + L.fmtInt(t.backends_now) + ' at the end'));
+      out.push(kpi('Cache hit', pctText(t.hit_pct), L.fmtInt(t.blocks_read) + ' blocks read'));
+    } else if (totals) {
+      out.push(kpi('Cache hit', pctText(totals.hit_pct), L.fmtInt(totals.blocks_read) + ' blocks read'));
+    }
+    if (totals) {
+      out.push(totals.io_pct > 0
+        ? kpi('File I/O', L.fmtPct(totals.io_pct, 0), L.fmtMs(totals.io_ms) + ' of ' + L.fmtMs(totals.exec_ms) + ' executing', null, totals.io_pct >= 30 ? 'warn' : '')
+        : kpi('File I/O', 'not tracked', 'track_io_timing is off, or nothing waited on a file', null, 'off'));
+      if (totals.plan_pct) { out.push(kpi('Planning', L.fmtPct(totals.plan_pct, 0), L.fmtMs(totals.plan_ms) + ' of execution time')); }
+    }
     if (logs && logs.latency && logs.latency.count) {
       out.push(kpi('Statement p95', L.fmtMs(logs.latency.p95), 'median ' + L.fmtMs(logs.latency.p50) + ', slowest ' + L.fmtMs(logs.latency.max)));
     }
-    if (db.statements_coverage_pct !== null && db.statements_coverage_pct !== undefined) {
+    if (db && db.statements_coverage_pct !== null && db.statements_coverage_pct !== undefined) {
       var c = db.statements_coverage_pct;
       out.push(kpi('pg_stat_statements covers', c < 1 ? 'under 1%' : Math.round(c) + '%', 'of the time the server spent running statements', null, c < 50 ? 'warn' : ''));
     }
@@ -346,15 +359,30 @@
     var kinds = kindsTable();
     if (top && kinds) { parts.push(h('div', { 'class': 'grid cols-2-1' }, [top, kinds])); } else if (top || kinds) { parts.push(top || kinds); }
     if (logs && logs.histograms && logs.histograms.statements.some(function (b) { return b.count; })) {
-      parts.push(histogramPanel('Statement durations', logs.histograms.statements, 'var(--c-statements)', logs.overview.records));
+      parts.push(histogramPanel('Statement durations', logs.histograms.statements, 'var(--c-statements)', logs.overview.records,
+        logs.latency && logs.latency.count ? 'median ' + L.fmtMs(logs.latency.p50) + ' \u00b7 p95 ' + L.fmtMs(logs.latency.p95) + ' \u00b7 slowest ' + L.fmtMs(logs.latency.max) + ' \u00b7 ' + L.fmtInt(logs.latency.count) + ' statements timed' : null));
     } else if (logs) {
       parts.push(panel('Statement durations', emptyNote('No statement durations in this log: log_min_duration_statement is off, or nothing was slow enough.')));
     }
     if (D.database) { parts.push(databasePanel(D.database)); }
-    if (stats) { parts.push(statsPanel()); }
-    if (logs) { parts.push(h('details', { 'class': 'panel fold' }, [h('summary', { text: 'About the log that was read' }), diagnosticsPanel()])); }
     if (!logs && !stats) { parts.push(emptyNote('Nothing to show.')); }
     return parts;
+  }
+  /** What was read and how: the files, the statistics window, the settings behind the advice. */
+  function viewSources() {
+    var out = [];
+    if (logs) {
+      out.push(diagnosticsPanel());
+    } else {
+      out.push(panel('Logs', emptyNote('No log was given.')));
+    }
+    if (stats) { out.push(statsPanel()); } else { out.push(panel('pg_stat_statements', emptyNote('No statistics snapshots were given.'))); }
+    if (D.database) {
+      out.push(panel('pg_stat_database', h('dl', { 'class': 'facts' }, [['From', L.fmtTime(D.database.before_at, true)], ['To', L.fmtTime(D.database.after_at, true)], ['Window', L.fmtDuration(D.database.window_secs)], ['Partial', D.database.total.partial ? 'yes (a reset, or a new database)' : 'no']].map(function (f) { return h('div', null, [h('dt', { text: f[0] }), h('dd', { text: String(f[1]) })]); }))));
+    } else if (stats) {
+      out.push(panel('pg_stat_database', emptyNote('Not given: snap writes pg_stat_database_<time>.csv beside each snapshot, and report finds it there (or use --before-db and --after-db).')));
+    }
+    return out;
   }
   var SECTION_FOR = { errors: 'errors', locks: 'locks', statements: 'statements' };
   function actionNode(a, index) {
@@ -399,6 +427,9 @@
       ['Evictions', stats.evictions === null || stats.evictions === undefined ? 'unknown' : L.fmtInt(stats.evictions) + ' rounds' + (stats.evicted_estimate ? ' (about ' + L.fmtInt(stats.evicted_estimate) + ' entries)' : '')],
       ['Entries', L.fmtInt(c.entries)], ['New', L.fmtInt(c['new'])], ['Gone', L.fmtInt(c.gone)], ['Restarted', L.fmtInt(c.restarted)]
     ];
+    var tot = stats.totals || {};
+    if (tot.plan_pct) { facts.push(['Planning time', L.fmtMs(tot.plan_ms) + ' (' + L.fmtPct(tot.plan_pct, 0) + ' of execution)']); }
+    if (tot.nested_entries) { facts.push(['Statements inside functions', L.fmtInt(tot.nested_entries) + ' entries (pg_stat_statements.track = all)']); }
     return panel('pg_stat_statements window', h('dl', { 'class': 'facts' }, facts.map(function (f) { return h('div', null, [h('dt', { text: f[0] }), h('dd', { text: String(f[1]) })]); })));
   }
   function databasePanel(db) {
@@ -410,6 +441,16 @@
     }));
     var more = db.more_databases ? h('p', { 'class': 'muted', text: db.more_databases + ' more databases are not listed.' }) : null;
     return panel('Databases (pg_stat_database)', h('div', null, [table, more].filter(Boolean)));
+  }
+  var redraws = [];
+  /** The activity chart restricted to some series, for the views of one topic. */
+  function chartPanel(title, keys, note) {
+    var host = h('div', { 'class': 'chart-host' });
+    var chosen = SERIES.filter(function (s) { return keys.indexOf(s.key) !== -1; }).map(function (s) { return Object.assign({}, s, { visible: true }); });
+    var draw = function () { C.timeline(host, { buckets: display, series: chosen, range: null }); };
+    redraws.push(draw);
+    setTimeout(draw, 0);
+    return panel(title, h('div', null, [host, h('p', { 'class': 'muted range-note', text: note || ('Each bar covers ' + L.fmtDuration(barSeconds()) + '.') })]));
   }
   /** Seconds one bar of the activity chart covers: the report's bucket times how many were merged. */
   function barSeconds() { return ((logs && logs.timeline.bucket_secs) || 60) * (display.length ? display[0].span : 1); }
@@ -439,7 +480,7 @@
     }
     var wrap = panel('Activity', h('div', null, [legend, host, note]));
     setTimeout(draw, 0);
-    window.__redraw = draw;
+    redraws.push(draw);
     return wrap;
   }
   function kindsPanel() {
@@ -452,10 +493,10 @@
     }));
     return panel('Query types', h('div', { 'class': 'donut-wrap' }, [C.donut(items, 'statements'), legend]), null);
   }
-  function histogramPanel(title, buckets, color) {
-    var total = buckets.reduce(function (s, b) { return s + b.count; }, 0);
-    if (!total) { return panel(title, emptyNote('Nothing recorded.')); }
-    return panel(title, h('div', null, [C.histogram(buckets, color), h('p', { 'class': 'muted session-note', text: 'Bar heights use a square-root scale so small ranges stay visible; counts are labelled and approximate near range edges.' })]));
+  function histogramPanel(title, buckets, color, total, note) {
+    var count = buckets.reduce(function (s, b) { return s + b.count; }, 0);
+    if (!count) { return panel(title, emptyNote('Nothing recorded.')); }
+    return panel(title, h('div', null, [C.histogram(buckets, color), note ? h('p', { 'class': 'ladder', text: note }) : null, h('p', { 'class': 'muted session-note', text: 'Bar heights use a square-root scale so small ranges stay visible; counts are labelled and approximate near range edges.' })]));
   }
   function findingNode(f) {
     return h('div', { 'class': 'finding ' + f.severity }, [
@@ -492,19 +533,20 @@
     { key: 'reads', label: 'Blocks read', title: 'Shared blocks read from disk or the OS cache', num: true, cell: function (r) { var v = L.column(r, 'reads'); return v === null ? '—' : L.fmtCompact(v); } },
     { key: 'rows_call', label: 'Rows/call', num: true, cell: function (r) { return fmtRatio(L.column(r, 'rows_call')); } },
     { key: 'blocks_row', label: 'Blocks read/row', title: 'High means scanning a lot to return little', num: true, cell: function (r) { return fmtRatio(L.column(r, 'blocks_row')); } },
+    { key: 'variability', label: 'Spread', title: 'Standard deviation over the mean run time, since the statistics entry was created: high means uneven', num: true, cell: function (r) { var v = L.column(r, 'variability'); return v === null || v === undefined ? '\u2014' : v.toFixed(1) + '\u00d7'; } },
     { key: 'wal_call', label: 'WAL/call', num: true, cell: function (r) { var v = L.column(r, 'wal_call'); return v === null || v === undefined ? '—' : L.fmtBytes(v); } }
   ];
   function fmtRatio(v) { return v === null || v === undefined ? '—' : (v >= 100 ? L.fmtCompact(Math.round(v)) : v.toFixed(v >= 10 ? 1 : 2)); }
   /** What the "Top by" selector offers, and the column each choice sorts by. */
   var TOP_BY = [
     ['total', 'Total time'], ['calls', 'Calls'], ['mean', 'Mean time'], ['p95', 'p95 (log)'], ['max', 'Slowest (log)'],
-    ['rows_call', 'Rows per call'], ['reads', 'Blocks read'], ['blocks_row', 'Blocks read per row'], ['wal_call', 'WAL per call'], ['io_ms', 'I/O time']
+    ['rows_call', 'Rows per call'], ['reads', 'Blocks read'], ['blocks_row', 'Blocks read per row'], ['wal_call', 'WAL per call'], ['io_ms', 'I/O time'], ['variability', 'Uneven run times']
   ];
   var hiddenCols = (function () {
     // What a reader of this report has no use for: log columns without a log, statistics
     // columns without statistics, and the detail columns until asked for.
-    var fallback = ['max', 'errors', 'mean', 'stats_calls', 'reads', 'rows_call', 'blocks_row', 'wal_call'];
-    if (!logs) { fallback = ['log_calls', 'coverage', 'p95', 'max', 'errors', 'reads', 'rows_call', 'blocks_row', 'wal_call']; }
+    var fallback = ['max', 'errors', 'mean', 'stats_calls', 'reads', 'rows_call', 'blocks_row', 'wal_call', 'variability'];
+    if (!logs) { fallback = ['log_calls', 'coverage', 'p95', 'max', 'errors', 'reads', 'rows_call', 'blocks_row', 'wal_call', 'variability']; }
     if (!stats) { fallback = fallback.concat(['hit', 'io', 'stats_calls']); }
     try {
       var saved = JSON.parse(store('pgloupe.cols.v2') || 'null');
@@ -579,7 +621,7 @@
             content = h('span', null, [h('span', { 'class': 'bar', style: { width: (value / maxTotal * 100).toFixed(1) + '%' } }), h('span', { text: content })]);
             tr.appendChild(h('td', { 'class': 'num bar-cell', 'data-label': c.label }, content));
           } else {
-            tr.appendChild(h('td', { 'class': (c.num ? 'num' : '') + (c.key === 'statement' ? ' stmt-cell' : ''), 'data-label': c.label }, content));
+            tr.appendChild(h('td', { 'class': (c.num ? 'num' : '') + (c.key === 'statement' ? ' stmt-cell' : '') + (content === '\u2014' ? ' nil' : ''), 'data-label': c.label }, content));
           }
         });
         tbody.appendChild(tr);
@@ -707,6 +749,8 @@
         ['Calls', L.fmtInt(st.calls)], ['Total', L.fmtMs(st.total_exec_ms)], ['Mean', L.fmtMs(st.mean_ms)], ['Share', L.fmtPct(st.share_pct)],
         ['Rows', L.fmtInt(st.rows)], st.plans ? ['Plans', L.fmtInt(st.plans)] : null, ['Shared hit', L.fmtInt(st.shared_blks_hit)], ['Shared read', L.fmtInt(st.shared_blks_read)],
         ['Temp read', L.fmtInt(st.temp_blks_read)], ['Temp written', L.fmtInt(st.temp_blks_written)], ['WAL', L.fmtBytes(st.wal_bytes)], st.nested_calls ? ['Nested calls', L.fmtInt(st.nested_calls)] : null,
+        st.max_ms !== null && st.max_ms !== undefined ? ['Slowest run (since reset)', L.fmtMs(st.max_ms)] : null,
+        st.variability !== null && st.variability !== undefined ? ['Spread (std dev / mean)', st.variability.toFixed(1) + '\u00d7'] : null,
         ['Entries', L.fmtInt(st.entries)], ['Query ids', st.queryids.join(', ') + (st.queryid_count > st.queryids.length ? ' (+' + (st.queryid_count - st.queryids.length) + ')' : '')],
         ['Flags', visibleFlags(row).length ? visibleFlags(row).join(', ') : 'none']
       ].filter(Boolean))));
@@ -781,9 +825,8 @@
       kpi('Lock waits', L.fmtInt(l.waits), l.acquired + ' completed after waiting'), kpi('Total wait', L.fmtMs(l.total_wait_ms), 'longest ' + L.fmtMs(l.max_wait_ms)),
       kpi('Deadlocks', L.fmtInt(l.deadlocks), '', null, l.deadlocks ? 'bad' : ''), kpi('Temp files', L.fmtInt(t.files), L.fmtBytes(t.bytes) + ' total'), kpi('Largest temp file', L.fmtBytes(t.max_bytes), '')
     ])];
-    var host = h('div', { 'class': 'chart-host' });
-    out.push(panel('Lock waits over time', host));
-    setTimeout(function () { C.timeline(host, { buckets: display, series: [{ key: 'lock_waits', label: 'Lock waits', color: 'var(--c-locks)' }], range: null }); }, 0);
+    if (display.some(function (b) { return b.lock_waits > 0; })) { out.push(chartPanel('Lock waits over time', ['lock_waits'])); }
+    else if (notLogged('lock waits')) { out.push(panel('Lock waits over time', emptyNote('Not logged: log_lock_waits is off, or no lock wait lasted longer than deadlock_timeout.'))); }
     var waiters = rows.filter(function (r) { return r.log && r.log.lock_waits > 0; }).sort(function (a, b) { return b.log.lock_wait_ms - a.log.lock_wait_ms; }).slice(0, 15);
     if (waiters.length) {
       out.push(h('h2', { text: 'Statements that waited for locks' }));
@@ -812,16 +855,22 @@
   }
   function viewSessions() {
     var c = logs.connections, q = c.session_ms;
-    var host = h('div', { 'class': 'chart-host' });
-    setTimeout(function () { C.timeline(host, { buckets: display, series: [{ key: 'connections', label: 'Connections', color: 'var(--c-connections)' }], range: null }); }, 0);
-    return [
-      h('div', { 'class': 'grid kpis' }, [
-        kpi('Connections', L.fmtInt(c.authorized), c.received === c.authorized && c.authenticated === c.authorized ? 'received, authenticated and authorized' : 'received ' + L.fmtInt(c.received) + ' \u00b7 authenticated ' + L.fmtInt(c.authenticated)),
-        kpi('Disconnections', L.fmtInt(c.disconnections), ''), kpi('Median session', L.fmtMs(q.p50), q.count ? 'p95 ' + L.fmtMs(q.p95) + ', longest ' + L.fmtMs(q.max) : 'no sessions ended')
-      ]),
-      panel('Connections over time', host),
-      histogramPanel('Session durations', logs.histograms.sessions, 'var(--c-connections)')
-    ].concat(hostPanel(), abruptPanel());
+    var logged = !notLogged('connections') || c.received || c.disconnections;
+    var kpis = logged ? [
+      kpi('Connections', L.fmtInt(c.authorized), c.received === c.authorized && c.authenticated === c.authorized ? 'received, authenticated and authorized' : 'received ' + L.fmtInt(c.received) + ' \u00b7 authenticated ' + L.fmtInt(c.authenticated)),
+      kpi('Disconnections', L.fmtInt(c.disconnections), ''),
+      kpi('Median session', L.fmtMs(q.p50), q.count ? 'p95 ' + L.fmtMs(q.p95) + ', longest ' + L.fmtMs(q.max) : 'no sessions ended')
+    ] : [offKpi('Connections', 'log_connections and log_disconnections are off')];
+    var db = D.database && D.database.total;
+    if (db) {
+      kpis.push(kpi('Sessions started', L.fmtInt(db.sessions), 'from pg_stat_database'));
+      kpis.push(kpi('Abandoned', pctText(db.abandoned_pct), L.fmtInt(db.sessions_abandoned) + ' ended without a clean goodbye', null, db.abandoned_pct >= 20 && db.sessions_abandoned >= 50 ? 'warn' : ''));
+      kpis.push(kpi('Killed or fatal', L.fmtInt(db.sessions_killed + db.sessions_fatal), L.fmtInt(db.sessions_killed) + ' killed, ' + L.fmtInt(db.sessions_fatal) + ' fatal'));
+    }
+    var out = [h('div', { 'class': 'grid kpis' }, kpis)];
+    if (display.some(function (b) { return b.connections > 0 || b.aborts > 0; })) { out.push(chartPanel('Sessions over time', ['connections', 'aborts'])); }
+    if (logged && q.count) { out.push(histogramPanel('Session durations', logs.histograms.sessions, 'var(--c-connections)')); }
+    return out.concat(hostPanel(), abruptPanel());
   }
   function hostPanel() {
     var series = logs.connection_hosts;
@@ -859,14 +908,16 @@
   }
   function viewMaintenance() {
     var out = [];
-    out.push(logs.checkpoints.length ? simpleTable(
-      [{ label: 'Kind' }, { label: 'Started', num: true }, { label: 'Completed', num: true }, { label: 'Reasons' }, { label: 'Buffers', num: true }, { label: 'WAL between (mean / max)', num: true }, { label: 'Write p95', num: true }, { label: 'Sync p95', num: true }, { label: 'Total p95', num: true }],
+    var checkpointTable = logs.checkpoints.length ? simpleTable(
+      [{ label: 'Kind' }, { label: 'Started', num: true }, { label: 'Completed', num: true }, { label: 'Reasons' }, { label: 'Buffers', num: true }, { label: 'WAL between (mean / max)', num: true }, { label: 'Sync p95', num: true }, { label: 'Write p95', num: true }, { label: 'Total p95', num: true }],
       logs.checkpoints.map(function (c) {
         return h('tr', null, [h('td', { text: c.kind }), h('td', { 'class': 'num', text: L.fmtInt(c.started) }), h('td', { 'class': 'num', text: L.fmtInt(c.completed) }),
           h('td', null, Object.keys(c.reasons).map(function (k) { return badge(k + ' ×' + c.reasons[k]); })), h('td', { 'class': 'num', text: L.fmtInt(c.buffers) }),
           h('td', { 'class': 'num', text: c.distance_kb ? L.fmtBytes(c.distance_kb.mean_kb * 1024) + ' / ' + L.fmtBytes(c.distance_kb.max_kb * 1024) : '\u2014' }),
-          h('td', { 'class': 'num', text: L.fmtMs(c.write_ms.p95) }), h('td', { 'class': 'num', text: L.fmtMs(c.sync_ms.p95) }), h('td', { 'class': 'num', text: L.fmtMs(c.total_ms.p95) })]);
-      })) : panel('Checkpoints', emptyNote('No checkpoints were logged. Set log_checkpoints = on.')));
+          h('td', { 'class': 'num', text: L.fmtMs(c.sync_ms.p95) }), h('td', { 'class': 'num', text: L.fmtMs(c.write_ms.p95) }), h('td', { 'class': 'num', text: L.fmtMs(c.total_ms.p95) })]);
+      })) : panel('Checkpoints', emptyNote('No checkpoints were logged. Set log_checkpoints = on.'));
+    out.push(checkpointTable);
+    if (logs.checkpoints.length) { out.push(h('p', { 'class': 'muted', text: 'Sync time is the part that can hurt: it is when the checkpoint waits for the disk. A write time that is the same for every checkpoint is not a problem; the server spreads the writes over checkpoint_timeout times checkpoint_completion_target on purpose.' })); }
     var av = logs.autovacuum;
     var maxAv = Math.max.apply(null, av.map(function (t) { return t.total_ms; }).concat([1]));
     out.push(av.length ? simpleTable([{ label: 'Table' }, { label: 'Vacuums', num: true }, { label: 'Analyzes', num: true }, { label: 'Total time', num: true }, { label: 'Longest', num: true }, { label: 'Tuples removed', num: true }, { label: 'Pages removed', num: true }],
@@ -874,12 +925,7 @@
         return h('tr', null, [h('td', { 'class': 'mono', text: t.table }), h('td', { 'class': 'num', text: L.fmtInt(t.vacuums) }), h('td', { 'class': 'num', text: L.fmtInt(t.analyzes) }),
           h('td', { 'class': 'num bar-cell' }, [h('span', { 'class': 'bar', style: { width: (t.total_ms / maxAv * 100) + '%' } }), h('span', { text: L.fmtMs(t.total_ms) })]), h('td', { 'class': 'num', text: L.fmtMs(t.max_ms) }), h('td', { 'class': 'num', text: L.fmtInt(t.tuples_removed) }), h('td', { 'class': 'num', text: L.fmtInt(t.pages_removed) })]);
       })) : panel('Autovacuum', emptyNote('No autovacuum runs were logged (log_autovacuum_min_duration).')));
-    var wal = display.some(function (b) { return b.checkpoints; });
-    if (wal) {
-      var strip = h('div', { 'class': 'chart-host' });
-      setTimeout(function () { C.timeline(strip, { buckets: display, series: [{ key: 'checkpoints', label: 'Checkpoints', color: 'var(--c-connections)' }, { key: 'wal_kb', label: 'WAL between checkpoints (kB)', color: 'var(--c-statements)' }], range: null }); }, 0);
-      out.push(panel('Checkpoints over time', strip));
-    }
+    if (display.some(function (b) { return b.checkpoints || b.wal_kb || b.ddl; })) { out.push(chartPanel('Maintenance over time', ['wal_kb', 'checkpoints', 'ddl'])); }
     var schema = logs.ddl || { tags: [], temp_tables: [] };
     if (schema.tags.length) {
       out.push(h('h2', { text: 'Schema changes' }));
@@ -897,27 +943,46 @@
   }
   var breakdownMetric = 'time';
   var breakdownAll = false;
+  function statementRollups() {
+    if (!stats || !stats.by_database || !stats.by_database.length) { return []; }
+    var ranked = function (title, list) {
+      var max = Math.max.apply(null, list.map(function (r) { return r.total_ms; }).concat([1]));
+      return panel(title, h('div', { 'class': 'ranked' }, list.map(function (r) {
+        return h('div', { 'class': 'row', title: r.name }, [h('span', { 'class': 'name', text: r.name }), h('span', { 'class': 'track' }, h('b', { style: { width: (r.total_ms / max * 100) + '%' } })),
+          h('span', { 'class': 'val', text: L.fmtMs(r.total_ms) + ' \u00b7 ' + L.fmtPct(r.share_pct, 0) + ' \u00b7 ' + L.fmtCompact(r.calls) + ' calls' })]);
+      })));
+    };
+    return [h('h2', { text: 'From pg_stat_statements' }), h('p', { 'class': 'muted', text: 'Execution time in the window, by the database and role that ran the statements. These do not depend on what the log recorded.' }),
+      h('div', { 'class': 'grid cols-2' }, [ranked('Databases', stats.by_database), ranked('Roles', stats.by_user)])];
+  }
   function viewBreakdowns() {
     var wrap = h('div', { 'class': 'grid cols-2' });
     var chips = h('div', { 'class': 'toolbar' });
+    var skipped = h('p', { 'class': 'muted' });
     function metricOf(r) { return breakdownMetric === 'time' ? r.total_ms : breakdownMetric === 'errors' ? r.errors : breakdownMetric === 'connections' ? r.connections : r.statements; }
     function draw() {
-      C.clear(chips); C.clear(wrap);
+      C.clear(chips); C.clear(wrap); skipped.textContent = '';
+      var absent = [];
       [['time', 'Statement time'], ['statements', 'Statements'], ['errors', 'Errors'], ['connections', 'Connections']].forEach(function (m) {
         chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(breakdownMetric === m[0]), onclick: function () { breakdownMetric = m[0]; draw(); }, text: m[1] }));
       });
       chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(breakdownAll), onclick: function () { breakdownAll = !breakdownAll; draw(); }, text: 'Show empty rows' }));
       [['database', 'Databases'], ['user', 'Users'], ['application', 'Applications'], ['host', 'Hosts']].forEach(function (d) {
-        var list = (logs.dimensions[d[0]] || []).filter(function (r) { return breakdownAll || metricOf(r) > 0; }).sort(function (a, b) { return metricOf(b) - metricOf(a); });
+        var all = logs.dimensions[d[0]] || [];
+        // A dimension whose only value is "(none)" is a column the log never carried.
+        if (!all.some(function (r) { return r.value !== '(none)'; })) { absent.push(d[1].toLowerCase()); return; }
+        var list = all.filter(function (r) { return breakdownAll || metricOf(r) > 0; }).sort(function (a, b) { return metricOf(b) - metricOf(a); });
         var max = Math.max.apply(null, list.map(metricOf).concat([1]));
         wrap.appendChild(panel(d[1], list.length ? h('div', { 'class': 'ranked' }, list.map(function (r) {
           return h('div', { 'class': 'row', title: r.value }, [h('span', { 'class': 'name', text: r.value }), h('span', { 'class': 'track' }, h('b', { style: { width: (metricOf(r) / max * 100) + '%' } })),
-            h('span', { 'class': 'val', text: breakdownMetric === 'time' ? L.fmtMs(r.total_ms) : L.fmtInt(metricOf(r)) + ' · ' + L.fmtInt(r.statements) + ' stmts' })]);
+            h('span', { 'class': 'val', text: breakdownMetric === 'time' ? L.fmtMs(r.total_ms) : L.fmtInt(metricOf(r)) + ' \u00b7 ' + L.fmtInt(r.statements) + ' stmts' })]);
         })) : emptyNote('Nothing recorded.')));
       });
+      if (absent.length) { skipped.textContent = 'Not in this log: ' + absent.join(', ') + ' (the log_line_prefix does not carry them, or nothing was timed).'; }
     }
+    if (!logs) { return statementRollups(); }
     draw();
-    return [chips, wrap];
+    return [chips, wrap, skipped].concat(statementRollups());
   }
   function viewSlowest() {
     var s = logs.slowest;
@@ -1004,6 +1069,9 @@
   }
   function viewAdvice() {
     var out = [h('p', { 'class': 'muted', text: 'Settings that decide what this report can show. Each one says what is lost and what to change; the badge says whether it was read from the server\'s settings or inferred from the data.' })];
+    if (advice.length && advice.every(function (a) { return a.source !== 'settings'; })) {
+      out.push(h('div', { 'class': 'finding info' }, [h('span', { 'class': 'dot' }), h('div', { text: 'All of this is inferred from the data. Give the server\'s real settings and it is replaced by what they say: pass --settings FILE (a CSV of name,setting), or take snapshots with snap, which writes settings_<time>.csv beside each one and is picked up automatically.' })]));
+    }
     advice.forEach(function (a) {
       out.push(h('div', { 'class': 'finding ' + a.severity }, [h('span', { 'class': 'dot' }), h('div', null, [
         h('div', null, [h('code', { text: a.code }), ' ', badge(a.source === 'settings' ? 'from the settings' : 'from the data', a.source === 'settings' ? 'info' : '')]),
@@ -1013,11 +1081,12 @@
   }
   function viewFindings() { return [h('div', { 'class': 'findings' }, findings.map(findingNode))]; }
 
-  var VIEWS = { overview: viewOverview, statements: viewStatements, errors: viewErrors, locks: viewLocks, sessions: viewSessions, maintenance: viewMaintenance, breakdowns: viewBreakdowns, slowest: viewSlowest, pooler: viewPooler, comparison: viewComparison, advice: viewAdvice, findings: viewFindings };
+  var VIEWS = { overview: viewOverview, statements: viewStatements, errors: viewErrors, locks: viewLocks, sessions: viewSessions, maintenance: viewMaintenance, breakdowns: viewBreakdowns, slowest: viewSlowest, pooler: viewPooler, comparison: viewComparison, advice: viewAdvice, findings: viewFindings , sources: viewSources };
 
   /* ---------- render ---------- */
   var viewNode = null;
   function render() {
+    redraws = [];
     renderChrome();
     var mainNode = root.querySelector('.main');
     var next = h('div', { 'class': 'view' }, (VIEWS[state.s] || viewOverview)());
@@ -1062,7 +1131,7 @@
   var resizeTimer = null;
   window.addEventListener('resize', function () {
     clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(function () { if (window.__redraw && state.s === 'overview') { window.__redraw(); } }, 150);
+    resizeTimer = setTimeout(function () { redraws.forEach(function (draw) { draw(); }); }, 150);
   });
   window.addEventListener('hashchange', function () { state = L.parseHash(location.hash); if (!sections.some(function (s) { return s.id === state.s; })) { state.s = 'overview'; } render(); });
 

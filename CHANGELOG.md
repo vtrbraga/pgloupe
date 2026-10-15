@@ -5,6 +5,14 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Report
+
+- Statements get *slower* and *faster* flags (the mean moved by half or more since before the window), spread (standard deviation over the mean) and the slowest run, and the statistics window carries totals: cache hit, file I/O share, planning time, WAL, plus per-database and per-role rollups. New findings: `io_heavy` and `low_cache_hit`.
+
+### Dashboard
+
+- A *Sources* view holds what was read (files, statistics window, `pg_stat_database`); the overview keeps the header to one line. Breakdowns fall back to the statistics when the log carries no databases or users, and skip columns the log never had. Sessions, Locks and Maintenance use the shared activity chart and say "not logged" instead of showing empty panels. Checkpoint tables put sync time first and explain a flat write time. The settings view says how to replace inferred advice with real settings.
+
 ## [0.1.0-alpha.2] - 2026-10-15
 
 Report content from a review of two reports, one over a managed-Postgres capture where the logs caught little.
