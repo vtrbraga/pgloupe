@@ -44,13 +44,17 @@ The format is detected from the first line; stderr logs need `--prefix` with the
 
 ## Logs analyze
 
-Summarize one or more logs (csvlog, jsonlog or stderr; plain or gzip): statements grouped by fingerprint with p50/p95/p99, errors, locks and deadlocks, temp files, connections, checkpoints, autovacuum and a timeline.
+Summarize one or more logs (csvlog, jsonlog or stderr; plain, gzip, zstd, xz, lz4 or bzip2): statements grouped by fingerprint with p50/p95/p99, query types, duration histograms, cancelled queries, the slowest executions, errors, locks and deadlocks, temp files, connections and sessions, checkpoints, autovacuum, breakdowns by database, user, application and host, and a timeline.
 
 ```bash
 cargo run -p pgloupe -- logs analyze postgresql.log.gz
 cargo run -p pgloupe -- logs analyze a.csv b.csv --by p95 --top 30 --output json > report.json
 cargo run -p pgloupe -- logs analyze server.log --prefix '%t:%r:%u@%d:[%p]:' --threads 4
 ```
+
+Filters apply while the files are read: `--database`, `--user`, `--application`, `--host` (repeat or comma-separate), their `--exclude-…` forms, and `--include-query` / `--exclude-query` (a regular expression tested on statement text only; errors, lock waits and bare `duration:` lines are never judged by it). A record without the attribute fails an include list and passes an exclude list; connection records carry no database or user yet, so a database or user filter drops them. The report says how many records were dropped. Filters are not available with `--store`.
+
+`--slowest N` (default 20) lists the slowest single executions. Bind parameters are kept only with `--params`, since they can hold personal data; without it the list shows normalized statement text.
 
 A stderr log without `--prefix` is decoded with an inferred one (printed in the header); if none fits, the command says why and exits 1. The diagnostics block lists skipped line shapes and likely missing server settings (`log_min_duration_statement`, `log_checkpoints`, `lc_messages`, …). Statement durations are exact to the microsecond; percentiles come from a mergeable sketch with 1% relative error.
 
@@ -66,6 +70,7 @@ cargo run -p pgloupe -- logs report --store logs.db --since 2026-10-14 --until 2
 - Each file is identified by a hash of its decompressed bytes. The same file under another name, or compressed, prints `unchanged`; a log that grew since the last run prints `replaced` (the earlier version is dropped, nothing is counted twice).
 - A grown file is read in full again; resuming from a byte offset is not implemented.
 - Statistics are stored per UTC hour, so `--since` rounds down and `--until` rounds up to whole hours (the report prints the range it used). `--bucket` must be a multiple of `1m`.
+- The store keeps the top 1,000 values per breakdown dimension per hour, and the slowest executions and bind parameters that its ingest asked for (`--slowest`, `--params`). A store written by an older pgloupe (schema 1) is refused: delete it and ingest again.
 - `--force` re-ingests files already in the store, for example after fixing `--prefix`. A file that decodes to nothing is reported as `failed` and not stored.
 - One ingest runs at a time per store (a second one waits 5 s, then reports the store as locked). If a file's time range largely overlaps an earlier input that it does not extend, ingest prints a warning: an older partial copy of a stored log is counted twice.
 - Keep the store on the Linux filesystem; SQLite's WAL mode is unreliable on `/mnt/c`.
@@ -83,7 +88,8 @@ cargo run -p pgloupe -- report --store logs.db --before pgss_1.csv --after pgss_
 cargo run -p pgloupe -- report --before pgss_1.csv --after pgss_2.csv          # snapshots only
 ```
 
-- Formats: `text` (default), `json` (`schema_version: 1`, `kind: "pgloupe.report"`) and `html`: a single file with no network requests, readable without JavaScript (script only adds sorting and filtering). Log text in the page is escaped.
+- Formats: `text` (default), `json` (`schema_version: 1`, `kind: "pgloupe.report"`) and `html`: an interactive dashboard in one file with no network requests. It has an overview with a time-range selection, a searchable and sortable statement table with a detail drawer, and views for errors, locks, sessions, maintenance, breakdowns and the slowest executions; its state lives in the URL hash (`/` searches, `j`/`k` move, `1`-`9` switch views). The server-rendered tables stay in the file for printing and for browsers without JavaScript. Log text is only ever inserted as text.
+- `--database`, `--user`, `--application`, `--host`, `--include-query`, `--exclude-query`, `--slowest` and `--params` work on log `FILES` as in `logs analyze`. Filtered logs are joined with unfiltered statistics, so coverage then reflects the filter.
 - Statements are joined by fingerprint. Several statistics entries with one fingerprint (users, databases, partitions with different `queryid`s) are summed; `track = all` entries for statements run inside functions are kept apart as `nested_calls`.
 - `coverage` is log calls with a duration divided by the statistics' calls: below 100% when `log_min_duration_statement` hides fast calls, above when the log window is wider than the snapshot window.
 - With `--store`, the log window is the snapshot interval widened to whole hours unless `--since/--until` are given.
@@ -93,13 +99,26 @@ cargo run -p pgloupe -- report --before pgss_1.csv --after pgss_2.csv          #
 
 `cargo run --release --example gen_log -- OUT RECORDS HOURS FINGERPRINTS [SEED]` writes a deterministic jsonlog with many hours and many distinct statements (per tenant and partition), for timing `logs analyze`, `logs ingest` and `logs report` on something larger and wider than the synth corpus.
 
+## Postgres versions
+
+Logs and snapshots are read from Postgres 14 to 18; the synthetic corpus runs on every one of them (`cargo run -p synth -- generate --pg 14`, then `scripts/corpus-matrix.sh`).
+
+| Version | What to know |
+|---|---|
+| 14 | No `jsonlog` (it arrived in 15): use stderr or csvlog. `CREATE DATABASE` forces checkpoints. `pg_stat_statements_info` and `toplevel` exist. |
+| 15, 16 | `jsonlog` available. No `stats_since` column. |
+| 17 | `stats_since` and `minmax_stats_since`; the server logs a `connection authenticated` line. |
+| 18 | Newer `pg_stat_statements` columns are accepted; the logs read like 17's. |
+
+Snapshots from different major versions are never compared. `pg_stat_statements` CSVs from Postgres 13 are read (`total_time` is explained) but not tested.
+
 ## Synthetic corpus
 
 `synth` generates Postgres logs and `pg_stat_statements` snapshots from a seeded workload on the Pagila sample database. Requires Docker.
 
 ```bash
 cargo run -p synth -- generate            # data/synth/17-42/
-cargo run -p synth -- generate --pg 16 --seed 7 --only lock_wait,errors --force
+cargo run -p synth -- generate --pg 16 --seed 7 --only lock_wait,errors --force   # --pg 14|15|16|17|18
 ```
 
 Output is gitignored. `manifest.json` lists the expected log events per scenario.
