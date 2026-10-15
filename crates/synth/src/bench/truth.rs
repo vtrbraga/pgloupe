@@ -124,7 +124,7 @@ pub struct Truth {
     pub scale: u32,
     /// Requested log size in bytes.
     pub target_bytes: u64,
-    /// Size of the largest format at the end.
+    /// Size of the smallest format at the end.
     pub reached_bytes: u64,
     /// Per format (`log`, `csv`, `json`).
     pub formats: BTreeMap<String, FormatSize>,

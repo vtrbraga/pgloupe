@@ -60,7 +60,8 @@ pub fn per_format(dir: &Path) -> anyhow::Result<BTreeMap<String, FormatSize>> {
     Ok(sizes)
 }
 
-/// Bytes of the largest log format in `dir`: the sum of its files, maximum over formats.
+/// Bytes of the smallest log format present in `dir` (sum of its files): when this reaches a
+/// target, every format has.
 ///
 /// # Errors
 ///
@@ -69,7 +70,7 @@ pub fn log_bytes(dir: &Path) -> anyhow::Result<u64> {
     Ok(per_format(dir)?
         .values()
         .map(|f| f.bytes)
-        .max()
+        .min()
         .unwrap_or(0))
 }
 
@@ -96,7 +97,7 @@ mod tests {
     }
 
     #[test]
-    fn the_largest_format_counts() {
+    fn the_smallest_format_counts() {
         let dir = env::temp_dir().join(format!("synth-size-{}", process::id()));
         fs::create_dir_all(&dir).unwrap();
         for (name, len) in [
@@ -108,7 +109,7 @@ mod tests {
         ] {
             fs::write(dir.join(name), vec![b'x'; len]).unwrap();
         }
-        assert_eq!(log_bytes(&dir).unwrap(), 30);
+        assert_eq!(log_bytes(&dir).unwrap(), 10);
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(log_bytes(&dir).unwrap(), 0);
     }

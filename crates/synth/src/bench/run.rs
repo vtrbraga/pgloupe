@@ -26,7 +26,7 @@ use crate::{
 };
 
 /// Seconds one pgbench round runs; the stop flag is looked at between rounds.
-const ROUND_SECS: u32 = 30;
+const ROUND_SECS: u32 = 10;
 
 /// How often the main thread looks at the log size.
 const POLL: Duration = Duration::from_secs(5);
@@ -111,7 +111,7 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
     pg.stop()?;
 
     let formats = size::per_format(&log_dir)?;
-    let reached_bytes = formats.values().map(|f| f.bytes).max().unwrap_or(0);
+    let reached_bytes = formats.values().map(|f| f.bytes).min().unwrap_or(0);
     Truth {
         pg_major: major,
         seed: args.seed,

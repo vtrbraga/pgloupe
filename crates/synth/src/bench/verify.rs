@@ -51,9 +51,9 @@ fn calls(report: &Value) -> Option<u64> {
     kinds.iter().map(|k| k.get("calls")?.as_u64()).sum()
 }
 
-fn advice_codes(report: &Value) -> Vec<&str> {
+fn finding_codes(report: &Value) -> Vec<&str> {
     report
-        .get("advice")
+        .get("findings")
         .and_then(Value::as_array)
         .map(|rows| {
             rows.iter()
@@ -130,7 +130,7 @@ pub fn evaluate(truth: &Truth, reports: &Reports) -> Vec<Check> {
     let reset_seen = reports
         .window_reset
         .as_ref()
-        .is_some_and(|r| advice_codes(r).contains(&"stats_reset"));
+        .is_some_and(|r| finding_codes(r).contains(&"stats_reset"));
     out.push(check(
         "reset is reported",
         truth.snapshots.after_reset.is_some() && reset_seen,
@@ -140,7 +140,7 @@ pub fn evaluate(truth: &Truth, reports: &Reports) -> Vec<Check> {
     let evictions_seen = reports
         .window_evictions
         .as_ref()
-        .is_some_and(|r| advice_codes(r).contains(&"stats_evictions"));
+        .is_some_and(|r| finding_codes(r).contains(&"stats_evictions"));
     out.push(check(
         "evictions are reported",
         truth.dealloc_at_end > 0 && evictions_seen,
@@ -199,13 +199,13 @@ fn window_args(snaps: &Path, before: u8, after: u8) -> Vec<String> {
     ]
 }
 
-/// One timed run: wall seconds, peak resident memory in MiB, and output sizes in MiB.
+/// One timed run: wall seconds, peak resident memory in MiB, and output sizes in KiB.
 struct Timing {
     threads: u32,
     secs: f64,
     rss_mib: u64,
-    html_mib: u64,
-    json_mib: u64,
+    html_kib: u64,
+    json_kib: u64,
 }
 
 fn time_run(pgloupe: &Path, files: &[PathBuf], dir: &Path, threads: u32) -> anyhow::Result<Timing> {
@@ -241,14 +241,14 @@ fn time_run(pgloupe: &Path, files: &[PathBuf], dir: &Path, threads: u32) -> anyh
         .and_then(|v| v.trim().parse().ok())
         .context("no peak memory line in /usr/bin/time output")?;
     let size_of = |ext: &str| -> u64 {
-        fs::metadata(prefix.with_extension(ext)).map_or(0, |m| m.len() >> 20)
+        fs::metadata(prefix.with_extension(ext)).map_or(0, |m| m.len() >> 10)
     };
     Ok(Timing {
         threads,
         secs,
         rss_mib: rss_kib >> 10,
-        html_mib: size_of("html"),
-        json_mib: size_of("json"),
+        html_kib: size_of("html"),
+        json_kib: size_of("json"),
     })
 }
 
@@ -293,8 +293,10 @@ pub fn run(args: &BenchVerifyArgs) -> anyhow::Result<bool> {
         );
     }
 
-    println!("\nthreads  seconds  MB/s  peak MiB  html MiB  json MiB");
-    let mib = f64::from(u32::try_from(truth.reached_bytes >> 20).unwrap_or(u32::MAX));
+    println!("\nthreads  seconds  MB/s  peak MiB  html KiB  json KiB");
+    // The timed runs read the stderr files.
+    let stderr_bytes = truth.formats.get("log").map_or(0, |f| f.bytes);
+    let mib = f64::from(u32::try_from(stderr_bytes >> 20).unwrap_or(u32::MAX));
     for threads in &args.threads {
         let t = time_run(&args.pgloupe, &stderr_files, &args.run_dir, *threads)?;
         println!(
@@ -303,8 +305,8 @@ pub fn run(args: &BenchVerifyArgs) -> anyhow::Result<bool> {
             t.secs,
             mib / t.secs,
             t.rss_mib,
-            t.html_mib,
-            t.json_mib
+            t.html_kib,
+            t.json_kib
         );
     }
     Ok(checks.iter().all(|c| c.ok))
@@ -354,7 +356,7 @@ mod tests {
     /// 100 × 7 + 900 = 1600 statements.
     fn report_with(calls: u64, skipped: u64, advice: &[&str]) -> Value {
         json!({
-            "advice": advice.iter().map(|c| json!({"code": c})).collect::<Vec<_>>(),
+            "findings": advice.iter().map(|c| json!({"code": c})).collect::<Vec<_>>(),
             "logs": {
                 "diagnostics": {"skipped": skipped},
                 "kinds": [{"calls": calls / 2}, {"calls": calls - calls / 2}],

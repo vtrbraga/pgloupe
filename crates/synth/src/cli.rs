@@ -43,7 +43,7 @@ pub struct BenchRunArgs {
     /// Seed (part of the run directory name).
     #[arg(long, default_value_t = 42)]
     pub seed: u64,
-    /// Stop when the largest log format reaches this size (`512M`, `1G`, `10G`).
+    /// Stop when the smallest log format reaches this size (`512M`, `1G`, `10G`).
     #[arg(long, default_value = "1G", value_parser = checked_size)]
     pub target_size: String,
     /// Concurrent pgbench clients over all workers.
