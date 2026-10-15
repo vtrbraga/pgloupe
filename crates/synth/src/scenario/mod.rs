@@ -9,6 +9,7 @@ pub mod extended;
 pub mod functions;
 pub mod locks;
 pub mod multiline;
+pub mod protocol;
 pub mod temp_files;
 
 use anyhow::bail;
@@ -201,6 +202,9 @@ pub const ALL: &[Scenario] = &[
     connections::SCENARIO,
     multiline::SCENARIO,
     extended::SCENARIO,
+    protocol::PHASES,
+    protocol::CURSORS,
+    protocol::PREPARED_SQL,
     churn::SCENARIO,
 ];
 
@@ -248,7 +252,7 @@ mod tests {
 
     #[test]
     fn scenarios_run_in_spec_order() {
-        const SPEC_ORDER: [&str; 11] = [
+        const SPEC_ORDER: [&str; 14] = [
             "baseline",
             "ddl",
             "lock_wait",
@@ -259,6 +263,9 @@ mod tests {
             "connections",
             "multiline",
             "extended",
+            "phases",
+            "cursors",
+            "prepared_sql",
             "pgss_churn",
         ];
         let positions: Vec<_> = ALL

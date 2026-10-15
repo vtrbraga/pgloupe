@@ -16,7 +16,7 @@ pub mod tee;
 pub mod time;
 
 pub use prefix::PrefixError;
-pub use record::{LogRecord, Severity};
+pub use record::{Correlation, LogRecord, Phase, Severity};
 
 /// The three log formats pgloupe reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,0 +1,12 @@
+2026-10-14 10:00:00.000 UTC [11] app@db LOG:  duration: 5.000 ms  parse <unnamed>: SELECT * FROM t WHERE a = $1
+2026-10-14 10:00:00.010 UTC [11] app@db LOG:  duration: 900.000 ms  bind <unnamed>: SELECT * FROM t WHERE a = $1
+2026-10-14 10:00:00.020 UTC [11] app@db LOG:  duration: 1.000 ms  execute <unnamed>: SELECT * FROM t WHERE a = $1
+2026-10-14 10:00:01.000 UTC [12] app@db LOG:  duration: 700.000 ms  statement: DECLARE c CURSOR FOR SELECT * FROM big
+2026-10-14 10:00:02.000 UTC [12] app@db LOG:  duration: 300.000 ms  statement: FETCH 100 FROM c
+2026-10-14 10:00:03.000 UTC [12] app@db LOG:  duration: 200.000 ms  statement: FETCH 100 FROM c
+2026-10-14 10:00:03.100 UTC [12] app@db LOG:  duration: 0.100 ms  statement: CLOSE c
+2026-10-14 10:00:04.000 UTC [13] app@db LOG:  duration: 0.500 ms  statement: PREPARE q AS SELECT * FROM film WHERE film_id = $1
+2026-10-14 10:00:04.100 UTC [13] app@db LOG:  duration: 4.000 ms  statement: EXECUTE q(5)
+2026-10-14 10:00:04.200 UTC [13] app@db LOG:  duration: 6.000 ms  statement: EXECUTE q(6)
+2026-10-14 10:00:05.000 UTC [14] app@db LOG:  statement: SELECT count(*) FROM rental
+2026-10-14 10:00:05.050 UTC [14] app@db LOG:  duration: 50.000 ms

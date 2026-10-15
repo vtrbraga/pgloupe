@@ -14,7 +14,7 @@ use std::{
 use rayon::prelude::*;
 use thiserror::Error;
 
-use super::{Merge, acc::Accumulators, filter::Filter, slice::Slices};
+use super::{Merge, acc::Accumulators, correlate::Correlator, filter::Filter, slice::Slices};
 use crate::log::{
     DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions, SetupError,
     Severity, decoder_for,
@@ -209,6 +209,7 @@ fn run_with<S: Fold>(
     let summaries = Arc::new(Mutex::new(Vec::new()));
     let failure = Arc::new(Mutex::new(None));
     let batches = Batches {
+        correlator: Correlator::new(),
         pending: paths.iter().cloned().collect(),
         current: None,
         options: options.clone(),
@@ -264,6 +265,7 @@ struct Current {
 
 /// Yields batches of records, file after file.
 struct Batches {
+    correlator: Correlator,
     pending: VecDeque<PathBuf>,
     current: Option<Current>,
     options: Options,
@@ -327,7 +329,10 @@ impl Iterator for Batches {
             if let Some(current) = self.current.as_mut() {
                 while batch.len() < self.options.batch_size.max(1) {
                     match current.decoder.next_record() {
-                        Ok(Some(record)) => {
+                        Ok(Some(mut record)) => {
+                            // Before the filter: a cursor declared by a record the filter drops
+                            // still has to be known when its fetches arrive.
+                            self.correlator.apply(&mut record);
                             if self.options.filter.keeps(&record) {
                                 batch.push(record);
                             } else {

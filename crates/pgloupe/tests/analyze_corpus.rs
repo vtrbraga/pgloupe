@@ -283,3 +283,45 @@ fn the_fingerprint_cache_agrees_with_pg_query_on_every_statement() -> io::Result
     assert!(checked > 1_000, "only {checked} statements checked");
     Ok(())
 }
+
+#[test]
+#[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
+fn blocked_parse_and_bind_and_cursor_fetches_land_on_their_statements() -> io::Result<()> {
+    let path = corpus().join("log").join(reference());
+    let out = pipeline::run(std::slice::from_ref(&path), &Options::new()).map_err(io_err)?;
+    let by_text = |needle: &str| {
+        out.acc
+            .queries
+            .values()
+            .find(|q| q.text.contains(needle))
+            .unwrap_or_else(|| panic!("no statement with {needle}"))
+    };
+    // The generator holds the table lock for 400 ms while one session parses and another binds.
+    let parsed = by_text("count(*) FROM synth_phase");
+    assert!(
+        parsed.phases.parse.total_us >= 350_000,
+        "{:?}",
+        parsed.phases
+    );
+    assert!(parsed.phases.bind.total_us < 100_000, "{:?}", parsed.phases);
+    let bound = by_text("v FROM synth_phase");
+    assert!(bound.phases.bind.total_us >= 350_000, "{:?}", bound.phases);
+    // Three FETCHes of a 2 ms-per-row cursor over film, all on the cursor's query.
+    let cursor = by_text("pg_sleep($1), film_id");
+    assert_eq!(cursor.phases.fetch.count, 3);
+    assert!(
+        cursor.phases.fetch.total_us > 300_000,
+        "{:?}",
+        cursor.phases
+    );
+    // SQL-level EXECUTEs count as the prepared query, and no FETCH or EXECUTE row exists.
+    let prepared = by_text("title FROM film WHERE film_id");
+    assert!(prepared.calls >= 4, "{}", prepared.calls);
+    assert!(
+        out.acc
+            .queries
+            .values()
+            .all(|q| !q.text.starts_with("FETCH") && !q.text.starts_with("EXECUTE"))
+    );
+    Ok(())
+}

@@ -258,6 +258,11 @@ pub struct StatementRow {
     pub execute_calls: u64,
     pub timed_calls: u64,
     pub total_ms: f64,
+    /// `total_ms` plus parse, bind and fetch time: what the statement cost the server in all.
+    pub all_ms: f64,
+    /// Parse, bind and fetch time, when the log has any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phases: Option<PhasesRow>,
     pub mean_ms: Option<f64>,
     pub min_ms: Option<f64>,
     pub p50_ms: Option<f64>,
@@ -274,6 +279,22 @@ pub struct StatementRow {
     pub last_seen: Option<String>,
     /// The slowest run of this statement and who ran it.
     pub examples: Vec<ExampleRow>,
+}
+
+/// Time in one phase of a statement's life.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PhaseRow {
+    pub count: u64,
+    pub total_ms: f64,
+    pub max_ms: f64,
+}
+
+/// Parse, bind and fetch time of one statement.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct PhasesRow {
+    pub parse: PhaseRow,
+    pub bind: PhaseRow,
+    pub fetch: PhaseRow,
 }
 
 /// One slow run of a statement.
@@ -520,7 +541,7 @@ pub(crate) fn file_report(file: &FileSummary) -> FileReport {
 
 fn sort_key(query: &QueryStats, by: SortBy) -> u64 {
     match by {
-        SortBy::Total => query.total_us,
+        SortBy::Total => query.total_us + query.phases.total_us(),
         SortBy::Calls => query.calls,
         SortBy::P95 => query.sketch.quantile(0.95).map_or(0, to_micros),
         SortBy::Max => query.max_us,
@@ -554,7 +575,7 @@ fn total_us(acc: &Accumulators) -> u64 {
     acc.queries
         .values()
         .chain(std::iter::once(&acc.overflow))
-        .map(|query| query.total_us)
+        .map(|query| query.total_us + query.phases.total_us())
         .sum()
 }
 
@@ -567,6 +588,21 @@ pub fn all_statements(acc: &Accumulators) -> Vec<StatementRow> {
         .values()
         .map(|query| statement_row(query, total_us, &acc.who))
         .collect()
+}
+
+fn phases_row(phases: &crate::analyze::acc::Phases) -> Option<PhasesRow> {
+    let row = |p: crate::analyze::acc::PhaseStat| PhaseRow {
+        count: p.count,
+        total_ms: ms(p.total_us),
+        max_ms: ms(p.max_us),
+    };
+    (phases.total_us() > 0 || phases.parse.count + phases.bind.count + phases.fetch.count > 0).then(
+        || PhasesRow {
+            parse: row(phases.parse),
+            bind: row(phases.bind),
+            fetch: row(phases.fetch),
+        },
+    )
 }
 
 fn statement_row(
@@ -584,13 +620,15 @@ fn statement_row(
         execute_calls: query.execute_calls,
         timed_calls: query.timed,
         total_ms: ms(query.total_us),
+        all_ms: ms(query.total_us + query.phases.total_us()),
+        phases: phases_row(&query.phases),
         mean_ms: query.mean_ms(),
         min_ms: query.min_us.map(ms),
         p50_ms: query.sketch.quantile(0.5),
         p95_ms: query.sketch.quantile(0.95),
         p99_ms: query.sketch.quantile(0.99),
         max_ms: (query.timed > 0).then(|| ms(query.max_us)),
-        share_pct: percent(query.total_us, total_us),
+        share_pct: percent(query.total_us + query.phases.total_us(), total_us),
         errors: query.errors,
         lock_waits: query.lock_waits,
         lock_wait_ms: ms(query.lock_wait_us),

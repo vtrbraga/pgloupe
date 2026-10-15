@@ -60,6 +60,34 @@ impl Severity {
     }
 }
 
+/// Which part of a statement's life a duration measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// The statement ran (simple protocol, or the extended protocol's execute).
+    Execute,
+    /// The extended protocol's parse step.
+    Parse,
+    /// The extended protocol's bind step (planning happens here for prepared statements).
+    Bind,
+    /// A `FETCH` or `MOVE` on a cursor.
+    Fetch,
+}
+
+/// A record whose duration belongs to another statement.
+///
+/// A `FETCH` belongs to the query its cursor was declared for, a SQL-level `EXECUTE` to the
+/// prepared statement, a bare `duration:` line to the statement logged just before it. Set by the
+/// correlation stage, never by a decoder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Correlation {
+    /// The statement the duration belongs to.
+    pub sql: String,
+    /// Which phase of it.
+    pub phase: Phase,
+    /// The statement was already counted when it was logged without a duration; only add the time.
+    pub timing_only: bool,
+}
+
 /// One log entry. Optional fields are `None` when the format or the prefix does not carry them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LogRecord {
@@ -110,6 +138,9 @@ pub struct LogRecord {
     pub statement: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor_position: Option<u32>,
+    /// Filled in by the correlation stage; not part of the log.
+    #[serde(skip)]
+    pub correlation: Option<Correlation>,
 }
 
 impl LogRecord {
@@ -142,6 +173,7 @@ impl LogRecord {
             internal_query: None,
             statement: None,
             cursor_position: None,
+            correlation: None,
         }
     }
 }

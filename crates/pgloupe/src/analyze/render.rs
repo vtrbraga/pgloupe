@@ -46,6 +46,10 @@ pub fn sections(report: &Report, statements_table: bool) -> Vec<String> {
             statements(&report.statements),
         );
     }
+    let phase_lines = phases(&report.statements);
+    if !phase_lines.is_empty() {
+        section(&mut lines, "phases", phase_lines);
+    }
     section(&mut lines, "errors", errors(&report.errors));
     section(&mut lines, "cancelled", cancelled(&report.cancelled));
     section(&mut lines, "slowest executions", slowest(&report.slowest));
@@ -196,6 +200,40 @@ pub(crate) fn cut(text: &str) -> String {
         short.push('…');
         short
     }
+}
+
+/// Statements that spent time parsing, binding or fetching, the costliest first.
+fn phases(rows: &[StatementRow]) -> Vec<String> {
+    let mut with: Vec<&StatementRow> = rows.iter().filter(|r| r.phases.is_some()).collect();
+    if with.is_empty() {
+        return Vec::new();
+    }
+    with.sort_by(|a, b| {
+        let cost = |r: &StatementRow| {
+            r.phases.map_or(0.0, |p| {
+                p.parse.total_ms + p.bind.total_ms + p.fetch.total_ms
+            })
+        };
+        cost(b).total_cmp(&cost(a))
+    });
+    let mut cells = vec![
+        ["parse_ms", "bind_ms", "fetch_ms", "run_ms", "query"]
+            .iter()
+            .map(|h| (*h).to_owned())
+            .collect::<Vec<_>>(),
+    ];
+    for row in with.into_iter().take(10) {
+        if let Some(p) = row.phases {
+            cells.push(vec![
+                num(p.parse.total_ms),
+                num(p.bind.total_ms),
+                num(p.fetch.total_ms),
+                num(row.total_ms),
+                cut(&row.text),
+            ]);
+        }
+    }
+    align(&cells, &[true, true, true, true, false])
 }
 
 fn statements(rows: &[StatementRow]) -> Vec<String> {

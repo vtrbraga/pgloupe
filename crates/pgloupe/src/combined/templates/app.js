@@ -510,9 +510,14 @@
         facts([
           ['Calls', L.fmtInt(lg.calls)], ['With a duration', L.fmtInt(lg.timed_calls)], ['Total', L.fmtMs(lg.total_ms)], ['Mean', L.fmtMs(lg.mean_ms)],
           ['Min', L.fmtMs(lg.min_ms)], ['Max', L.fmtMs(lg.max_ms)], ['Errors', errs.length ? h('button', { 'class': 'linklike', onclick: function () { var t = document.getElementById('drawer-errors'); if (t) { t.scrollIntoView({ block: 'start' }); } }, text: L.fmtInt(lg.errors) + ' \u2191 see above' }) : L.fmtInt(lg.errors)], ['Lock waits', lg.lock_waits ? h('button', { 'class': 'linklike', onclick: function () { setState({ s: 'locks', fp: '' }); window.scrollTo(0, 0); }, text: L.fmtInt(lg.lock_waits) + ' (' + L.fmtMs(lg.lock_wait_ms) + ') \u2192 Locks' }) : '0'],
-          ['Temp files', L.fmtInt(lg.temp_files) + (lg.temp_files ? ' (' + L.fmtBytes(lg.temp_bytes) + ')' : '')], ['Simple / extended protocol', L.fmtInt(lg.statement_calls) + ' / ' + L.fmtInt(lg.execute_calls)],
+          ['Temp files', L.fmtInt(lg.temp_files) + (lg.temp_files ? ' (' + L.fmtBytes(lg.temp_bytes) + ')' : '')]].concat(lg.phases ? [
+          ['Parse', L.fmtMs(lg.phases.parse.total_ms) + ' in ' + L.fmtInt(lg.phases.parse.count) + ' (max ' + L.fmtMs(lg.phases.parse.max_ms) + ')'],
+          ['Bind', L.fmtMs(lg.phases.bind.total_ms) + ' in ' + L.fmtInt(lg.phases.bind.count) + ' (max ' + L.fmtMs(lg.phases.bind.max_ms) + ')'],
+          ['Cursor fetches', L.fmtMs(lg.phases.fetch.total_ms) + ' in ' + L.fmtInt(lg.phases.fetch.count) + ' (max ' + L.fmtMs(lg.phases.fetch.max_ms) + ')'],
+          ['Everything together', L.fmtMs(lg.all_ms)]
+        ] : []).concat([['Simple / extended protocol', L.fmtInt(lg.statement_calls) + ' / ' + L.fmtInt(lg.execute_calls)],
           ['First seen', L.fmtTime(lg.first_seen, true)], ['Last seen', L.fmtTime(lg.last_seen, true)]
-        ])
+        ]))
       ])));
     }
     if (row.stats) {

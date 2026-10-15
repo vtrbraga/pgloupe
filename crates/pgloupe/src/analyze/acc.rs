@@ -14,7 +14,7 @@ use super::{
     sketch::Sketch,
     slowest::{self, Example, Examples, Execution, Slowest, Who, who_key},
 };
-use crate::log::LogRecord;
+use crate::log::{LogRecord, Phase};
 
 /// One execution of a statement, as the slowest lists keep it.
 fn execution(
@@ -113,6 +113,55 @@ mod pairs {
     }
 }
 
+/// Time spent in one phase of a statement's life.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhaseStat {
+    pub count: u64,
+    pub total_us: u64,
+    pub max_us: u64,
+}
+
+impl PhaseStat {
+    fn add(&mut self, ms: f64) {
+        let us = to_micros(ms);
+        self.count += 1;
+        self.total_us += us;
+        self.max_us = self.max_us.max(us);
+    }
+
+    fn merge(&mut self, other: PhaseStat) {
+        self.count += other.count;
+        self.total_us += other.total_us;
+        self.max_us = self.max_us.max(other.max_us);
+    }
+}
+
+/// The phases other than running the statement: the extended protocol's parse and bind, and
+/// cursor fetches. Running it is counted in the statement's calls and timings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Phases {
+    pub parse: PhaseStat,
+    pub bind: PhaseStat,
+    pub fetch: PhaseStat,
+}
+
+impl Phases {
+    /// Microseconds across all three phases.
+    #[must_use]
+    pub fn total_us(&self) -> u64 {
+        self.parse.total_us + self.bind.total_us + self.fetch.total_us
+    }
+
+    fn slot(&mut self, phase: Phase) -> Option<&mut PhaseStat> {
+        match phase {
+            Phase::Parse => Some(&mut self.parse),
+            Phase::Bind => Some(&mut self.bind),
+            Phase::Fetch => Some(&mut self.fetch),
+            Phase::Execute => None,
+        }
+    }
+}
+
 /// Statistics of one normalized statement.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueryStats {
@@ -151,6 +200,9 @@ pub struct QueryStats {
     pub lock_wait_us: u64,
     pub temp_files: u64,
     pub temp_bytes: u64,
+    /// Parse, bind and fetch time.
+    #[serde(default)]
+    pub phases: Phases,
 }
 
 impl QueryStats {
@@ -179,6 +231,7 @@ impl QueryStats {
             lock_wait_us: 0,
             temp_files: 0,
             temp_bytes: 0,
+            phases: Phases::default(),
         }
     }
 
@@ -216,12 +269,25 @@ impl QueryStats {
         }
         self.seen(ts);
         if let Some(ms) = duration_ms {
-            let us = to_micros(ms);
-            self.timed += 1;
-            self.total_us += us;
-            self.min_us = Some(self.min_us.map_or(us, |m| m.min(us)));
-            self.max_us = self.max_us.max(us);
-            self.sketch.add(ms);
+            self.time(ms);
+        }
+    }
+
+    /// Adds a duration to a call already counted.
+    fn time(&mut self, ms: f64) {
+        let us = to_micros(ms);
+        self.timed += 1;
+        self.total_us += us;
+        self.min_us = Some(self.min_us.map_or(us, |m| m.min(us)));
+        self.max_us = self.max_us.max(us);
+        self.sketch.add(ms);
+    }
+
+    /// Adds time spent in a phase other than running the statement.
+    fn phase(&mut self, phase: Phase, ms: f64, ts: Timestamp) {
+        self.seen(ts);
+        if let Some(slot) = self.phases.slot(phase) {
+            slot.add(ms);
         }
     }
 }
@@ -260,6 +326,9 @@ impl Merge for QueryStats {
         self.lock_wait_us += other.lock_wait_us;
         self.temp_files += other.temp_files;
         self.temp_bytes += other.temp_bytes;
+        self.phases.parse.merge(other.phases.parse);
+        self.phases.bind.merge(other.phases.bind);
+        self.phases.fetch.merge(other.phases.fetch);
     }
 }
 
@@ -780,41 +849,47 @@ impl Accumulators {
         let ts = record.ts;
         match &event {
             Event::Statement {
+                kind: kind @ (StatementKind::Parse | StatementKind::Bind),
+                duration_ms: Some(ms),
+                text,
+                ..
+            } => {
+                let phase = if *kind == StatementKind::Parse {
+                    Phase::Parse
+                } else {
+                    Phase::Bind
+                };
+                self.query_for(text, ts, record.query_id)
+                    .phase(phase, *ms, ts);
+            }
+            Event::Statement {
+                kind: StatementKind::Statement,
+                duration_ms: Some(ms),
+                ..
+            } if record
+                .correlation
+                .as_ref()
+                .is_some_and(|c| c.phase == Phase::Fetch) =>
+            {
+                if let Some(c) = &record.correlation {
+                    self.query_for(&c.sql, ts, record.query_id)
+                        .phase(Phase::Fetch, *ms, ts);
+                }
+            }
+            Event::Duration { duration_ms } => {
+                if let Some(c) = &record.correlation {
+                    self.query_for(&c.sql, ts, record.query_id)
+                        .time(*duration_ms);
+                }
+            }
+            Event::Statement {
                 kind: kind @ (StatementKind::Statement | StatementKind::Execute),
                 duration_ms,
                 text,
                 ..
             } => {
-                let capture_params = self.capture_params;
-                let query = self.query_for(text, ts, record.query_id);
-                query.call(*duration_ms, ts, *kind);
-                let (fingerprint, parsed) = (query.id, query.parsed);
-                if let Some(ms) = duration_ms {
-                    let us = to_micros(*ms);
-                    let wanted =
-                        fingerprint != 0 && us >= EXAMPLE_MIN_US && query.examples.wants(us);
-                    if wanted {
-                        let who = who_key(
-                            record.database.as_deref(),
-                            record.user.as_deref(),
-                            record.application.as_deref(),
-                            record.host.as_deref(),
-                        );
-                        let params = if capture_params {
-                            parameters(record).map(slowest::cut)
-                        } else {
-                            None
-                        };
-                        query.examples.offer(Example {
-                            ts: record.ts,
-                            duration_us: us,
-                            who,
-                            params,
-                        });
-                        self.remember_who(who, record);
-                    }
-                    self.offer_slow(record, (fingerprint, parsed), text, us);
-                }
+                let text = record.correlation.as_ref().map_or(text, |c| &c.sql);
+                self.run_statement(record, text, *duration_ms, *kind);
             }
             Event::LockWait { .. } => {
                 if let Some(sql) = record.statement.as_deref() {
@@ -851,6 +926,47 @@ impl Accumulators {
             let id = query.id;
             self.totals.error_statement(record, id);
             self.totals.cancelled_statement(record, id);
+        }
+    }
+
+    /// Counts one run of `text` (the query behind a cursor or prepared statement, when the record
+    /// is correlated) and keeps its slowest executions.
+    fn run_statement(
+        &mut self,
+        record: &LogRecord,
+        text: &str,
+        duration_ms: Option<f64>,
+        kind: StatementKind,
+    ) {
+        let ts = record.ts;
+        let capture_params = self.capture_params;
+        let query = self.query_for(text, ts, record.query_id);
+        query.call(duration_ms, ts, kind);
+        let (fingerprint, parsed) = (query.id, query.parsed);
+        if let Some(ms) = duration_ms {
+            let us = to_micros(ms);
+            let wanted = fingerprint != 0 && us >= EXAMPLE_MIN_US && query.examples.wants(us);
+            if wanted {
+                let who = who_key(
+                    record.database.as_deref(),
+                    record.user.as_deref(),
+                    record.application.as_deref(),
+                    record.host.as_deref(),
+                );
+                let params = if capture_params {
+                    parameters(record).map(slowest::cut)
+                } else {
+                    None
+                };
+                query.examples.offer(Example {
+                    ts: record.ts,
+                    duration_us: us,
+                    who,
+                    params,
+                });
+                self.remember_who(who, record);
+            }
+            self.offer_slow(record, (fingerprint, parsed), text, us);
         }
     }
 
@@ -1608,5 +1724,102 @@ mod tests {
         let query = a.queries.values().next().unwrap();
         assert_eq!(query.examples.rows().len(), 0);
         assert!(a.who.is_empty());
+    }
+
+    fn linked(mut record: LogRecord, sql: &str, phase: Phase, timing_only: bool) -> LogRecord {
+        record.correlation = Some(crate::log::Correlation {
+            sql: sql.to_owned(),
+            phase,
+            timing_only,
+        });
+        record
+    }
+
+    #[test]
+    fn a_slow_bind_alone_makes_a_row_with_phase_time_and_no_calls() {
+        let mut a = acc();
+        a.add_record(&log(
+            1,
+            "duration: 900.000 ms  bind S_1: SELECT * FROM t WHERE a = $1",
+        ));
+        a.add_record(&log(
+            1,
+            "duration: 5.000 ms  parse S_1: SELECT * FROM t WHERE a = $1",
+        ));
+        let q = a.queries.values().next().unwrap();
+        assert_eq!(q.calls, 0);
+        assert_eq!((q.phases.bind.count, q.phases.bind.total_us), (1, 900_000));
+        assert_eq!((q.phases.parse.count, q.phases.parse.total_us), (1, 5_000));
+        assert_eq!(q.phases.total_us(), 905_000);
+        // Not a statement run: nothing joins the timeline's statement counts.
+        assert_eq!(
+            a.totals
+                .timeline
+                .buckets
+                .values()
+                .map(|b| b.statements)
+                .sum::<u64>(),
+            0
+        );
+    }
+
+    #[test]
+    fn the_three_phases_of_one_execution_land_on_one_fingerprint() {
+        let mut a = acc();
+        let sql = "SELECT * FROM t WHERE a = $1";
+        a.add_record(&log(
+            1,
+            &format!("duration: 2.000 ms  parse <unnamed>: {sql}"),
+        ));
+        a.add_record(&log(
+            1,
+            &format!("duration: 3.000 ms  bind <unnamed>: {sql}"),
+        ));
+        a.add_record(&log(
+            1,
+            &format!("duration: 4.000 ms  execute <unnamed>: {sql}"),
+        ));
+        assert_eq!(a.queries.len(), 1);
+        let q = a.queries.values().next().unwrap();
+        assert_eq!((q.calls, q.execute_calls, q.total_us), (1, 1, 4_000));
+        assert_eq!(q.phases.total_us(), 5_000);
+    }
+
+    #[test]
+    fn a_correlated_fetch_adds_fetch_time_to_the_cursors_query() {
+        let mut a = acc();
+        a.add_record(&linked(
+            statement(1, 5.0, "DECLARE c CURSOR FOR SELECT * FROM big"),
+            "SELECT * FROM big",
+            Phase::Execute,
+            false,
+        ));
+        a.add_record(&linked(
+            statement(2, 300.0, "FETCH 100 FROM c"),
+            "SELECT * FROM big",
+            Phase::Fetch,
+            false,
+        ));
+        assert_eq!(a.queries.len(), 1, "no separate rows for DECLARE and FETCH");
+        let q = a.queries.values().next().unwrap();
+        assert_eq!(q.calls, 1);
+        assert_eq!(
+            (q.phases.fetch.count, q.phases.fetch.total_us),
+            (1, 300_000)
+        );
+    }
+
+    #[test]
+    fn a_bare_duration_times_the_statement_logged_before_it_without_a_second_call() {
+        let mut a = acc();
+        a.add_record(&log(1, "statement: SELECT 1 FROM t"));
+        a.add_record(&linked(
+            log(1, "duration: 9.000 ms"),
+            "SELECT 1 FROM t",
+            Phase::Execute,
+            true,
+        ));
+        let q = a.queries.values().next().unwrap();
+        assert_eq!((q.calls, q.timed, q.total_us), (1, 1, 9_000));
     }
 }

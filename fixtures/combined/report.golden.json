@@ -502,6 +502,7 @@
       "fingerprint": "f0e619a53604ffb7",
       "link": "both",
       "log": {
+        "all_ms": 220.0,
         "calls": 2,
         "errors": 0,
         "examples": [
@@ -595,6 +596,7 @@
       "fingerprint": "9703bd645db62a78",
       "link": "both",
       "log": {
+        "all_ms": 2.0,
         "calls": 4,
         "errors": 0,
         "examples": [],
@@ -648,6 +650,7 @@
       "fingerprint": "a8fbe6a1633776f6",
       "link": "log",
       "log": {
+        "all_ms": 7.3,
         "calls": 2,
         "errors": 0,
         "examples": [],
@@ -682,6 +685,7 @@
       "fingerprint": "b84a3d2aac05c480",
       "link": "log",
       "log": {
+        "all_ms": 0.0,
         "calls": 0,
         "errors": 1,
         "examples": [],

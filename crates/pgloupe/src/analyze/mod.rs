@@ -1,6 +1,7 @@
 //! Log analysis: events, fingerprints, mergeable accumulators and reports.
 
 pub mod acc;
+pub mod correlate;
 pub mod diagnostics;
 pub mod dimensions;
 pub mod event;

@@ -514,3 +514,42 @@ fn literals_stay_out_of_the_slowest_list_unless_parameters_are_asked_for() -> io
     );
     Ok(())
 }
+
+#[test]
+fn phases_cursors_prepared_statements_and_bare_durations_land_on_their_statement() -> io::Result<()>
+{
+    let out = analyze(
+        &["--prefix", "%m [%p] %q%u@%d ", "--output", "json"],
+        &[fixtures().join("logs/phases.log")],
+    )?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    let rows = report["statements"].as_array().expect("statements");
+    let find = |needle: &str| {
+        rows.iter()
+            .find(|r| r["text"].as_str().is_some_and(|t| t.contains(needle)))
+            .unwrap_or_else(|| panic!("no statement with {needle}"))
+    };
+    // 900 ms of bind and 5 ms of parse on a statement that executed in 1 ms.
+    let table = find("FROM t WHERE a");
+    assert_eq!(table["phases"]["bind"]["total_ms"], 900.0);
+    assert_eq!(table["phases"]["parse"]["total_ms"], 5.0);
+    assert_eq!(table["total_ms"], 1.0);
+    assert_eq!(table["all_ms"], 906.0);
+    // The cursor's query owns its DECLARE and both FETCHes; neither is a row of its own.
+    let big = find("FROM big");
+    assert_eq!(big["phases"]["fetch"]["count"], 2);
+    assert_eq!(big["phases"]["fetch"]["total_ms"], 500.0);
+    assert!(
+        rows.iter()
+            .all(|r| !r["text"].as_str().unwrap_or("").contains("FETCH"))
+    );
+    // SQL-level EXECUTE counts as the prepared query; the bare duration times its statement.
+    assert_eq!(find("FROM film").get("calls"), Some(&serde_json::json!(2)));
+    let counted = find("count(*)");
+    assert_eq!(
+        (counted["calls"].as_u64(), counted["total_ms"].as_f64()),
+        (Some(1), Some(50.0))
+    );
+    Ok(())
+}
