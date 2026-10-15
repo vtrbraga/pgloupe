@@ -7,6 +7,13 @@ pub mod size;
 pub mod truth;
 pub mod verify;
 
+/// Label on bench containers.
+///
+/// Separate from `generate`'s and never cleaned up automatically, so runs can overlap. Remove an
+/// interrupted run's container with
+/// `docker rm -f $(docker ps -aq --filter label=pgloupe.synth.bench=1)`.
+pub const LABEL: &str = "pgloupe.synth.bench=1";
+
 /// Server settings for a bench run, on top of [`crate::container::SETTINGS`].
 ///
 /// The file name carries a timestamp so size-based rotation starts a new file instead of

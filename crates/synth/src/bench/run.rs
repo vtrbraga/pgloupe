@@ -19,7 +19,7 @@ use super::{
 use crate::{
     bootstrap,
     cli::BenchRunArgs,
-    container::{self, LABEL, PgContainer, RunSpec},
+    container::{PgContainer, RunSpec},
     dataset,
     session::Target,
     snapshot,
@@ -139,7 +139,6 @@ fn start(
     args: &BenchRunArgs,
     dir: &Path,
 ) -> anyhow::Result<(PgContainer, Target, PathBuf, PathBuf)> {
-    container::remove_stale(LABEL)?;
     let dataset_dir = fs::canonicalize(dataset::ensure_pagila(&args.cache)?)
         .context("resolving dataset directory")?;
     let log_dir = dir.join("log");
@@ -157,7 +156,7 @@ fn start(
         name: &name,
         image: &image,
         pg_major: args.pg.number(),
-        label: LABEL,
+        label: super::LABEL,
         uid: owner.uid(),
         gid: owner.gid(),
         log_dir: &log_dir,
