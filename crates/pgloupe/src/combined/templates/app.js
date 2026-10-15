@@ -15,6 +15,7 @@
     if (!data || data.kind !== 'pgloupe.report') { return false; }
     rawJson = raw;
     D = data;
+    L.setZone(D.display_tz);
     logs = D.logs || null;
     stats = D.inputs && D.inputs.stats;
     rows = D.statements || [];
@@ -159,6 +160,7 @@
     var meta = h('div', { 'class': 'meta' }, [D.generator, h('br'), 'schema ' + D.schema_version, h('br'), 'keys: / search, j k, 1-' + sections.length]);
     var rail = h('aside', { 'class': 'rail' }, [logo, nav, h('div', { 'class': 'spacer' }), meta]);
     var subs = [];
+    subs.push(h('span', { text: 'times in ' + (D.display_tz || 'UTC') }));
     if (D.windows && D.windows.logs) { subs.push(h('span', { text: 'Logs ' + L.fmtTime(D.windows.logs.from, true) + ' → ' + L.fmtTime(D.windows.logs.to, true) })); }
     if (D.windows && D.windows.stats) { subs.push(h('span', { text: 'pg_stat_statements ' + L.fmtTime(D.windows.stats.from, true) + ' → ' + L.fmtTime(D.windows.stats.to, true) })); }
     if (D.windows && D.windows.overlap_pct !== null && D.windows.overlap_pct !== undefined) { subs.push(h('span', { text: 'overlap ' + Math.round(D.windows.overlap_pct) + '%' })); }

@@ -29,7 +29,12 @@ use crate::{
 
 /// A close look at your Postgres logs and query stats.
 #[derive(Debug, Parser)]
-#[command(version, about, arg_required_else_help = true)]
+#[command(
+    version,
+    about,
+    arg_required_else_help = true,
+    after_help = "Exit codes: 0 success; 1 the work failed (unreadable input, nothing decoded, a server or vendor error); 2 the command line is wrong.\nPostgres 14 to 18 are supported; logs may be stderr, csvlog or jsonlog, plain or gzip, zstd, xz, lz4 or bzip2."
+)]
 pub struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -76,12 +81,10 @@ impl Cli {
                         ErrorKind::ArgumentConflict,
                         "filters apply while reading logs: give them to `logs ingest` (the store then holds only what they keep), or to `report` with log FILES",
                     )
-                } else if args.files.is_empty()
-                    && (args.capture.params || args.capture.slowest.is_some())
-                {
+                } else if args.files.is_empty() && args.capture.params {
                     fail(
                         ErrorKind::ArgumentConflict,
-                        "--params and --slowest apply while reading log FILES; a store keeps what its ingest captured",
+                        "--params applies while reading log FILES; a store keeps the parameters its ingest captured",
                     )
                 } else if info_pair(&args.before_info, &args.after_info) {
                     fail(
@@ -164,8 +167,8 @@ struct DiffArgs {
     /// Metric that orders the table.
     #[arg(long, value_enum, default_value_t = By::Total)]
     by: By,
-    /// Rows to show.
-    #[arg(long, default_value_t = 20)]
+    /// Rows to show (`all` for every statement).
+    #[arg(long, default_value = "20", value_parser = parse_top)]
     top: usize,
     /// With `--by mean`, skip queries with fewer calls than this in the window.
     #[arg(long, default_value_t = 1)]
@@ -195,8 +198,8 @@ struct AnalyzeArgs {
     /// Metric that orders the statement table.
     #[arg(long, value_enum, default_value_t = AnalyzeBy::Total)]
     by: AnalyzeBy,
-    /// Statements to list.
-    #[arg(long, default_value_t = 20)]
+    /// Statements to list (`all` for every statement).
+    #[arg(long, default_value = "20", value_parser = parse_top)]
     top: usize,
     /// Timeline resolution: `30s`, `1m`, `1h`.
     #[arg(long, default_value = "1m", value_parser = parse_bucket)]
@@ -270,6 +273,18 @@ struct FilterArgs {
     /// Zone for `--between`, `--exclude-hours` and `--weekdays`: an IANA name or `UTC` (default).
     #[arg(long, value_parser = parse_zone)]
     tz: Option<(jiff::tz::TimeZone, String)>,
+    /// Make the report safe to share: users, databases, applications and hosts become stable
+    /// pseudonyms, and literals, emails and addresses are removed from every text.
+    #[arg(long)]
+    anonymize: bool,
+    /// Secret that decides the pseudonyms (default: none, so common names are guessable).
+    #[arg(
+        long,
+        requires = "anonymize",
+        env = "PGLOUPE_ANONYMIZE_KEY",
+        hide_env_values = true
+    )]
+    anonymize_key: Option<String>,
 }
 
 impl FilterArgs {
@@ -298,6 +313,9 @@ impl FilterArgs {
             pids: self.pids.clone(),
             exclude_message: self.exclude_message.clone(),
             clock,
+            anonymize: self
+                .anonymize
+                .then(|| self.anonymize_key.clone().unwrap_or_default()),
         }
     }
 }
@@ -306,6 +324,14 @@ fn parse_zone(text: &str) -> Result<(jiff::tz::TimeZone, String), String> {
     jiff::tz::TimeZone::get(text)
         .map(|zone| (zone, text.to_owned()))
         .map_err(|e| format!("{text}: {e}"))
+}
+
+fn parse_top(text: &str) -> Result<usize, String> {
+    if text.eq_ignore_ascii_case("all") {
+        return Ok(usize::MAX);
+    }
+    text.parse()
+        .map_err(|_unparsed| format!("{text}: a number, or `all`"))
 }
 
 fn parse_regex(text: &str) -> Result<regex::Regex, String> {
@@ -367,6 +393,9 @@ struct StoreReportArgs {
     /// The store file written by `logs ingest`.
     #[arg(long)]
     store: PathBuf,
+    /// Slowest executions to list, at most what the ingest kept (20 unless it was told more).
+    #[arg(long)]
+    slowest: Option<usize>,
     /// Start of the window (RFC 3339 or `YYYY-MM-DD`, UTC); rounded down to the hour.
     #[arg(long, value_parser = store_report::parse_time)]
     since: Option<Timestamp>,
@@ -376,8 +405,8 @@ struct StoreReportArgs {
     /// Metric that orders the statement table.
     #[arg(long, value_enum, default_value_t = AnalyzeBy::Total)]
     by: AnalyzeBy,
-    /// Statements to list.
-    #[arg(long, default_value_t = 20)]
+    /// Statements to list (`all` for every statement).
+    #[arg(long, default_value = "20", value_parser = parse_top)]
     top: usize,
     /// Timeline resolution: a multiple of one minute.
     #[arg(long, default_value = "1m", value_parser = parse_bucket)]
@@ -432,16 +461,26 @@ struct CombinedArgs {
     /// Metric that orders the statement table.
     #[arg(long, value_enum, default_value_t = AnalyzeBy::Total)]
     by: AnalyzeBy,
-    /// Statements to list.
-    #[arg(long, default_value_t = 20)]
+    /// Statements to list (`all` for every statement).
+    #[arg(long, default_value = "20", value_parser = parse_top)]
     top: usize,
     /// Timeline resolution: `30s`, `1m`, `1h` (a multiple of one minute with `--store`).
     #[arg(long, default_value = "1m", value_parser = parse_bucket)]
     bucket: i64,
     /// Report format.
-    #[arg(long = "output", value_enum, default_value_t = ReportFormat::Text)]
-    output: ReportFormat,
-    /// Write the report here instead of to standard output.
+    #[arg(
+        long = "output",
+        value_enum,
+        value_delimiter = ',',
+        num_args = 1,
+        default_value = "text"
+    )]
+    output: Vec<ReportFormat>,
+    /// Show times in this IANA zone in the HTML dashboard (default UTC); JSON and text stay UTC.
+    #[arg(long, value_parser = parse_zone)]
+    display_tz: Option<(jiff::tz::TimeZone, String)>,
+    /// Write the report here instead of to standard output. With several `--output` formats this
+    /// is a path prefix: `--output html,json --out report` writes `report.html` and `report.json`.
     #[arg(long)]
     out: Option<PathBuf>,
     #[command(flatten)]
@@ -456,6 +495,19 @@ enum ReportFormat {
     Json,
     /// One self-contained HTML file.
     Html,
+    /// The statement table, one row per statement.
+    Csv,
+}
+
+impl ReportFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            ReportFormat::Text => "txt",
+            ReportFormat::Json => "json",
+            ReportFormat::Html => "html",
+            ReportFormat::Csv => "csv",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -799,8 +851,11 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
         let store = Store::open_existing(store_path)?;
         let since = args.since.or(delta.as_ref().map(|d| d.before_at));
         let until = args.until.or(delta.as_ref().map(|d| d.after_at));
-        let (report, acc) =
+        let (mut report, acc) =
             store_report::build_parts(&store, store_path, since, until, &options, args.bucket)?;
+        if let Some(kept) = args.capture.slowest {
+            report.slowest.rows.truncate(kept);
+        }
         Some(LogData {
             rows: all_statements(&acc),
             inputs: report.files.len(),
@@ -842,26 +897,66 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
             store: None,
         })
     };
-    let combined = combined::build(logs, delta.as_ref(), &options);
-    let rendered = match args.output {
-        ReportFormat::Text => combined::text(&combined),
-        ReportFormat::Json => {
-            let mut json = combined.to_json()?;
-            json.push('\n');
-            json
-        }
-        ReportFormat::Html => combined::html(&combined)?,
-    };
-    if let Some(path) = &args.out {
-        std::fs::write(path, rendered).with_context(|| format!("writing {}", path.display()))?;
-    } else {
-        if matches!(args.output, ReportFormat::Html) && std::io::stdout().is_terminal() {
-            let _ = writeln!(err, "note: HTML on a terminal; use --out report.html");
-        }
-        out.write_all(rendered.as_bytes())
-            .context("writing output")?;
-    }
+    let mut combined = combined::build(logs, delta.as_ref(), &options);
+    combined.display_tz = args.display_tz.as_ref().map(|(_, name)| name.clone());
+    write_report(&combined, args, out, err)?;
     Ok(if failed { Exit::Failed } else { Exit::Ok })
+}
+
+/// Renders `combined` in each `--output` format and writes it to `--out`, or to standard output.
+fn write_report(
+    combined: &combined::CombinedReport,
+    args: &CombinedArgs,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let mut formats = args.output.clone();
+    formats.dedup_by_key(|f| f.extension());
+    let render = |format: ReportFormat| -> anyhow::Result<String> {
+        Ok(match format {
+            ReportFormat::Text => combined::text(combined),
+            ReportFormat::Json => {
+                let mut json = combined.to_json()?;
+                json.push('\n');
+                json
+            }
+            ReportFormat::Html => combined::html(combined)?,
+            ReportFormat::Csv => combined::csv(combined)?,
+        })
+    };
+    match (&args.out, formats.as_slice()) {
+        (Some(prefix), [_, _, ..]) => {
+            for format in &formats {
+                let mut path = prefix.clone().into_os_string();
+                path.push(".");
+                path.push(format.extension());
+                let path = PathBuf::from(path);
+                std::fs::write(&path, render(*format)?)
+                    .with_context(|| format!("writing {}", path.display()))?;
+                writeln!(out, "wrote {}", path.display()).context("writing output")?;
+            }
+        }
+        (None, [_, _, ..]) => {
+            return Err(anyhow::anyhow!(
+                "several --output formats need --out PREFIX to name the files"
+            ));
+        }
+        (path, [format]) => {
+            let rendered = render(*format)?;
+            if let Some(path) = path {
+                std::fs::write(path, rendered)
+                    .with_context(|| format!("writing {}", path.display()))?;
+            } else {
+                if matches!(format, ReportFormat::Html) && std::io::stdout().is_terminal() {
+                    let _ = writeln!(err, "note: HTML on a terminal; use --out report.html");
+                }
+                out.write_all(rendered.as_bytes())
+                    .context("writing output")?;
+            }
+        }
+        (_, []) => {}
+    }
+    Ok(())
 }
 
 /// `, N skipped` when some lines could not be decoded.
@@ -876,7 +971,7 @@ fn skipped_note(skipped: u64) -> String {
 fn logs_report(args: &StoreReportArgs, out: &mut dyn Write) -> anyhow::Result<Exit> {
     let started = std::time::Instant::now();
     let store = Store::open_existing(&args.store)?;
-    let report = store_report::build(
+    let mut report = store_report::build(
         &store,
         &args.store,
         args.since,
@@ -887,6 +982,9 @@ fn logs_report(args: &StoreReportArgs, out: &mut dyn Write) -> anyhow::Result<Ex
         },
         args.bucket,
     )?;
+    if let Some(kept) = args.slowest {
+        report.slowest.rows.truncate(kept);
+    }
     let rendered = render_report(&report, args.output, started.elapsed())?;
     out.write_all(rendered.as_bytes())
         .context("writing output")?;
@@ -1160,7 +1258,7 @@ mod tests {
         };
         assert_eq!(args.top, 20);
         assert_eq!(args.bucket, 60);
-        assert!(matches!(args.output, ReportFormat::Text));
+        assert!(matches!(args.output.as_slice(), [ReportFormat::Text]));
         assert!(args.out.is_none());
     }
 }

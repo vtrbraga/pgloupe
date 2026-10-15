@@ -14,7 +14,14 @@ use std::{
 use rayon::prelude::*;
 use thiserror::Error;
 
-use super::{Merge, acc::Accumulators, correlate::Correlator, filter::Filter, slice::Slices};
+use super::{
+    Merge,
+    acc::Accumulators,
+    anonymize::{Anonymizer, scrub},
+    correlate::Correlator,
+    filter::Filter,
+    slice::Slices,
+};
 use crate::log::{
     DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions, SetupError,
     Severity, decoder_for,
@@ -210,6 +217,7 @@ fn run_with<S: Fold>(
     let failure = Arc::new(Mutex::new(None));
     let batches = Batches {
         correlator: Correlator::new(),
+        anonymizer: options.filter.anonymize.as_deref().map(Anonymizer::new),
         pending: paths.iter().cloned().collect(),
         current: None,
         options: options.clone(),
@@ -266,6 +274,7 @@ struct Current {
 /// Yields batches of records, file after file.
 struct Batches {
     correlator: Correlator,
+    anonymizer: Option<Anonymizer>,
     pending: VecDeque<PathBuf>,
     current: Option<Current>,
     options: Options,
@@ -334,6 +343,12 @@ impl Iterator for Batches {
                             // still has to be known when its fetches arrive.
                             self.correlator.apply(&mut record);
                             if self.options.filter.keeps(&record) {
+                                if let Some(anonymizer) = &mut self.anonymizer {
+                                    anonymizer.apply(&mut record);
+                                    if let Some(c) = &mut record.correlation {
+                                        c.sql = scrub(&c.sql);
+                                    }
+                                }
                                 batch.push(record);
                             } else {
                                 current.filtered += 1;

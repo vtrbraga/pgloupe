@@ -52,7 +52,14 @@ fn the_dashboard_renders_without_script_errors() -> io::Result<()> {
     let other = lines.next().unwrap_or_default().replace(",t,1,", ",t,999,");
     std::fs::write(&before, format!("{first}\n{other}\n"))?;
     let made = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
-        .args(["report", "--output", "html", "--out"])
+        .args([
+            "report",
+            "--display-tz",
+            "America/Sao_Paulo",
+            "--output",
+            "html",
+            "--out",
+        ])
         .arg(&html)
         .arg(fixtures.join("combined/logs.json"))
         .arg("--before")
@@ -79,6 +86,10 @@ fn the_dashboard_renders_without_script_errors() -> io::Result<()> {
     let dom = String::from_utf8_lossy(&page.stdout);
     assert!(!log.contains("Uncaught"), "script error:\n{log}");
     assert!(dom.contains("Statements"), "dashboard did not render");
+    assert!(
+        dom.contains("times in America/Sao_Paulo"),
+        "display zone not shown"
+    );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

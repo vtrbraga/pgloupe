@@ -421,3 +421,22 @@ fn a_store_keeps_the_filter_its_logs_were_ingested_with() -> io::Result<()> {
     assert!(!late.status.success());
     Ok(())
 }
+
+#[test]
+fn a_store_report_lists_as_many_slowest_executions_as_asked_up_to_what_was_kept() -> io::Result<()>
+{
+    let d = dir("slowest")?;
+    let store = d.join("s.db");
+    let log = fixtures().join("logs/sample.json");
+    assert!(ingest(&store, &[&log], &[])?.status.success());
+    let rows = |extra: &[&str]| -> io::Result<usize> {
+        let value: Value = serde_json::from_str(&stdout(&report(&store, extra)?))?;
+        Ok(value["slowest"]["rows"].as_array().map_or(0, Vec::len))
+    };
+    let all = rows(&[])?;
+    assert!(all >= 2, "the sample has several slow runs ({all})");
+    assert_eq!(rows(&["--slowest", "1"])?, 1);
+    assert_eq!(rows(&["--slowest", "2"])?, 2.min(all));
+    assert_eq!(rows(&["--slowest", "500"])?, all);
+    Ok(())
+}

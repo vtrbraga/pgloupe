@@ -267,3 +267,127 @@ fn the_text_report_says_what_to_fix_first() -> io::Result<()> {
     assert!(block.contains("ShareLock"), "{block}");
     Ok(())
 }
+
+#[test]
+fn csv_lists_every_statement_with_both_sides_and_top_all_lifts_the_limit() -> io::Result<()> {
+    let (before, after) = snapshots();
+    let out = pgloupe(&[
+        "report",
+        s(&logs()),
+        "--before",
+        s(&before),
+        "--after",
+        s(&after),
+        "--output",
+        "csv",
+        "--top",
+        "all",
+    ])?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let mut reader = csv::Reader::from_reader(text.as_bytes());
+    let headers = reader.headers().map_err(io::Error::other)?.clone();
+    for column in [
+        "fingerprint",
+        "kind",
+        "log_p95_ms",
+        "stats_total_ms",
+        "bind_ms",
+        "coverage",
+    ] {
+        assert!(headers.iter().any(|h| h == column), "no column {column}");
+    }
+    let rows: Vec<csv::StringRecord> = reader.records().map(|r| r.unwrap()).collect();
+    let full = json(&[
+        s(&logs()),
+        "--before",
+        s(&before),
+        "--after",
+        s(&after),
+        "--top",
+        "all",
+    ])?;
+    let all = full["statements"].as_array().map_or(0, Vec::len);
+    assert!(rows.len() >= 2);
+    assert_eq!(rows.len(), all, "one row per statement");
+    // A statement seen on both sides has values on both.
+    let link = headers.iter().position(|h| h == "link").unwrap_or(0);
+    let calls = headers.iter().position(|h| h == "stats_calls").unwrap_or(0);
+    let both = rows
+        .iter()
+        .find(|r| &r[link] == "both")
+        .expect("a joined row");
+    assert_ne!(&both[calls], "");
+    Ok(())
+}
+
+#[test]
+fn several_output_formats_are_written_in_one_run() -> io::Result<()> {
+    let d = dir("multi")?;
+    let prefix = d.join("report");
+    let out = pgloupe(&[
+        "report",
+        s(&logs()),
+        "--output",
+        "html,json,csv",
+        "--out",
+        s(&prefix),
+    ])?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    for ext in ["html", "json", "csv"] {
+        let file = d.join(format!("report.{ext}"));
+        assert!(fs::metadata(&file)?.len() > 0, "{}", file.display());
+        assert!(stdout(&out).contains(&format!("report.{ext}")));
+    }
+    let without = pgloupe(&["report", s(&logs()), "--output", "html,json"])?;
+    assert!(!without.status.success());
+    assert!(stderr(&without).contains("--out"), "{}", stderr(&without));
+    Ok(())
+}
+
+#[test]
+fn anonymized_reports_leak_no_name_in_any_format_and_keep_the_numbers() -> io::Result<()> {
+    let log = fixtures().join("logs/sample.json");
+    let raw = json(&[s(&log)])?;
+    let anon = json(&[s(&log), "--anonymize", "--anonymize-key", "k"])?;
+    // Every user, database, application and host of the raw report, and the literals.
+    let mut secrets: Vec<String> = Vec::new();
+    for dimension in ["database", "user", "application", "host"] {
+        for row in raw["logs"]["dimensions"][dimension]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            if let Some(v) = row["value"].as_str().filter(|v| !v.starts_with('(')) {
+                secrets.push(v.to_owned());
+            }
+        }
+    }
+    assert!(secrets.len() >= 3, "{secrets:?}");
+    for format in ["json", "html", "text"] {
+        let out = pgloupe(&[
+            "report",
+            s(&log),
+            "--anonymize",
+            "--anonymize-key",
+            "k",
+            "--output",
+            format,
+        ])?;
+        assert!(out.status.success(), "{}", stderr(&out));
+        let text = stdout(&out);
+        for secret in &secrets {
+            assert!(!text.contains(secret.as_str()), "{format} leaks {secret:?}");
+        }
+    }
+    // Same numbers, other names.
+    assert_eq!(
+        raw["logs"]["overview"]["events"],
+        anon["logs"]["overview"]["events"]
+    );
+    assert_eq!(
+        raw["statements"].as_array().map(Vec::len),
+        anon["statements"].as_array().map(Vec::len)
+    );
+    Ok(())
+}

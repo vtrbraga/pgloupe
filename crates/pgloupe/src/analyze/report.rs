@@ -254,6 +254,9 @@ pub struct StatementRow {
     pub fingerprint: String,
     /// The `query_id` the log carried, as text (64-bit ids do not survive JSON numbers).
     pub query_id: Option<String>,
+    /// What the statement does: `select`, `insert`, `update`, `delete`, `copy`, `ddl`, `tcl`,
+    /// `utility` or `other`.
+    pub kind: &'static str,
     pub text: String,
     pub parsed: bool,
     pub calls: u64,
@@ -616,6 +619,7 @@ fn statement_row(
     StatementRow {
         fingerprint: format!("{:016x}", query.id),
         query_id: query.query_id.map(|id| id.to_string()),
+        kind: query.kind.as_str(),
         text: query.text.clone(),
         parsed: query.parsed,
         calls: query.calls,

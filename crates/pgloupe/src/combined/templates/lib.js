@@ -63,10 +63,28 @@ var PgLib = (function () {
   function shortFp(fp) { return typeof fp === 'string' ? fp.slice(0, 8) : ''; }
 
   /** `2026-10-14T10:20:09Z` -> `10:20:09`, or the date too when asked. */
+  var zone = null;
+  /** Reads timestamps in this IANA zone from now on (`null` for UTC, the way the report stores them). */
+  function setZone(name) { zone = name || null; }
+
+  function inZone(ts) {
+    var d = new Date(ts);
+    if (isNaN(d.getTime())) { return null; }
+    var parts = {};
+    new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      .formatToParts(d).forEach(function (p) { parts[p.type] = p.value; });
+    return [parts.year + '-' + parts.month + '-' + parts.day, parts.hour + ':' + parts.minute + ':' + parts.second];
+  }
+
   function fmtTime(ts, withDate) {
-    if (typeof ts !== 'string') { return '—'; }
+    if (typeof ts !== 'string') { return '\u2014'; }
     var m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/.exec(ts);
     if (!m) { return ts; }
+    if (zone) {
+      var local;
+      try { local = inZone(ts); } catch (e) { local = null; }
+      if (local) { m = [null, local[0], local[1]]; }
+    }
     return withDate ? m[1] + ' ' + m[2] : m[2];
   }
 
@@ -326,7 +344,7 @@ var PgLib = (function () {
   }
 
   var api = {
-    remapRange: remapRange, fmtAgo: fmtAgo, fmtIn: fmtIn, shouldFetch: shouldFetch,
+    remapRange: remapRange, setZone: setZone, fmtAgo: fmtAgo, fmtIn: fmtIn, shouldFetch: shouldFetch,
     clampRange: clampRange,
     fmtInt: fmtInt, fmtMs: fmtMs, fmtBytes: fmtBytes, fmtPct: fmtPct, fmtCoverage: fmtCoverage, fmtCompact: fmtCompact,
     shortFp: shortFp, fmtTime: fmtTime, compareValues: compareValues, sortRows: sortRows,

@@ -166,3 +166,20 @@ test('a time selection follows its time when the window slides', () => {
   assert.equal(L.remapRange(oldBars, null, newBars), null);
   assert.equal(L.remapRange(oldBars, { from: 3, to: 4 }, []), null);
 });
+
+test('times are read in the zone the report asks for', () => {
+  const ts = '2026-10-14T12:30:15.123Z';
+  assert.equal(L.fmtTime(ts, true), '2026-10-14 12:30:15');
+  L.setZone('America/Sao_Paulo');
+  try {
+    assert.equal(L.fmtTime(ts, true), '2026-10-14 09:30:15');
+    assert.equal(L.fmtTime(ts, false), '09:30:15');
+    // The date moves with the clock.
+    assert.equal(L.fmtTime('2026-10-14T02:00:00Z', true), '2026-10-13 23:00:00');
+    L.setZone('Not/AZone');
+    assert.equal(L.fmtTime(ts, false), '12:30:15', 'an unknown zone falls back to UTC');
+  } finally {
+    L.setZone(null);
+  }
+  assert.equal(L.fmtTime(ts, false), '12:30:15');
+});

@@ -273,8 +273,10 @@ fn minutes(text: &str) -> Result<u16, String> {
         .split_once(':')
         .ok_or_else(|| format!("{text}: use HH:MM"))?;
     let (h, m): (u16, u16) = (
-        h.parse().map_err(|_unparsed| format!("{text}: use HH:MM"))?,
-        m.parse().map_err(|_unparsed| format!("{text}: use HH:MM"))?,
+        h.parse()
+            .map_err(|_unparsed| format!("{text}: use HH:MM"))?,
+        m.parse()
+            .map_err(|_unparsed| format!("{text}: use HH:MM"))?,
     );
     if h > 24 || m > 59 || (h == 24 && m > 0) {
         return Err(format!("{text}: not a time of day"));
@@ -302,6 +304,8 @@ pub struct Filter {
     pub exclude_message: Option<Regex>,
     /// Time of day and day of week.
     pub clock: Clock,
+    /// Anonymize records as they are read, with this key (see [`super::anonymize`]).
+    pub anonymize: Option<String>,
 }
 
 impl Filter {
@@ -315,6 +319,7 @@ impl Filter {
             && self.pids.is_empty()
             && self.exclude_message.is_none()
             && self.clock.is_empty()
+            && self.anonymize.is_none()
     }
 
     /// The filter as one line, empty when it keeps everything. A store keeps this next to what
@@ -342,6 +347,9 @@ impl Filter {
             && let Some(name) = &self.clock.zone_name
         {
             parts.push(format!("tz={name}"));
+        }
+        if self.anonymize.is_some() {
+            parts.push("anonymize".to_owned());
         }
         parts.join("; ")
     }

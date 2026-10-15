@@ -1,6 +1,7 @@
 //! The combined report: log statistics joined with `pg_stat_statements` deltas.
 
 mod actions;
+mod csv;
 mod findings;
 mod html;
 mod join;
@@ -9,6 +10,7 @@ mod testkit;
 mod text;
 
 pub use actions::{Action, actions};
+pub use csv::csv;
 pub use findings::{Context, findings};
 pub use html::{HtmlError, html, html_live};
 pub use join::{Joined, join, rank};
@@ -118,6 +120,9 @@ pub struct CombinedReport {
     pub statements: Vec<JoinedRow>,
     /// The log analysis; its own `statements` are empty because they are above.
     pub logs: Option<Report>,
+    /// The zone the dashboard shows times in; every timestamp in this document stays UTC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_tz: Option<String>,
 }
 
 /// Where the report's data came from.
@@ -198,6 +203,23 @@ pub struct LogData {
     pub store: Option<String>,
 }
 
+/// What the logs were filtered by, when anything was left out.
+fn log_filter(report: Option<&Report>) -> Option<String> {
+    let report = report?;
+    report
+        .store
+        .as_ref()
+        .and_then(|store| store.filter.clone())
+        .or_else(|| {
+            (report.diagnostics.filtered > 0).then(|| {
+                format!(
+                    "{} records dropped by the filters",
+                    report.diagnostics.filtered
+                )
+            })
+        })
+}
+
 /// Joins the two sources, ranks and truncates the statements by `options`, and adds findings.
 #[must_use]
 pub fn build(
@@ -245,20 +267,7 @@ pub fn build(
     let log_overflow_calls = log_report
         .as_ref()
         .map_or(0, |report| report.diagnostics.overflow_calls);
-    let log_filter = log_report.as_ref().and_then(|report| {
-        report
-            .store
-            .as_ref()
-            .and_then(|store| store.filter.clone())
-            .or_else(|| {
-                (report.diagnostics.filtered > 0).then(|| {
-                    format!(
-                        "{} records dropped by the filters",
-                        report.diagnostics.filtered
-                    )
-                })
-            })
-    });
+    let log_filter = log_filter(log_report.as_ref());
     let mut joined = join(log_rows, delta);
     rank(&mut joined.rows, options.by);
     let shown = joined.rows.len().min(options.top);
@@ -304,6 +313,7 @@ pub fn build(
             report.statements.clear();
             report
         }),
+        display_tz: None,
     }
 }
 
