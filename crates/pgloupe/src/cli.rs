@@ -16,6 +16,7 @@ use crate::{
         render as analyze_render,
         report::{Report, ReportOptions, SortBy as ReportSortBy, all_statements},
     },
+    collect,
     combined::{self, LogData},
     log::{self, Format, Options, source, time::parse_offset_arg},
     stats::{
@@ -116,6 +117,10 @@ enum Command {
     /// One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or
     /// text, with the two joined per statement.
     Report(Box<CombinedArgs>),
+    /// Take a `pg_stat_statements` snapshot from a live server (read-only; never resets anything).
+    Snap(collect::commands::SnapArgs),
+    /// Check what the server and the role lack for a useful report, and how to fix it.
+    Doctor(collect::commands::DoctorArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -533,6 +538,8 @@ pub fn run(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Resul
             command: LogsCommand::Report(args),
         } => logs_report(args, out),
         Command::Report(args) => report(args, out, err),
+        Command::Snap(args) => collect::commands::snap(args, out, err),
+        Command::Doctor(args) => collect::commands::doctor(args, out, err),
     }
 }
 

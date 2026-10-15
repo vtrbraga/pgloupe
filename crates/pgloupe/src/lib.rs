@@ -2,6 +2,7 @@
 
 pub mod analyze;
 pub mod cli;
+pub mod collect;
 pub mod combined;
 pub mod error;
 pub mod log;
