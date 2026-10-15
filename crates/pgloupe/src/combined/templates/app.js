@@ -5,26 +5,47 @@
   var dataNode = document.getElementById('pgloupe-data');
   var root = document.getElementById('app');
   if (!dataNode || !root) { return; }
-  var rawJson = dataNode.textContent;
-  var D;
-  try { D = JSON.parse(rawJson); } catch (e) { return; }
-  var logs = D.logs || null;
-  var stats = D.inputs && D.inputs.stats;
-  var rows = D.statements || [];
-  var findings = D.findings || [];
-  var actions = D.actions || [];
-  var errorsByFp = Object.create(null);
-  if (logs) { (logs.errors || []).forEach(function (e) { (e.statements || []).forEach(function (s) { (errorsByFp[s.fingerprint] = errorsByFp[s.fingerprint] || []).push({ error: e, count: s.count }); }); }); }
-  var newShare = (function () {
+  var state = L.parseHash(location.hash);
+  var rawJson, D, logs, stats, rows, findings, actions, errorsByFp, byFp, newShare, hideNew, display, sections;
+
+  /** Reads a report (JSON text) into the derived state; false if it is not one. */
+  function load(raw) {
+    var data;
+    try { data = JSON.parse(raw); } catch (e) { return false; }
+    if (!data || data.kind !== 'pgloupe.report') { return false; }
+    rawJson = raw;
+    D = data;
+    logs = D.logs || null;
+    stats = D.inputs && D.inputs.stats;
+    rows = D.statements || [];
+    findings = D.findings || [];
+    actions = D.actions || [];
+    errorsByFp = Object.create(null);
+    if (logs) { (logs.errors || []).forEach(function (e) { (e.statements || []).forEach(function (s) { (errorsByFp[s.fingerprint] = errorsByFp[s.fingerprint] || []).push({ error: e, count: s.count }); }); }); }
     var withStats = rows.filter(function (r) { return r.stats; });
     var fresh = withStats.filter(function (r) { return r.stats.flags.indexOf('new') !== -1; });
-    return withStats.length ? fresh.length / withStats.length : 0;
-  })();
-  var hideNew = newShare > 0.8;
-  if (hideNew && state.flag === 'new') { state.flag = ''; }
+    newShare = withStats.length ? fresh.length / withStats.length : 0;
+    hideNew = newShare > 0.8;
+    if (hideNew && state.flag === 'new') { state.flag = ''; }
+    byFp = Object.create(null);
+    rows.forEach(function (r) { byFp[r.fingerprint] = r; });
+    display = logs ? L.downsample(logs.timeline.buckets, 240) : [];
+    sections = [
+      { id: 'overview', label: 'Overview', show: true },
+      { id: 'statements', label: 'Statements', show: rows.length > 0 },
+      { id: 'errors', label: 'Errors', show: !!logs },
+      { id: 'locks', label: 'Locks & temp files', show: !!logs },
+      { id: 'sessions', label: 'Sessions', show: !!logs },
+      { id: 'maintenance', label: 'Maintenance', show: !!logs },
+      { id: 'breakdowns', label: 'Breakdowns', show: !!logs },
+      { id: 'slowest', label: 'Slowest', show: !!(logs && logs.slowest && logs.slowest.rows.length) },
+      { id: 'findings', label: 'Data caveats', show: findings.length > 0 }
+    ].filter(function (s) { return s.show; });
+    if (!sections.some(function (s) { return s.id === state.s; })) { state.s = 'overview'; }
+    return true;
+  }
+  if (!load(dataNode.textContent)) { return; }
   function visibleFlags(r) { return r.stats ? r.stats.flags.filter(function (f) { return !(hideNew && f === 'new'); }) : []; }
-  var byFp = Object.create(null);
-  rows.forEach(function (r) { byFp[r.fingerprint] = r; });
 
   var SERIES = [
     { key: 'statements', label: 'Statements', color: 'var(--c-statements)', visible: true },
@@ -34,8 +55,6 @@
   ];
   var KIND_COLORS = { select: '#4f7cff', insert: '#12a594', update: '#f0a020', delete: '#e5484d', copy: '#8b5cf6', ddl: '#d946ef', tcl: '#64748b', utility: '#94a3b8', other: '#cbd5e1' };
 
-  var state = L.parseHash(location.hash);
-  var display = logs ? L.downsample(logs.timeline.buckets, 240) : [];
 
   /* ---------- helpers ---------- */
   function h(tag, attrs, kids) {
@@ -121,19 +140,6 @@
   }
 
   /* ---------- sections ---------- */
-  var sections = [
-    { id: 'overview', label: 'Overview', show: true },
-    { id: 'statements', label: 'Statements', show: rows.length > 0 },
-    { id: 'errors', label: 'Errors', show: !!logs },
-    { id: 'locks', label: 'Locks & temp files', show: !!logs },
-    { id: 'sessions', label: 'Sessions', show: !!logs },
-    { id: 'maintenance', label: 'Maintenance', show: !!logs },
-    { id: 'breakdowns', label: 'Breakdowns', show: !!logs },
-    { id: 'slowest', label: 'Slowest', show: !!(logs && logs.slowest && logs.slowest.rows.length) },
-    { id: 'findings', label: 'Data caveats', show: findings.length > 0 }
-  ].filter(function (s) { return s.show; });
-  if (!sections.some(function (s) { return s.id === state.s; })) { state.s = 'overview'; }
-
   var chrome = {};
   function renderChrome() {
     var warn = findings.filter(function (f) { return f.severity === 'warn'; }).length;
@@ -738,4 +744,14 @@
   document.body.appendChild(scrim);
   document.body.appendChild(drawerNode);
   render();
+  /** Lets the live updater swap in a newer report without losing the view. */
+  window.PgApp = {
+    update: function (raw) {
+      var y = window.scrollY;
+      if (!load(raw)) { return false; }
+      render();
+      window.scrollTo(0, y);
+      return true;
+    }
+  };
 })();
