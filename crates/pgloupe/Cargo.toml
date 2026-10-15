@@ -26,6 +26,11 @@ thiserror.workspace = true
 xxhash-rust.workspace = true
 xz2.workspace = true
 zstd.workspace = true
+postgres.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+tiny_http.workspace = true
+tokio-postgres-rustls.workspace = true
 
 [lints]
 workspace = true
