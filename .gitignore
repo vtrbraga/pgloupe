@@ -5,7 +5,7 @@
 # Local development data (never commit raw logs or stats)
 /data/
 
-# Local Claude notes (docs live in OneDrive, see CLAUDE.md)
+# Local assistant notes and settings (kept out of the repository)
 CLAUDE.md
 CLAUDE.local.md
 .claude/
