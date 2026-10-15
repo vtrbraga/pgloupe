@@ -1,0 +1,62 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH pgloupe-stats-diff 1  "diff " 
+.SH NAME
+pgloupe\-stats\-diff \- Compare two snapshot CSV exports and rank the queries that changed
+.SH SYNOPSIS
+\fBpgloupe stats diff\fR [\fB\-\-before\-info\fR] [\fB\-\-after\-info\fR] [\fB\-\-by\fR] [\fB\-\-top\fR] [\fB\-\-min\-calls\fR] [\fB\-\-wide\fR] [\fB\-\-format\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIBEFORE\fR> <\fIAFTER\fR> 
+.SH DESCRIPTION
+Compare two snapshot CSV exports and rank the queries that changed
+.SH OPTIONS
+.TP
+\fB\-\-before\-info\fR \fI<BEFORE_INFO>\fR
+`pg_stat_statements_info` CSV taken with the older snapshot
+.TP
+\fB\-\-after\-info\fR \fI<AFTER_INFO>\fR
+`pg_stat_statements_info` CSV taken with the newer snapshot
+.TP
+\fB\-\-by\fR \fI<BY>\fR [default: total]
+Metric that orders the table
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+total: Δ total execution time
+.IP \(bu 2
+calls: Δ calls
+.IP \(bu 2
+mean: Mean execution time inside the window
+.RE
+.TP
+\fB\-\-top\fR \fI<TOP>\fR [default: 20]
+Rows to show (`all` for every statement)
+.TP
+\fB\-\-min\-calls\fR \fI<MIN_CALLS>\fR [default: 1]
+With `\-\-by mean`, skip queries with fewer calls than this in the window
+.TP
+\fB\-\-wide\fR
+Show full query text in the table
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: text]
+Output format
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+text
+.IP \(bu 2
+json
+.RE
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIBEFORE\fR>
+Older snapshot: CSV export of `pg_stat_statements`
+.TP
+<\fIAFTER\fR>
+Newer snapshot

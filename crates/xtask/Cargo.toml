@@ -1,0 +1,21 @@
+[package]
+name = "xtask"
+description = "Generates the man pages, shell completions and command reference from the pgloupe command line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
+pgloupe = { path = "../pgloupe" }
+
+[lints]
+workspace = true

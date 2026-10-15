@@ -16,6 +16,10 @@ pgloupe is one binary. Pick the channel that suits you; each channel updates the
 
 Linux and macOS are tested in CI. Windows builds are experimental.
 
+## Man pages and completions
+
+The archives carry `dist-assets/man/pgloupe.1` (and one page per command, such as `pgloupe-report.1`) and tab-completion scripts in `dist-assets/completions/` for bash, zsh, fish and PowerShell. Copy them where your system looks, for example `dist-assets/man/*.1` to `~/.local/share/man/man1/` and `dist-assets/completions/pgloupe.bash` to `~/.local/share/bash-completion/completions/pgloupe`. The same text as the man pages is in the [command reference](reference/commands.md).
+
 ## Updating
 
 - **Installer script:** `pgloupe-update` updates the install in place. It reads the receipt the installer left and connects to the network only when you run it.

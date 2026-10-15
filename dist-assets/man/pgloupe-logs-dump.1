@@ -1,0 +1,44 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH pgloupe-logs-dump 1  "dump " 
+.SH NAME
+pgloupe\-logs\-dump \- Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON
+.SH SYNOPSIS
+\fBpgloupe logs dump\fR [\fB\-\-format\fR] [\fB\-\-prefix\fR] [\fB\-\-log\-tz\fR] [\fB\-\-limit\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIFILE\fR> 
+.SH DESCRIPTION
+Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON
+.SH OPTIONS
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: auto]
+Log format; `auto` looks at the first line
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+auto
+.IP \(bu 2
+csv
+.IP \(bu 2
+json
+.IP \(bu 2
+stderr
+.IP \(bu 2
+pgbouncer: The pgBouncer log (experimental)
+.RE
+.TP
+\fB\-\-prefix\fR \fI<PREFIX>\fR
+The server\*(Aqs `log_line_prefix`; required for stderr logs
+.TP
+\fB\-\-log\-tz\fR \fI<LOG_TZ>\fR
+Offset for timezone abbreviations the log does not spell out, e.g. `\-03` or `+05:30`
+.TP
+\fB\-\-limit\fR \fI<LIMIT>\fR
+Stop after this many records
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIFILE\fR>
+Log file; compression is detected automatically
