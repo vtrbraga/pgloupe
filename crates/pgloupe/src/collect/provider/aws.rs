@@ -327,18 +327,19 @@ impl LogProvider for AwsRds {
             for _ in 0..MAX_PORTIONS {
                 let portion = self.portion(&file.name, &marker)?;
                 let data = portion.log_file_data.unwrap_or_default();
-                if !data.is_empty() {
-                    sink.append(&local, data.as_bytes())?;
-                    summary.bytes += data.len() as u64;
-                    wrote = true;
-                }
                 let next = portion.marker.unwrap_or_else(|| marker.clone());
-                if portion.additional_data_pending && next == marker && data.is_empty() {
+                if portion.additional_data_pending && next == marker {
+                    // More data is promised but the marker stands still: stop before repeating text.
                     return Err(FetchError::Output {
                         provider: "aws-rds",
                         what: "download-db-log-file-portion",
                         detail: format!("the marker {marker:?} does not advance for {}", file.name),
                     });
+                }
+                if !data.is_empty() {
+                    sink.append(&local, data.as_bytes())?;
+                    summary.bytes += data.len() as u64;
+                    wrote = true;
                 }
                 marker = next;
                 state.insert(key.clone(), marker.clone());

@@ -97,7 +97,8 @@ pub fn write(
     cursor: &mut Cursor,
 ) -> Result<(Vec<String>, u64), FetchError> {
     let mut sorted: Vec<&Entry> = entries.iter().collect();
-    sorted.sort_by(|a, b| a.ts.cmp(&b.ts).then_with(|| a.id.cmp(&b.id)));
+    // Stable on time alone: lines sharing a second keep the order the vendor gave them.
+    sorted.sort_by_key(|entry| entry.ts);
     let mut files: Vec<String> = Vec::new();
     let mut bytes = 0;
     for entry in sorted {
@@ -172,6 +173,21 @@ mod tests {
             "first hour\ncontinued\n"
         );
         assert_eq!(bytes, 21 + 12);
+    }
+
+    #[test]
+    fn lines_sharing_a_timestamp_keep_the_vendors_order() {
+        let mut sink = Mem::default();
+        let mut cursor = Cursor::default();
+        let entries = [
+            entry("2026-10-14T10:00:00Z", "f", "LOG:  statement"),
+            entry("2026-10-14T10:00:00Z", "a", "DETAIL:  parameters"),
+        ];
+        write(&mut sink, "p", &entries, &mut cursor).unwrap();
+        assert_eq!(
+            sink.0["p-20261014-10.log"],
+            "LOG:  statement\nDETAIL:  parameters\n"
+        );
     }
 
     #[test]

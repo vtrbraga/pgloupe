@@ -109,10 +109,20 @@ impl ConnSpec {
         root_cert: Option<PathBuf>,
     ) -> Result<ConnSpec, CollectError> {
         let (cleaned, mode) = split_sslmode(dsn);
-        let ssl = parse_ssl(
+        if cleaned.to_ascii_lowercase().contains("sslmode") {
+            // Spaced forms such as `sslmode = require` are not recognised; never fall back to `prefer`.
+            return Err(CollectError::Dsn(
+                "could not read sslmode; write it as sslmode=<mode> with no spaces".to_owned(),
+            ));
+        }
+        let mut ssl = parse_ssl(
             mode.as_deref()
                 .or_else(|| root_cert.is_some().then_some("verify-full")),
         )?;
+        if root_cert.is_some() && ssl == SslMode::Require {
+            // A root certificate means the user wants the chain checked.
+            ssl = SslMode::VerifyFull;
+        }
         let mut config = Config::from_str(&cleaned).map_err(|_unparsed| {
             CollectError::Dsn(
                 "not a valid connection string; use postgres://user@host:5432/dbname or key=value pairs"
@@ -216,7 +226,14 @@ impl ConnSpec {
                 drop(roots.add(cert));
             }
             let mut reader = std::io::Cursor::new(pem);
-            for cert in rustls_pemfile_certs(&mut reader) {
+            let certs = rustls_pemfile_certs(&mut reader);
+            if certs.is_empty() {
+                return Err(CollectError::Dsn(format!(
+                    "{}: no PEM certificates found",
+                    path.display()
+                )));
+            }
+            for cert in certs {
                 roots.add(cert).map_err(|e| {
                     CollectError::Dsn(format!("{}: not a usable certificate: {e}", path.display()))
                 })?;
@@ -424,6 +441,34 @@ fn pgpass_lookup(file: &str, host: &str, port: &str, db: &str, user: &str) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_spaced_sslmode_is_refused_not_downgraded_to_prefer() {
+        let err = ConnSpec::parse("host=h sslmode = require", None, None).unwrap_err();
+        assert!(err.to_string().contains("sslmode"), "{err}");
+    }
+
+    #[test]
+    fn a_root_certificate_upgrades_require_to_a_verified_chain() {
+        let spec = ConnSpec::parse(
+            "postgres://u@h/db?sslmode=require",
+            None,
+            Some(PathBuf::from("ca.pem")),
+        )
+        .unwrap();
+        assert_eq!(spec.ssl, SslMode::VerifyFull);
+    }
+
+    #[test]
+    fn a_root_certificate_file_without_certificates_is_an_error() {
+        let path =
+            std::env::temp_dir().join(format!("pgloupe-empty-ca-{}.pem", std::process::id()));
+        fs::write(&path, "not a certificate\n").unwrap();
+        let spec = ConnSpec::parse("postgres://u@h/db", None, Some(path.clone())).unwrap();
+        let err = spec.tls_config().unwrap_err();
+        let _ = fs::remove_file(&path);
+        assert!(err.to_string().contains("no PEM certificates"), "{err}");
+    }
 
     #[test]
     fn sslmode_is_split_out_of_urls_and_key_value_strings() {

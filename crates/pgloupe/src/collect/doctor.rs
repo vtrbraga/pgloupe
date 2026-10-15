@@ -41,10 +41,20 @@ impl Facts {
     }
 
     fn is_on(&self, name: &str) -> bool {
-        matches!(self.setting(name), Some("on" | "true" | "all" | "1"))
-            || self
-                .setting(name)
-                .is_some_and(|v| v.contains("on") && name == "log_connections")
+        let Some(value) = self.setting(name) else {
+            return false;
+        };
+        if matches!(value, "on" | "true" | "all" | "1" | "yes") {
+            return true;
+        }
+        // PostgreSQL 18 turns `log_connections` into a list of stages.
+        name == "log_connections"
+            && value.split(',').map(str::trim).any(|stage| {
+                matches!(
+                    stage,
+                    "receipt" | "authentication" | "authorization" | "setup_durations"
+                )
+            })
     }
 
     fn number(&self, name: &str) -> Option<i64> {
@@ -76,10 +86,9 @@ pub fn checks(facts: &Facts, vendor: Option<&str>) -> Vec<Check> {
     };
     let mut found = Vec::new();
 
-    let preload = facts
-        .setting("shared_preload_libraries")
-        .unwrap_or_default();
-    if !preload.contains("pg_stat_statements") {
+    // The setting is hidden from roles without `pg_read_all_settings`; absent means unknown.
+    let preload = facts.setting("shared_preload_libraries");
+    if preload.is_some_and(|p| !p.contains("pg_stat_statements")) {
         found.push(check(
             "pgss_not_preloaded",
             "warn",
@@ -89,10 +98,15 @@ pub fn checks(facts: &Facts, vendor: Option<&str>) -> Vec<Check> {
             ),
         ));
     } else if !facts.extension_created {
+        let unknown = if preload.is_none() {
+            " (shared_preload_libraries is hidden from this role, so also check it is listed there; granting pg_monitor shows it)"
+        } else {
+            ""
+        };
         found.push(check(
             "pgss_not_created",
             "warn",
-            "the pg_stat_statements extension is not created in this database: run CREATE EXTENSION pg_stat_statements as a role that may.",
+            format!("the pg_stat_statements extension is not created in this database: run CREATE EXTENSION pg_stat_statements as a role that may{unknown}."),
         ));
     }
     if facts.extension_created && !facts.reads_all_stats {
@@ -187,7 +201,17 @@ pub fn checks(facts: &Facts, vendor: Option<&str>) -> Vec<Check> {
             } else {
                 "info"
             };
-            found.push(check(
+            if rds {
+                found.push(check(
+                    "line_prefix",
+                    "info",
+                    format!(
+                        "RDS fixes log_line_prefix ({prefix:?}), which lacks {}: those columns will be empty in the report.",
+                        missing.join(", ")
+                    ),
+                ));
+            } else {
+                found.push(check(
                 "line_prefix",
                 severity,
                 format!(
@@ -195,6 +219,7 @@ pub fn checks(facts: &Facts, vendor: Option<&str>) -> Vec<Check> {
                     missing.join(", ")
                 ),
             ));
+            }
         }
     }
 
@@ -375,6 +400,38 @@ mod tests {
         );
         facts.extension_created = false;
         assert!(codes(&checks(&facts, None)).contains(&"pgss_not_created"));
+    }
+
+    #[test]
+    fn a_hidden_preload_setting_is_unknown_not_missing() {
+        let mut facts = healthy();
+        facts.settings.remove("shared_preload_libraries");
+        assert!(!codes(&checks(&facts, None)).contains(&"pgss_not_preloaded"));
+        facts.extension_created = false;
+        let found = checks(&facts, None);
+        let note = found.iter().find(|c| c.code == "pgss_not_created").unwrap();
+        assert!(note.message.contains("pg_monitor"), "{}", note.message);
+    }
+
+    #[test]
+    fn postgres_18_connection_stages_count_as_logging_connections() {
+        let found = checks(&with("log_connections", "receipt"), None);
+        assert!(!codes(&found).contains(&"no_sessions"));
+        let found = checks(&with("log_connections", ""), None);
+        assert!(codes(&found).contains(&"no_sessions"));
+    }
+
+    #[test]
+    fn on_rds_the_line_prefix_is_reported_as_fixed_not_as_something_to_change() {
+        let found = checks(&with("log_line_prefix", "%t:%r:%u@%d:[%p]:"), Some("rds"));
+        let prefix = found.iter().find(|c| c.code == "line_prefix").unwrap();
+        assert_eq!(prefix.severity, "info");
+        assert!(prefix.message.contains("RDS fixes"), "{}", prefix.message);
+        assert!(
+            !prefix.message.contains("parameter group"),
+            "{}",
+            prefix.message
+        );
     }
 
     #[test]

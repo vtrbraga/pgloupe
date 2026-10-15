@@ -79,7 +79,10 @@ fn parse_entries(bytes: &[u8]) -> Result<Vec<Entry>, FetchError> {
             } else {
                 t.replacen(' ', "T", 1)
             };
-            let t = if t.ends_with('Z') || t[10..].contains('+') || t[10..].contains('-') {
+            let t = if t.ends_with('Z')
+                || t.get(10..)
+                    .is_some_and(|rest| rest.contains('+') || rest.contains('-'))
+            {
                 t
             } else {
                 format!("{t}Z")
@@ -159,6 +162,12 @@ impl LogProvider for Aiven {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_timestamp_is_skipped_instead_of_panicking() {
+        let text = br#"{"logs":[{"time":"10:00","msg":"x"}]}"#;
+        assert_eq!(parse_entries(text).unwrap().len(), 0);
+    }
 
     #[test]
     fn both_documented_shapes_are_read() {

@@ -149,13 +149,22 @@ impl LogSink for DirSink {
     fn reset(&mut self, name: &str) -> Result<(), FetchError> {
         let path = self.path(name);
         match fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(io_error(&path)(e)),
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(io_error(&path)(e)),
         }
+        // Claimed at zero, so a crash before the next checkpoint cuts the file back to nothing.
+        self.saved.bytes.insert(name.to_owned(), 0);
+        self.persist()
     }
 
     fn append(&mut self, name: &str, bytes: &[u8]) -> Result<(), FetchError> {
+        if !self.saved.bytes.contains_key(name) {
+            // Record ownership before the first byte lands, so a crash cannot leave an
+            // unaccounted file that the next run would append to a second time.
+            self.saved.bytes.insert(name.to_owned(), 0);
+            self.persist()?;
+        }
         let path = self.path(name);
         let mut file: File = OpenOptions::new()
             .create(true)
@@ -166,19 +175,11 @@ impl LogSink for DirSink {
     }
 
     fn checkpoint(&mut self, state: &ProviderState) -> Result<(), FetchError> {
+        // Only files this fetch wrote are tracked; anything else in the directory is left alone.
         let mut bytes = BTreeMap::new();
-        for entry in fs::read_dir(&self.dir)
-            .map_err(io_error(&self.dir))?
-            .flatten()
-        {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') {
-                continue;
-            }
-            if let Ok(meta) = entry.metadata()
-                && meta.is_file()
-            {
-                bytes.insert(name, meta.len());
+        for name in self.saved.bytes.keys() {
+            if let Ok(meta) = fs::metadata(self.dir.join(name)) {
+                bytes.insert(name.clone(), meta.len());
             }
         }
         self.saved = Saved {
@@ -187,6 +188,12 @@ impl LogSink for DirSink {
             state: state.clone(),
             bytes,
         };
+        self.persist()
+    }
+}
+
+impl DirSink {
+    fn persist(&self) -> Result<(), FetchError> {
         let path = self.dir.join(STATE_FILE);
         let tmp = self.dir.join(".fetch.json.part");
         let text = serde_json::to_string_pretty(&self.saved).map_err(|e| FetchError::Io {
@@ -242,6 +249,31 @@ mod tests {
         assert_eq!(fs::read(d.join("a")).unwrap(), b"kept\n");
         assert_eq!(sink.state()["marker:a"], "1:5");
         assert_eq!(sink.stored("a"), 5);
+    }
+
+    #[test]
+    fn a_new_file_left_by_a_crashed_run_is_cut_to_nothing_on_the_next_open() {
+        let d = dir("newfile");
+        let mut sink = DirSink::open(&d, "aws-rds").unwrap();
+        sink.append("fresh", b"half of a file").unwrap();
+        drop(sink);
+        DirSink::open(&d, "aws-rds").unwrap();
+        assert_eq!(fs::read(d.join("fresh")).unwrap(), b"");
+    }
+
+    #[test]
+    fn files_the_fetch_never_wrote_are_left_alone() {
+        let d = dir("foreign");
+        let mut sink = DirSink::open(&d, "aws-rds").unwrap();
+        fs::write(d.join("notes.txt"), "short").unwrap();
+        sink.checkpoint(&ProviderState::new()).unwrap();
+        fs::write(d.join("notes.txt"), "much longer user text").unwrap();
+        drop(sink);
+        DirSink::open(&d, "aws-rds").unwrap();
+        assert_eq!(
+            fs::read_to_string(d.join("notes.txt")).unwrap(),
+            "much longer user text"
+        );
     }
 
     #[test]
