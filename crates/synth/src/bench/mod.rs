@@ -1,5 +1,6 @@
 //! Large-dataset validation: a pgbench-driven run that fills a log directory to a target size.
 
+pub mod script;
 pub mod size;
 
 /// Server settings for a bench run, on top of [`crate::container::SETTINGS`].
