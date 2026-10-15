@@ -16,7 +16,7 @@ fn a_small_run_reaches_its_target_and_writes_the_truth() {
     let args = BenchRunArgs {
         pg: PgMajor::V17,
         seed: 1,
-        target_size: "8M".to_owned(),
+        target_size: "64M".to_owned(),
         clients: 4,
         scale: 1,
         snapshot_secs: 5,
@@ -34,6 +34,16 @@ fn a_small_run_reaches_its_target_and_writes_the_truth() {
     for format in ["log", "csv", "json"] {
         assert!(truth.formats[format].bytes > 0, "{format}");
     }
+    for worker in ["tpcb", "literal", "locks", "analytic", "errors", "churn"] {
+        assert!(truth.workers.iter().any(|w| w.name == worker), "{worker}");
+    }
+    assert_eq!(
+        u64::try_from(truth.delta.deadlocks).unwrap(),
+        truth.event("locks", "deadlocks"),
+        "the sessions saw every deadlock the server counted"
+    );
+    assert!(truth.event("errors", "errors") > 0);
+    assert!(truth.event("churn", "abrupt") > 0);
     assert!(dir.join("snapshots/pgss_0.csv").exists());
     assert!(
         dir.join(format!("snapshots/pgss_{}.csv", truth.snapshots.last))
