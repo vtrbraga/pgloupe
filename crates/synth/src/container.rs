@@ -279,7 +279,8 @@ impl PgContainer {
         &self.name
     }
 
-    /// Runs a command in the container with statement logging disabled for libpq clients.
+    /// Runs a command in the container with statement and temp file logging disabled for libpq
+    /// clients.
     ///
     /// # Errors
     ///
@@ -288,7 +289,7 @@ impl PgContainer {
         let mut args = vec![
             "exec",
             "-e",
-            "PGOPTIONS=-c log_min_duration_statement=-1 -c pg_stat_statements.track=none",
+            "PGOPTIONS=-c log_min_duration_statement=-1 -c pg_stat_statements.track=none -c log_temp_files=-1",
             self.name.as_str(),
         ];
         args.extend_from_slice(cmd);
