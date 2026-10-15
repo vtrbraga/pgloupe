@@ -10,7 +10,7 @@ use anyhow::{Context as _, bail};
 use postgres::error::SqlState;
 
 use super::{Ctx, ExpectSpec, Phase, Scenario};
-use crate::rawclient::Raw;
+use crate::{manifest::EventKind, rawclient::Raw};
 
 const TEMP_TABLES_PER_APP: u32 = 5;
 const FK_ROUNDS: u32 = 3;
@@ -20,7 +20,7 @@ pub const CHECKPOINTS: Scenario = Scenario {
     name: "checkpoints",
     phase: Phase::Main,
     run: run_checkpoints,
-    expect: &[],
+    expect: &[ExpectSpec::exactly(EventKind::Checkpoint, 2)],
 };
 
 /// Turns autovacuum on for two tables with tiny thresholds and waits for it to log its work.

@@ -1,0 +1,93 @@
+2026-10-14 10:00:00.100 UTC [4242] LOG C-0x5593a8c00: shop/app@10.0.0.1:50000 login attempt: db=shop user=app tls=no
+2026-10-14 10:00:00.900 UTC [4242] LOG C-0x5593a8c00: shop/app@10.0.0.1:50000 closing because: client close request (age=3s)
+2026-10-14 10:00:00.950 UTC [4242] LOG stats: 40 xacts/s, 90 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1000 B/s, out 2000 B/s, xact 1200 us, query 800 us, wait 40 us
+2026-10-14 10:01:00.100 UTC [4242] LOG C-0x5593a8c01: shop/app@10.0.0.2:50001 login attempt: db=shop user=app tls=no
+2026-10-14 10:01:00.900 UTC [4242] LOG C-0x5593a8c01: shop/app@10.0.0.2:50001 closing because: client close request (age=4s)
+2026-10-14 10:01:00.950 UTC [4242] LOG stats: 41 xacts/s, 92 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1010 B/s, out 2020 B/s, xact 1201 us, query 801 us, wait 41 us
+2026-10-14 10:02:00.100 UTC [4242] LOG C-0x5593a8c02: shop/app@10.0.0.3:50002 login attempt: db=shop user=app tls=no
+2026-10-14 10:02:00.900 UTC [4242] LOG C-0x5593a8c02: shop/app@10.0.0.3:50002 closing because: client close request (age=5s)
+2026-10-14 10:02:00.950 UTC [4242] LOG stats: 42 xacts/s, 94 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1020 B/s, out 2040 B/s, xact 1202 us, query 802 us, wait 42 us
+2026-10-14 10:03:00.100 UTC [4242] LOG C-0x5593a8c03: shop/app@10.0.0.4:50003 login attempt: db=shop user=app tls=no
+2026-10-14 10:03:00.900 UTC [4242] LOG C-0x5593a8c03: shop/app@10.0.0.4:50003 closing because: client close request (age=6s)
+2026-10-14 10:03:00.950 UTC [4242] LOG stats: 43 xacts/s, 96 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1030 B/s, out 2060 B/s, xact 1203 us, query 803 us, wait 43 us
+2026-10-14 10:04:00.100 UTC [4242] LOG C-0x5593a8c04: shop/app@10.0.0.1:50004 login attempt: db=shop user=app tls=no
+2026-10-14 10:04:00.900 UTC [4242] LOG C-0x5593a8c04: shop/app@10.0.0.1:50004 closing because: client close request (age=7s)
+2026-10-14 10:04:00.950 UTC [4242] LOG stats: 44 xacts/s, 98 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1040 B/s, out 2080 B/s, xact 1204 us, query 804 us, wait 44 us
+2026-10-14 10:05:00.100 UTC [4242] LOG C-0x5593a8c05: shop/app@10.0.0.2:50005 login attempt: db=shop user=app tls=no
+2026-10-14 10:05:00.900 UTC [4242] LOG C-0x5593a8c05: shop/app@10.0.0.2:50005 closing because: client close request (age=8s)
+2026-10-14 10:05:00.950 UTC [4242] LOG stats: 45 xacts/s, 100 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1050 B/s, out 2100 B/s, xact 1205 us, query 805 us, wait 45 us
+2026-10-14 10:06:00.100 UTC [4242] LOG C-0x5593a8c06: shop/app@10.0.0.3:50006 login attempt: db=shop user=app tls=no
+2026-10-14 10:06:00.900 UTC [4242] LOG C-0x5593a8c06: shop/app@10.0.0.3:50006 closing because: client close request (age=9s)
+2026-10-14 10:06:00.950 UTC [4242] LOG stats: 46 xacts/s, 102 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1060 B/s, out 2120 B/s, xact 1206 us, query 806 us, wait 46 us
+2026-10-14 10:07:00.100 UTC [4242] LOG C-0x5593a8c07: shop/app@10.0.0.4:50007 login attempt: db=shop user=app tls=no
+2026-10-14 10:07:00.900 UTC [4242] LOG C-0x5593a8c07: shop/app@10.0.0.4:50007 closing because: client close request (age=10s)
+2026-10-14 10:07:00.950 UTC [4242] LOG stats: 47 xacts/s, 104 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1070 B/s, out 2140 B/s, xact 1207 us, query 807 us, wait 47 us
+2026-10-14 10:08:00.100 UTC [4242] LOG C-0x5593a8c08: shop/app@10.0.0.1:50008 login attempt: db=shop user=app tls=no
+2026-10-14 10:08:00.900 UTC [4242] LOG C-0x5593a8c08: shop/app@10.0.0.1:50008 closing because: client close request (age=11s)
+2026-10-14 10:08:00.950 UTC [4242] LOG stats: 48 xacts/s, 106 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1080 B/s, out 2160 B/s, xact 1208 us, query 808 us, wait 48 us
+2026-10-14 10:09:00.100 UTC [4242] LOG C-0x5593a8c09: shop/app@10.0.0.2:50009 login attempt: db=shop user=app tls=no
+2026-10-14 10:09:00.900 UTC [4242] LOG C-0x5593a8c09: shop/app@10.0.0.2:50009 closing because: client close request (age=12s)
+2026-10-14 10:09:00.950 UTC [4242] LOG stats: 49 xacts/s, 108 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1090 B/s, out 2180 B/s, xact 1209 us, query 809 us, wait 49 us
+2026-10-14 10:10:00.100 UTC [4242] LOG C-0x5593a8c10: shop/app@10.0.0.3:50010 login attempt: db=shop user=app tls=no
+2026-10-14 10:10:00.900 UTC [4242] LOG C-0x5593a8c10: shop/app@10.0.0.3:50010 closing because: client close request (age=13s)
+2026-10-14 10:10:00.950 UTC [4242] LOG stats: 50 xacts/s, 110 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1100 B/s, out 2200 B/s, xact 1210 us, query 810 us, wait 50 us
+2026-10-14 10:11:00.100 UTC [4242] LOG C-0x5593a8c11: shop/app@10.0.0.4:50011 login attempt: db=shop user=app tls=no
+2026-10-14 10:11:00.900 UTC [4242] LOG C-0x5593a8c11: shop/app@10.0.0.4:50011 closing because: client close request (age=14s)
+2026-10-14 10:11:00.950 UTC [4242] LOG stats: 51 xacts/s, 112 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1110 B/s, out 2220 B/s, xact 1211 us, query 811 us, wait 51 us
+2026-10-14 10:12:00.100 UTC [4242] LOG C-0x5593a8c12: shop/app@10.0.0.1:50012 login attempt: db=shop user=app tls=no
+2026-10-14 10:12:00.900 UTC [4242] LOG C-0x5593a8c12: shop/app@10.0.0.1:50012 closing because: client close request (age=15s)
+2026-10-14 10:12:00.950 UTC [4242] LOG stats: 52 xacts/s, 114 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1120 B/s, out 2240 B/s, xact 1212 us, query 812 us, wait 52 us
+2026-10-14 10:13:00.100 UTC [4242] LOG C-0x5593a8c13: shop/app@10.0.0.2:50013 login attempt: db=shop user=app tls=no
+2026-10-14 10:13:00.900 UTC [4242] LOG C-0x5593a8c13: shop/app@10.0.0.2:50013 closing because: client close request (age=16s)
+2026-10-14 10:13:00.950 UTC [4242] LOG stats: 53 xacts/s, 116 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1130 B/s, out 2260 B/s, xact 1213 us, query 813 us, wait 53 us
+2026-10-14 10:14:00.100 UTC [4242] LOG C-0x5593a8c14: shop/app@10.0.0.3:50014 login attempt: db=shop user=app tls=no
+2026-10-14 10:14:00.900 UTC [4242] LOG C-0x5593a8c14: shop/app@10.0.0.3:50014 closing because: client close request (age=17s)
+2026-10-14 10:14:00.950 UTC [4242] LOG stats: 54 xacts/s, 118 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1140 B/s, out 2280 B/s, xact 1214 us, query 814 us, wait 54 us
+2026-10-14 10:15:00.100 UTC [4242] LOG C-0x5593a8c15: shop/app@10.0.0.4:50015 login attempt: db=shop user=app tls=no
+2026-10-14 10:15:00.900 UTC [4242] LOG C-0x5593a8c15: shop/app@10.0.0.4:50015 closing because: client close request (age=18s)
+2026-10-14 10:15:00.950 UTC [4242] LOG stats: 55 xacts/s, 120 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1150 B/s, out 2300 B/s, xact 1215 us, query 815 us, wait 55 us
+2026-10-14 10:16:00.100 UTC [4242] LOG C-0x5593a8c16: shop/app@10.0.0.1:50016 login attempt: db=shop user=app tls=no
+2026-10-14 10:16:00.900 UTC [4242] LOG C-0x5593a8c16: shop/app@10.0.0.1:50016 closing because: client close request (age=19s)
+2026-10-14 10:16:00.950 UTC [4242] LOG stats: 56 xacts/s, 122 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1160 B/s, out 2320 B/s, xact 1216 us, query 816 us, wait 56 us
+2026-10-14 10:17:00.100 UTC [4242] LOG C-0x5593a8c17: shop/app@10.0.0.2:50017 login attempt: db=shop user=app tls=no
+2026-10-14 10:17:00.900 UTC [4242] LOG C-0x5593a8c17: shop/app@10.0.0.2:50017 closing because: client close request (age=20s)
+2026-10-14 10:17:00.950 UTC [4242] LOG stats: 57 xacts/s, 124 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1170 B/s, out 2340 B/s, xact 1217 us, query 817 us, wait 57 us
+2026-10-14 10:18:00.100 UTC [4242] LOG C-0x5593a8c18: shop/app@10.0.0.3:50018 login attempt: db=shop user=app tls=no
+2026-10-14 10:18:00.900 UTC [4242] LOG C-0x5593a8c18: shop/app@10.0.0.3:50018 closing because: client close request (age=21s)
+2026-10-14 10:18:00.950 UTC [4242] LOG stats: 58 xacts/s, 126 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1180 B/s, out 2360 B/s, xact 1218 us, query 818 us, wait 58 us
+2026-10-14 10:19:00.100 UTC [4242] LOG C-0x5593a8c19: shop/app@10.0.0.4:50019 login attempt: db=shop user=app tls=no
+2026-10-14 10:19:00.900 UTC [4242] LOG C-0x5593a8c19: shop/app@10.0.0.4:50019 closing because: client close request (age=22s)
+2026-10-14 10:19:00.950 UTC [4242] LOG stats: 59 xacts/s, 128 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1190 B/s, out 2380 B/s, xact 1219 us, query 819 us, wait 59 us
+2026-10-14 10:20:00.100 UTC [4242] LOG C-0x5593a8c20: shop/app@10.0.0.1:50020 login attempt: db=shop user=app tls=no
+2026-10-14 10:20:00.900 UTC [4242] LOG C-0x5593a8c20: shop/app@10.0.0.1:50020 closing because: client close request (age=23s)
+2026-10-14 10:20:00.950 UTC [4242] LOG stats: 60 xacts/s, 130 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1200 B/s, out 2400 B/s, xact 1220 us, query 820 us, wait 60 us
+2026-10-14 10:21:00.100 UTC [4242] LOG C-0x5593a8c21: shop/app@10.0.0.2:50021 login attempt: db=shop user=app tls=no
+2026-10-14 10:21:00.900 UTC [4242] LOG C-0x5593a8c21: shop/app@10.0.0.2:50021 closing because: client close request (age=24s)
+2026-10-14 10:21:00.950 UTC [4242] LOG stats: 61 xacts/s, 132 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1210 B/s, out 2420 B/s, xact 1221 us, query 821 us, wait 61 us
+2026-10-14 10:22:00.100 UTC [4242] LOG C-0x5593a8c22: shop/app@10.0.0.3:50022 login attempt: db=shop user=app tls=no
+2026-10-14 10:22:00.900 UTC [4242] LOG C-0x5593a8c22: shop/app@10.0.0.3:50022 closing because: client close request (age=25s)
+2026-10-14 10:22:00.950 UTC [4242] LOG stats: 62 xacts/s, 134 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1220 B/s, out 2440 B/s, xact 1222 us, query 822 us, wait 62 us
+2026-10-14 10:23:00.100 UTC [4242] LOG C-0x5593a8c23: shop/app@10.0.0.4:50023 login attempt: db=shop user=app tls=no
+2026-10-14 10:23:00.900 UTC [4242] LOG C-0x5593a8c23: shop/app@10.0.0.4:50023 closing because: client close request (age=26s)
+2026-10-14 10:23:00.950 UTC [4242] LOG stats: 63 xacts/s, 136 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1230 B/s, out 2460 B/s, xact 1223 us, query 823 us, wait 63 us
+2026-10-14 10:24:00.100 UTC [4242] LOG C-0x5593a8c24: shop/app@10.0.0.1:50024 login attempt: db=shop user=app tls=no
+2026-10-14 10:24:00.900 UTC [4242] LOG C-0x5593a8c24: shop/app@10.0.0.1:50024 closing because: client close request (age=27s)
+2026-10-14 10:24:00.950 UTC [4242] LOG stats: 64 xacts/s, 138 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1240 B/s, out 2480 B/s, xact 1224 us, query 824 us, wait 64 us
+2026-10-14 10:25:00.100 UTC [4242] LOG C-0x5593a8c25: shop/app@10.0.0.2:50025 login attempt: db=shop user=app tls=no
+2026-10-14 10:25:00.900 UTC [4242] LOG C-0x5593a8c25: shop/app@10.0.0.2:50025 closing because: client close request (age=28s)
+2026-10-14 10:25:00.950 UTC [4242] LOG stats: 65 xacts/s, 140 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1250 B/s, out 2500 B/s, xact 1225 us, query 825 us, wait 65 us
+2026-10-14 10:26:00.100 UTC [4242] LOG C-0x5593a8c26: shop/app@10.0.0.3:50026 login attempt: db=shop user=app tls=no
+2026-10-14 10:26:00.900 UTC [4242] LOG C-0x5593a8c26: shop/app@10.0.0.3:50026 closing because: client close request (age=29s)
+2026-10-14 10:26:00.950 UTC [4242] LOG stats: 66 xacts/s, 142 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1260 B/s, out 2520 B/s, xact 1226 us, query 826 us, wait 66 us
+2026-10-14 10:27:00.100 UTC [4242] LOG C-0x5593a8c27: shop/app@10.0.0.4:50027 login attempt: db=shop user=app tls=no
+2026-10-14 10:27:00.900 UTC [4242] LOG C-0x5593a8c27: shop/app@10.0.0.4:50027 closing because: client close request (age=30s)
+2026-10-14 10:27:00.950 UTC [4242] LOG stats: 67 xacts/s, 144 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1270 B/s, out 2540 B/s, xact 1227 us, query 827 us, wait 67 us
+2026-10-14 10:28:00.100 UTC [4242] LOG C-0x5593a8c28: shop/app@10.0.0.1:50028 login attempt: db=shop user=app tls=no
+2026-10-14 10:28:00.900 UTC [4242] LOG C-0x5593a8c28: shop/app@10.0.0.1:50028 closing because: client close request (age=31s)
+2026-10-14 10:28:00.950 UTC [4242] LOG stats: 68 xacts/s, 146 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1280 B/s, out 2560 B/s, xact 1228 us, query 828 us, wait 68 us
+2026-10-14 10:29:00.100 UTC [4242] LOG C-0x5593a8c29: shop/app@10.0.0.2:50029 login attempt: db=shop user=app tls=no
+2026-10-14 10:29:00.900 UTC [4242] LOG C-0x5593a8c29: shop/app@10.0.0.2:50029 closing because: client close request (age=32s)
+2026-10-14 10:29:00.950 UTC [4242] LOG stats: 69 xacts/s, 148 queries/s, 5 client parses/s, 6 server parses/s, 7 binds/s, in 1290 B/s, out 2580 B/s, xact 1229 us, query 829 us, wait 69 us
+2026-10-14 10:31:00.000 UTC [4242] WARNING C-0x1: shop/app@10.0.0.9:50999 pooler error: no more connections allowed (max_client_conn)
+2026-10-14 10:31:01.000 UTC [4242] LOG C-0x2: shop/app@10.0.0.9:51000 closing because: query_wait_timeout (age=120s)
+2026-10-14 10:31:02.000 UTC [4242] ERROR S-0x3: shop/app@10.0.0.20:5432 server login failed: FATAL password authentication failed

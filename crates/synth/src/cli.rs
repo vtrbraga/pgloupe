@@ -18,6 +18,16 @@ pub struct Cli {
 pub enum Command {
     /// Generate a corpus into `<out>/<pg>-<seed>/`.
     Generate(GenerateArgs),
+    /// Rewrite the message-translation table pgloupe reads, from the PostgreSQL images.
+    ExtractLocales(ExtractLocalesArgs),
+}
+
+/// Arguments for `extract-locales`.
+#[derive(Debug, clap::Args)]
+pub struct ExtractLocalesArgs {
+    /// Where to write the table.
+    #[arg(long, default_value = "crates/pgloupe/src/log/locales.tsv")]
+    pub out: PathBuf,
 }
 
 /// Postgres major versions the generator can target.
@@ -92,8 +102,10 @@ mod tests {
     use super::*;
 
     fn parse(args: &[&str]) -> GenerateArgs {
-        let Command::Generate(generate) = Cli::try_parse_from(args).unwrap().command;
-        generate
+        match Cli::try_parse_from(args).unwrap().command {
+            Command::Generate(generate) => generate,
+            Command::ExtractLocales(_) => panic!("not a generate command"),
+        }
     }
 
     #[test]

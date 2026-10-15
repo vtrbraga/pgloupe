@@ -163,8 +163,9 @@ impl<R: BufRead> Read for Lz4Frames<R> {
 
 /// Guesses the format from the first bytes of a log.
 ///
-/// JSON starts with `{`; csvlog starts with a `log_time` field followed by a comma; anything
-/// else is treated as stderr, which also needs the prefix to be decoded.
+/// JSON starts with `{`; csvlog starts with a `log_time` field followed by a comma; a timestamp,
+/// `[pid]` and a bare severity word is pgBouncer; anything else is treated as stderr, which also
+/// needs the prefix to be decoded.
 #[must_use]
 pub fn sniff(peek: &[u8]) -> Format {
     let text = String::from_utf8_lossy(peek);
@@ -175,6 +176,9 @@ pub fn sniff(peek: &[u8]) -> Format {
         .unwrap_or("");
     if first.trim_start().starts_with('{') {
         return Format::Json;
+    }
+    if super::pgbouncer::looks_like(first) {
+        return Format::Pgbouncer;
     }
     match first.split_once(',') {
         Some((head, _)) if looks_like_log_time(head) => Format::Csv,

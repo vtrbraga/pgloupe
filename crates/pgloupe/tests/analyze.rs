@@ -707,3 +707,68 @@ fn repeated_application_messages_are_listed_by_shape_and_truncation_is_reported(
     assert_eq!(report["messages"][0]["count"], 64);
     Ok(())
 }
+
+#[test]
+fn a_pgbouncer_log_is_detected_and_summarized() -> io::Result<()> {
+    let log = fixtures().join("logs/pgbouncer.log");
+    let out = analyze(&["--output", "json"], std::slice::from_ref(&log))?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    assert_eq!(report["files"][0]["format"], "pgbouncer");
+    let pooler = &report["pooler"];
+    assert_eq!(pooler["logins"], 30);
+    assert_eq!(pooler["points"].as_array().map(Vec::len), Some(30));
+    // The busiest minute is the last one: 40 + 29 transactions per second.
+    assert_eq!(pooler["peak_xacts_s"], 69.0);
+    let reasons = pooler["close_reasons"].as_array().expect("reasons");
+    assert_eq!(reasons[0]["reason"], "client close request");
+    assert_eq!(reasons[0]["count"], 30);
+    assert!(reasons.iter().any(|r| r["reason"] == "query_wait_timeout"));
+    // Nothing about statements or server settings is asked for from a pooler's log.
+    let warnings = report["diagnostics"]["warnings"].to_string();
+    assert!(!warnings.contains("durations"), "{warnings}");
+    let text = stdout(&analyze(&[], &[log])?);
+    assert!(text.contains("pgbouncer (experimental)"), "{text}");
+    Ok(())
+}
+
+#[test]
+fn a_log_in_portuguese_is_read_as_if_it_were_english() -> io::Result<()> {
+    let log = fixtures().join("logs/pt_br.log");
+    let prefix = ["--prefix", "%m [%p] %q%u@%d/%a ", "--output", "json"];
+    let events = |extra: &[&str]| -> io::Result<serde_json::Value> {
+        let mut args = prefix.to_vec();
+        args.extend(extra);
+        let out = analyze(&args, std::slice::from_ref(&log))?;
+        assert!(out.status.success(), "{}", stderr(&out));
+        Ok(serde_json::from_str(&stdout(&out))?)
+    };
+    for extra in [&[][..], &["--lc-messages", "pt_BR"][..]] {
+        let report = events(extra)?;
+        let overview = &report["overview"]["events"];
+        assert_eq!(overview["statement"], 3, "{extra:?}");
+        assert_eq!(overview["lock_wait"], 1);
+        assert_eq!(overview["lock_acquired"], 1);
+        assert_eq!(overview["temp_file"], 1);
+        assert_eq!(overview["disconnection"], 1);
+        assert_eq!(report["overview"]["levels"]["ERROR"], 1);
+        assert_eq!(report["overview"]["levels"]["WARNING"], 1);
+        assert_eq!(report["files"][0]["locale"], "pt_BR");
+        assert_eq!(report["errors"][0]["sqlstate"], serde_json::Value::Null);
+        assert_eq!(report["locks"]["waits"], 1);
+    }
+    // Read as English, nothing is recognized.
+    let report = events(&["--lc-messages", "en"])?;
+    assert_eq!(
+        report["overview"]["events"]["statement"],
+        serde_json::Value::Null
+    );
+    // An unknown language says what is available.
+    let out = analyze(
+        &["--prefix", "%m [%p] %q%u@%d/%a ", "--lc-messages", "xx"],
+        std::slice::from_ref(&log),
+    )?;
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("pt_BR"), "{}", stderr(&out));
+    Ok(())
+}

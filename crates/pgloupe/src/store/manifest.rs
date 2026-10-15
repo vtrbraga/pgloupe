@@ -436,6 +436,7 @@ mod tests {
                 prefix_match: None,
                 lines: 1,
                 records: 1,
+                locale: None,
                 skipped: 0,
             },
             diag: StoredDiag {

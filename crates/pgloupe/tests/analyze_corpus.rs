@@ -62,9 +62,17 @@ fn counts(file: &str, format: Format) -> io::Result<(Counts, u64)> {
         log_tz: None,
     };
     let mut decoder = decoder_for(format, reader, &options).map_err(io_err)?;
+    // The corpus mixes English with every built-in language, so try all of them on each record.
+    let translators: Vec<_> = pgloupe::log::locale::languages()
+        .into_iter()
+        .map(|language| pgloupe::log::locale::Translator::new(language, None).map_err(io_err))
+        .collect::<io::Result<_>>()?;
     let mut counts = BTreeMap::new();
     let mut forced = 0;
-    while let Some(record) = decoder.next_record().map_err(io_err)? {
+    while let Some(mut record) = decoder.next_record().map_err(io_err)? {
+        if let Some(english) = translators.iter().find_map(|t| t.apply(&record.message)) {
+            record.message = english;
+        }
         let event = classify(&record);
         // While a connection is being authorized the session has no application name yet; the
         // log line carries it in its text.
@@ -107,19 +115,32 @@ fn the_manifest_expectations_hold_in_every_format() -> io::Result<()> {
             continue;
         }
         let (counts, forced_checkpoints) = counts(file, format)?;
+        // Explicit CHECKPOINTs are not tied to an application, so every scenario's are summed.
+        let checkpoint_range = expectations
+            .iter()
+            .filter(|e| e["event"] == "checkpoint")
+            .fold((0, 0), |(lo, hi), e| {
+                (
+                    lo + e["min"].as_u64().unwrap_or(0),
+                    hi + e["max"].as_u64().unwrap_or(0),
+                )
+            });
+        assert!(
+            (checkpoint_range.0..=checkpoint_range.1).contains(&forced_checkpoints),
+            "{file}: {forced_checkpoints} explicit checkpoints, expected {checkpoint_range:?}"
+        );
         for expect in expectations {
             let app = expect["app"].as_str().unwrap_or_default().to_owned();
             let event = expect["event"].as_str().unwrap_or_default();
             // "checkpoint" in the manifest is the explicit CHECKPOINT command, which is not tied to
             // an application; every other event kind has the manifest's name.
-            let got = if event == "checkpoint" {
-                forced_checkpoints
-            } else {
-                counts
-                    .get(&(app.clone(), event.to_owned()))
-                    .copied()
-                    .unwrap_or(0)
-            };
+            if event == "checkpoint" {
+                continue;
+            }
+            let got = counts
+                .get(&(app.clone(), event.to_owned()))
+                .copied()
+                .unwrap_or(0);
             let min = expect["min"].as_u64().unwrap_or(0);
             let max = expect["max"].as_u64().unwrap_or(u64::MAX);
             // Errors are separated by SQLSTATE in the manifest; the event kind has no SQLSTATE,
@@ -132,19 +153,21 @@ fn the_manifest_expectations_hold_in_every_format() -> io::Result<()> {
                 "{file}: {app} {event}: got {got}, expected {min}..={max}"
             );
         }
-        let errors_scenario: u64 = counts
-            .get(&("synth:errors".to_owned(), "error".to_owned()))
-            .copied()
-            .unwrap_or(0);
-        let expected_errors: u64 = expectations
-            .iter()
-            .filter(|e| e["event"] == "error")
-            .filter_map(|e| e["min"].as_u64())
-            .sum();
-        assert!(
-            errors_scenario >= expected_errors,
-            "{file}: errors {errors_scenario} < {expected_errors}"
-        );
+        // Errors are separated by SQLSTATE in the manifest and by application in the counts: each
+        // application must show at least as many as its scenarios declared.
+        let mut expected: BTreeMap<String, u64> = BTreeMap::new();
+        for e in expectations.iter().filter(|e| e["event"] == "error") {
+            *expected
+                .entry(e["app"].as_str().unwrap_or_default().to_owned())
+                .or_insert(0) += e["min"].as_u64().unwrap_or(0);
+        }
+        for (app, wanted) in expected {
+            let got = counts
+                .get(&(app.clone(), "error".to_owned()))
+                .copied()
+                .unwrap_or(0);
+            assert!(got >= wanted, "{file}: {app} errors {got} < {wanted}");
+        }
     }
     Ok(())
 }

@@ -9,6 +9,7 @@ pub mod ddl;
 pub mod errors;
 pub mod extended;
 pub mod functions;
+pub mod locale;
 pub mod locks;
 pub mod multiline;
 pub mod protocol;
@@ -205,6 +206,7 @@ pub const ALL: &[Scenario] = &[
     multiline::SCENARIO,
     extended::SCENARIO,
     apps::SCENARIO,
+    locale::SCENARIO,
     activity::CHECKPOINTS,
     activity::AUTOVACUUM,
     activity::TEMP_TABLES,
@@ -261,7 +263,7 @@ mod tests {
 
     #[test]
     fn scenarios_run_in_spec_order() {
-        const SPEC_ORDER: [&str; 21] = [
+        const SPEC_ORDER: [&str; 22] = [
             "baseline",
             "ddl",
             "lock_wait",
@@ -273,6 +275,7 @@ mod tests {
             "multiline",
             "extended",
             "apps",
+            "locale",
             "checkpoints",
             "autovacuum",
             "temp_tables",

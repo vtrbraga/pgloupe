@@ -160,7 +160,12 @@ wrong.
 - **PostgreSQL 14 to 18**, tested against real servers of each version.
 - **Logs:** stderr (any `log_line_prefix`, inferred), csvlog and jsonlog, plain or compressed
   with gzip, zstd, xz, lz4 or bzip2. Multi-line entries, application names with spaces and
-  Amazon RDS truncation markers are handled. The messages must be in English.
+  Amazon RDS truncation markers are handled.
+- **Languages (experimental):** servers that log in Portuguese (Brazil), Spanish, French or
+  German are read as if they were English; the language is detected, or give `--lc-messages`.
+  `--messages-file` adds another from a table of `locale<TAB>english<TAB>translated`.
+- **pgBouncer logs (experimental):** logins, why sessions ended, and the once-a-minute `stats:`
+  line (transactions, queries, wait time) get their own view.
 - **Statistics:** CSV exports of `pg_stat_statements` (and `pg_stat_statements_info`), which
   `snap` writes.
 
@@ -179,7 +184,8 @@ clouds). pgloupe is narrower and does these differently:
 ## Limits
 
 - It reads files you give it or fetch with the commands above; it is not a monitoring system.
-- pgBouncer logs and non-English servers are not supported yet.
+- pgBouncer logs and non-English servers are experimental: tested on generated and invented
+  input, not on production ones.
 - Idle time per session is not in the log, so it cannot be reported.
 - The experimental cloud providers have not been confirmed against the real services.
 

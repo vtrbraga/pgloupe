@@ -870,7 +870,7 @@ mod tests {
 
     #[test]
     fn unknown_labels_are_counted_separately() {
-        let text = format!("{SESSION} FEHLER:  etwas\n{SESSION} LOG:  fine\n");
+        let text = format!("{SESSION} XYZZY:  something\n{SESSION} LOG:  fine\n");
         let (_, stats) = decode(&text);
         assert_eq!(stats.no_label, 1);
     }

@@ -165,6 +165,19 @@
 </section>
 {% endif %}
 
+{% if report.logs.pooler %}
+<section id="pooler">
+<h2>pgBouncer (experimental)</h2>
+<p>{{ report.logs.pooler.logins|n }} logins, peak {{ report.logs.pooler.peak_xacts_s|round(0)|int }} transactions/s, clients waited {{ report.logs.pooler.mean_wait_ms|round(2) }} ms for a server on average.</p>
+<table>
+<thead><tr><th>Why sessions ended</th><th class="num">Times</th></tr></thead>
+<tbody>
+{% for r in report.logs.pooler.close_reasons %}<tr><td>{{ r.reason }}</td><td class="num">{{ r.count|n }}</td></tr>
+{% endfor %}</tbody>
+</table>
+</section>
+{% endif %}
+
 {% if report.logs.messages %}
 <section id="messages">
 <h2>Most frequent other messages</h2>

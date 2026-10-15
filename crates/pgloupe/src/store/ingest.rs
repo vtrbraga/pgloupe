@@ -246,6 +246,7 @@ fn settings_hint(known: &Input, options: &pipeline::Options) -> Option<StoredDia
             Format::Csv => "csv",
             Format::Json => "json",
             Format::Stderr => "stderr",
+            Format::Pgbouncer => "pgbouncer",
         };
         if known.format != name {
             warnings.push(format!(

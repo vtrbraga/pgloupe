@@ -8,6 +8,8 @@ use thiserror::Error;
 pub mod csvlog;
 pub mod infer;
 pub mod jsonlog;
+pub mod locale;
+pub mod pgbouncer;
 pub mod prefix;
 pub mod record;
 pub mod source;
@@ -18,12 +20,14 @@ pub mod time;
 pub use prefix::PrefixError;
 pub use record::{BlockPair, Correlation, LogRecord, Phase, Severity};
 
-/// The three log formats pgloupe reads.
+/// The log formats pgloupe reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Csv,
     Json,
     Stderr,
+    /// The pgBouncer log (experimental).
+    Pgbouncer,
 }
 
 /// Settings shared by the decoders.
@@ -209,6 +213,7 @@ pub fn decoder_for(
     Ok(match format {
         Format::Csv => Box::new(csvlog::CsvDecoder::new(reader, options.log_tz)),
         Format::Json => Box::new(jsonlog::JsonDecoder::new(reader, options.log_tz)),
+        Format::Pgbouncer => Box::new(pgbouncer::PgbouncerDecoder::new(reader, options.log_tz)),
         Format::Stderr => {
             let text = options.prefix.as_deref().ok_or(SetupError::MissingPrefix)?;
             let prefix = prefix::Prefix::compile(text)?;

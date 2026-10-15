@@ -62,6 +62,9 @@ pub struct Report {
     pub ddl: DdlReport,
     /// Connections per host over time.
     pub connection_hosts: HostSeries,
+    /// pgBouncer's own statistics, when the log is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pooler: Option<PoolerReport>,
     /// The most frequent messages nothing else claims.
     pub messages: Vec<MessageRow>,
     /// Statements by what they do, busiest first.
@@ -241,6 +244,9 @@ pub struct FileReport {
     pub lines: u64,
     pub records: u64,
     pub skipped: u64,
+    /// The language the server's messages were translated from (experimental), if not English.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -505,6 +511,33 @@ pub struct ReasonAppRow {
     pub count: u64,
 }
 
+/// What a pgBouncer log shows (experimental).
+#[derive(Debug, Clone, Serialize)]
+pub struct PoolerReport {
+    /// Clients that tried to log in.
+    pub logins: u64,
+    /// Why sessions ended, most frequent first.
+    pub close_reasons: Vec<ReasonRow>,
+    /// Averages per time bucket.
+    pub points: Vec<PoolPoint>,
+    /// The busiest transaction rate seen in a bucket.
+    pub peak_xacts_s: f64,
+    /// The mean time clients waited for a server connection, over all samples.
+    pub mean_wait_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PoolPoint {
+    pub start: String,
+    pub xacts_s: f64,
+    pub queries_s: f64,
+    pub in_bytes_s: f64,
+    pub out_bytes_s: f64,
+    pub xact_ms: f64,
+    pub query_ms: f64,
+    pub wait_ms: f64,
+}
+
 /// Schema-changing statements.
 #[derive(Debug, Clone, Serialize)]
 pub struct DdlReport {
@@ -640,6 +673,7 @@ impl Report {
             disconnects: disconnects(acc),
             ddl: ddl(acc),
             connection_hosts: connection_hosts(acc),
+            pooler: pooler(acc),
             messages: messages(acc),
             kinds: kinds(acc),
             histograms: HistogramsReport {
@@ -691,12 +725,14 @@ pub(crate) fn file_report(file: &FileSummary) -> FileReport {
             Format::Csv => "csv",
             Format::Json => "json",
             Format::Stderr => "stderr",
+            Format::Pgbouncer => "pgbouncer",
         }
         .to_owned(),
         prefix: file.prefix.clone(),
         prefix_source: prefix_source.to_owned(),
         prefix_match,
         lines: file.stats.lines,
+        locale: file.locale.clone(),
         records: file.stats.records,
         skipped: file.stats.skipped,
     }
@@ -1175,6 +1211,54 @@ fn connection_hosts(acc: &Accumulators) -> HostSeries {
     }
 }
 
+fn pooler(acc: &Accumulators) -> Option<PoolerReport> {
+    let p = &acc.totals.observed.pooler;
+    if p.samples.is_empty() && p.closes.is_empty() && p.logins == 0 {
+        return None;
+    }
+    let mut close_reasons: Vec<ReasonRow> = p
+        .closes
+        .iter()
+        .map(|(reason, count)| ReasonRow {
+            reason: reason.clone(),
+            count: *count,
+        })
+        .collect();
+    close_reasons.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+    let (mut wait_total, mut samples) = (0.0, 0.0);
+    let points: Vec<PoolPoint> = p
+        .samples
+        .iter()
+        .map(|(start, s)| {
+            let n = count(s.samples.max(1));
+            wait_total += s.wait_us;
+            samples += count(s.samples);
+            PoolPoint {
+                start: Timestamp::from_second(*start)
+                    .map_or_else(|_err| start.to_string(), |ts| ts.to_string()),
+                xacts_s: s.xacts_s / n,
+                queries_s: s.queries_s / n,
+                in_bytes_s: s.in_bytes_s / n,
+                out_bytes_s: s.out_bytes_s / n,
+                xact_ms: s.xact_us / n / 1_000.0,
+                query_ms: s.query_us / n / 1_000.0,
+                wait_ms: s.wait_us / n / 1_000.0,
+            }
+        })
+        .collect();
+    Some(PoolerReport {
+        logins: p.logins,
+        close_reasons,
+        peak_xacts_s: points.iter().map(|x| x.xacts_s).fold(0.0, f64::max),
+        mean_wait_ms: if samples > 0.0 {
+            wait_total / samples / 1_000.0
+        } else {
+            0.0
+        },
+        points,
+    })
+}
+
 /// Message shapes listed.
 const TOP_MESSAGES: usize = 20;
 
@@ -1264,6 +1348,7 @@ mod tests {
                 ..DecodeStats::default()
             },
             filtered: 0,
+            locale: None,
             content: None,
         }];
         Output { acc, files }

@@ -34,7 +34,8 @@ impl Severity {
             "LOG" => Severity::Log,
             "FATAL" => Severity::Fatal,
             "PANIC" => Severity::Panic,
-            _ => return None,
+            // A server that logs in another language prints translated labels.
+            other => return super::locale::localized_severity(other),
         })
     }
 

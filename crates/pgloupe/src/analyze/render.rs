@@ -6,7 +6,8 @@ use super::{
     histogram::HistogramBucket,
     report::{
         CancelledReport, CheckpointRow, DdlReport, DimensionRow, DisconnectsReport, ErrorRow,
-        KindRow, MessageRow, Quantiles, Report, SlowestReport, StatementRow, TableRow, TimelineRow,
+        KindRow, MessageRow, PoolerReport, Quantiles, Report, SlowestReport, StatementRow,
+        TableRow, TimelineRow,
     },
 };
 
@@ -65,6 +66,9 @@ pub fn sections(report: &Report, statements_table: bool) -> Vec<String> {
     let schema = ddl(&report.ddl);
     if !schema.is_empty() {
         section(&mut lines, "schema changes", schema);
+    }
+    if let Some(pooler) = &report.pooler {
+        section(&mut lines, "pgbouncer (experimental)", pooler_lines(pooler));
     }
     let chatter = messages(&report.messages);
     if !chatter.is_empty() {
@@ -420,6 +424,20 @@ fn checkpoints(rows: &[CheckpointRow]) -> Vec<String> {
         .collect()
 }
 
+fn pooler_lines(p: &PoolerReport) -> Vec<String> {
+    let mut lines = vec![format!(
+        "logins {}, peak {:.0} transactions/s, clients waited {:.2} ms for a server on average",
+        p.logins, p.peak_xacts_s, p.mean_wait_ms
+    )];
+    lines.extend(
+        p.close_reasons
+            .iter()
+            .take(10)
+            .map(|r| format!("  {:>8}x  closed: {}", r.count, r.reason)),
+    );
+    lines
+}
+
 fn disconnects(report: &DisconnectsReport) -> Vec<String> {
     if report.reasons.is_empty() {
         return Vec::new();
@@ -729,6 +747,7 @@ mod tests {
             },
             stats,
             filtered: 0,
+            locale: None,
             content: None,
         }];
         Report::build(

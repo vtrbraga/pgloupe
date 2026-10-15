@@ -41,6 +41,7 @@
       { id: 'maintenance', label: 'Maintenance', show: !!logs },
       { id: 'breakdowns', label: 'Breakdowns', show: !!logs },
       { id: 'slowest', label: 'Slowest', show: !!(logs && logs.slowest && logs.slowest.rows.length) },
+      { id: 'pooler', label: 'Pooler', show: !!(logs && logs.pooler) },
       { id: 'comparison', label: 'Comparison', show: !!D.comparison },
       { id: 'advice', label: 'Settings', show: advice.length > 0 },
       { id: 'findings', label: 'Data caveats', show: findings.length > 0 }
@@ -800,6 +801,32 @@
     out.push(panel('What moved most', simpleTable([{ label: 'Change' }, { label: 'Calls', num: true }, { label: 'Mean', num: true }, { label: 'Total time', num: true }, { label: '%', num: true }, { label: 'Statement' }], rows)));
     return out;
   }
+  function viewPooler() {
+    var p = logs.pooler;
+    var cells = L.downsample(p.points.map(function (x) {
+      return { start: x.start, xacts_s: x.xacts_s, queries_s: x.queries_s, wait_ms: x.wait_ms };
+    }), 240).map(function (b) {
+      // Rates and times are averages, not sums: undo the summing a merged bar did.
+      var n = b.span || 1;
+      return { start: b.start, span: n, xacts_s: b.xacts_s / n, queries_s: b.queries_s / n, wait_ms: b.wait_ms / n };
+    });
+    var host = h('div', { 'class': 'chart-host' });
+    setTimeout(function () {
+      C.timeline(host, { buckets: cells, series: [{ key: 'xacts_s', label: 'Transactions / s', color: 'var(--c-statements)' }, { key: 'queries_s', label: 'Queries / s', color: 'var(--c-connections)' }, { key: 'wait_ms', label: 'Client wait (ms)', color: 'var(--c-locks)' }], range: null });
+    }, 0);
+    var out = [
+      h('p', { 'class': 'muted', text: 'Read from the pgBouncer log (experimental: not yet confirmed against a real pooler).' }),
+      h('div', { 'class': 'grid kpis' }, [kpi('Logins', L.fmtInt(p.logins), ''), kpi('Peak transactions / s', L.fmtInt(Math.round(p.peak_xacts_s)), ''), kpi('Mean client wait', L.fmtMs(p.mean_wait_ms), 'for a server connection')]),
+      panel('Pooler activity', host)
+    ];
+    if (p.close_reasons.length) {
+      out.push(h('h2', { text: 'Why sessions ended' }));
+      out.push(simpleTable([{ label: 'Reason' }, { label: 'Times', num: true }], p.close_reasons.map(function (r) {
+        return h('tr', null, [h('td', { text: r.reason }), h('td', { 'class': 'num', text: L.fmtInt(r.count) })]);
+      })));
+    }
+    return out;
+  }
   function viewAdvice() {
     var out = [h('p', { 'class': 'muted', text: 'Settings that decide what this report can show. Each one says what is lost and what to change; the badge says whether it was read from the server\'s settings or inferred from the data.' })];
     advice.forEach(function (a) {
@@ -811,7 +838,7 @@
   }
   function viewFindings() { return [h('div', { 'class': 'findings' }, findings.map(findingNode))]; }
 
-  var VIEWS = { overview: viewOverview, statements: viewStatements, errors: viewErrors, locks: viewLocks, sessions: viewSessions, maintenance: viewMaintenance, breakdowns: viewBreakdowns, slowest: viewSlowest, comparison: viewComparison, advice: viewAdvice, findings: viewFindings };
+  var VIEWS = { overview: viewOverview, statements: viewStatements, errors: viewErrors, locks: viewLocks, sessions: viewSessions, maintenance: viewMaintenance, breakdowns: viewBreakdowns, slowest: viewSlowest, pooler: viewPooler, comparison: viewComparison, advice: viewAdvice, findings: viewFindings };
 
   /* ---------- render ---------- */
   var viewNode = null;

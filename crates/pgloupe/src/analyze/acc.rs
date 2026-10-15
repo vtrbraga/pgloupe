@@ -537,6 +537,19 @@ pub struct TableStats {
     pub index_scans: u64,
 }
 
+impl TableStats {
+    /// Counts one run, a vacuum or an analyze, that took `us` microseconds.
+    fn record(&mut self, analyze: bool, us: u64) {
+        if analyze {
+            self.analyzes += 1;
+        } else {
+            self.vacuums += 1;
+        }
+        self.total_us += us;
+        self.max_us = self.max_us.max(us);
+    }
+}
+
 impl Merge for TableStats {
     fn merge(&mut self, other: Self) {
         self.vacuums += other.vacuums;
@@ -573,6 +586,52 @@ const NAMED_LIMIT: usize = 5_000;
 /// Hosts tracked in the connection series; the rest count as `(other)`.
 const HOST_LIMIT: usize = 5_000;
 
+/// One minute of pgBouncer's `stats:` line, summed over the samples that fell in a bucket.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct PoolSample {
+    pub samples: u64,
+    pub xacts_s: f64,
+    pub queries_s: f64,
+    pub in_bytes_s: f64,
+    pub out_bytes_s: f64,
+    pub xact_us: f64,
+    pub query_us: f64,
+    pub wait_us: f64,
+}
+
+impl PoolSample {
+    fn absorb(&mut self, other: &PoolSample) {
+        self.samples += other.samples;
+        self.xacts_s += other.xacts_s;
+        self.queries_s += other.queries_s;
+        self.in_bytes_s += other.in_bytes_s;
+        self.out_bytes_s += other.out_bytes_s;
+        self.xact_us += other.xact_us;
+        self.query_us += other.query_us;
+        self.wait_us += other.wait_us;
+    }
+}
+
+/// What a pgBouncer log adds: its stats over time, why sessions ended, how many logged in.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Pooler {
+    /// Bucket start (Unix seconds) -> the `stats:` lines in it.
+    pub samples: BTreeMap<i64, PoolSample>,
+    /// Why sessions ended, by reason.
+    pub closes: BTreeMap<String, u64>,
+    pub logins: u64,
+}
+
+impl Merge for Pooler {
+    fn merge(&mut self, other: Self) {
+        for (bucket, sample) in other.samples {
+            self.samples.entry(bucket).or_default().absorb(&sample);
+        }
+        add_counts(&mut self.closes, other.closes);
+        self.logins += other.logins;
+    }
+}
+
 /// What the log says about the clients and the server that the other tallies do not: abrupt
 /// endings, schema changes, who connects when, and the messages nothing else claims.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -590,6 +649,9 @@ pub struct Observed {
     pub hosts: BTreeMap<String, BTreeMap<i64, u64>>,
     /// Messages by shape (see [`message_shape`]).
     pub messages: BTreeMap<String, MessageStat>,
+    /// pgBouncer's own lines.
+    #[serde(default)]
+    pub pooler: Pooler,
 }
 
 impl Observed {
@@ -667,6 +729,7 @@ impl Merge for Observed {
             mine.total_us += stat.total_us;
         }
         add_counts(&mut self.temp_tables, other.temp_tables);
+        self.pooler.merge(other.pooler);
         for (host, buckets) in other.hosts {
             let mine = self.hosts.entry(host).or_default();
             for (bucket, n) in buckets {
@@ -879,6 +942,39 @@ impl Totals {
         }
     }
 
+    /// Adds one pgBouncer `stats:` line to its time bucket.
+    fn pool_stats(&mut self, ts: Timestamp, event: &Event) {
+        let Event::PoolStats {
+            xacts_s,
+            queries_s,
+            in_bytes_s,
+            out_bytes_s,
+            xact_us,
+            query_us,
+            wait_us,
+        } = event
+        else {
+            return;
+        };
+        let width = self.timeline.bucket_secs;
+        let sample = PoolSample {
+            samples: 1,
+            xacts_s: *xacts_s,
+            queries_s: *queries_s,
+            in_bytes_s: *in_bytes_s,
+            out_bytes_s: *out_bytes_s,
+            xact_us: *xact_us,
+            query_us: *query_us,
+            wait_us: *wait_us,
+        };
+        self.observed
+            .pooler
+            .samples
+            .entry(ts.as_second().div_euclid(width) * width)
+            .or_default()
+            .absorb(&sample);
+    }
+
     fn checkpoint_done(
         &mut self,
         ts: Timestamp,
@@ -984,14 +1080,7 @@ impl Totals {
                 stats.pages_removed += pages_removed.unwrap_or(0);
                 stats.tuples_removed += tuples_removed.unwrap_or(0);
                 stats.index_scans += index_scans.unwrap_or(0);
-                if *analyze {
-                    stats.analyzes += 1;
-                } else {
-                    stats.vacuums += 1;
-                }
-                let us = elapsed_ms.map_or(0, to_micros);
-                stats.total_us += us;
-                stats.max_us = stats.max_us.max(us);
+                stats.record(*analyze, elapsed_ms.map_or(0, to_micros));
             }
             Event::ConnectionReceived { .. } => self.connections.received += 1,
             Event::ConnectionAuthenticated => self.connections.authenticated += 1,
@@ -1008,6 +1097,16 @@ impl Totals {
                 self.connections.disconnections += 1;
                 self.connections.session.add(*session_ms);
             }
+            Event::PoolStats { .. } => self.pool_stats(ts, event),
+            Event::PoolClose { reason } => {
+                *self
+                    .observed
+                    .pooler
+                    .closes
+                    .entry(reason.clone())
+                    .or_insert(0) += 1;
+            }
+            Event::PoolLogin => self.observed.pooler.logins += 1,
             Event::Other if !record.level.is_error() => self.observed.message(record),
             _ => {}
         }

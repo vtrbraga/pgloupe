@@ -167,6 +167,9 @@ fn from_data(input: &Input<'_>, vendor: Option<&str>) -> Vec<Advice> {
 }
 
 fn log_rules(logs: &Report, place: &Place, found: &mut Vec<Advice>) {
+    if !logs.files.is_empty() && logs.files.iter().all(|f| f.format == "pgbouncer") {
+        return;
+    }
     let home = place.home;
     let events = &logs.overview.events;
     let count = |kind: &str| events.get(kind).copied().unwrap_or(0);

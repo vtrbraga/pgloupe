@@ -2,8 +2,15 @@ use clap::Parser;
 use synth::cli::{Cli, Command};
 
 fn main() -> anyhow::Result<()> {
-    let Command::Generate(args) = Cli::parse().command;
-    let dir = synth::generate::run(&args)?;
-    println!("{}", dir.display());
+    match Cli::parse().command {
+        Command::Generate(args) => {
+            let dir = synth::generate::run(&args)?;
+            println!("{}", dir.display());
+        }
+        Command::ExtractLocales(args) => {
+            let rows = synth::locales::extract(&args.out)?;
+            println!("wrote {rows} translations to {}", args.out.display());
+        }
+    }
     Ok(())
 }

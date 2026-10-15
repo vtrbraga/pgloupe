@@ -55,6 +55,12 @@ pub fn settings(pg_major: u32) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// Locales built at startup so sessions can log in other languages (`lc_messages`).
+pub const LOCALES: &[&str] = &["pt_BR", "es_ES", "fr_FR", "de_DE"];
+
+/// Where the generated locales live inside the container.
+const LOCALE_DIR: &str = "/locales";
+
 /// Label on generator containers, used to find stale ones.
 pub const LABEL: &str = "pgloupe.synth=1";
 
@@ -98,6 +104,12 @@ pub fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         "PGDATA=/pgdata",
         "-e",
         "POSTGRES_HOST_AUTH_METHOD=trust",
+        // `C.UTF-8` is built into glibc; the other locales are generated below into LOCPATH,
+        // which the server (not running as root) can read.
+        "-e",
+        "LANG=C.UTF-8",
+        "-e",
+        "LOCPATH=/locales",
         "-p",
         "127.0.0.1::5432",
     ]
@@ -112,13 +124,30 @@ pub fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         format!("{}:/log", spec.log_dir.display()),
         "-v".to_owned(),
         format!("{}:/dataset:ro", spec.dataset_dir.display()),
+        "--tmpfs".to_owned(),
+        format!("{LOCALE_DIR}:rw,uid={},gid={}", spec.uid, spec.gid),
+        "--entrypoint".to_owned(),
+        "sh".to_owned(),
         spec.image.to_owned(),
+        "-c".to_owned(),
+        locale_script(),
+        "sh".to_owned(),
+        "postgres".to_owned(),
     ]);
     for (name, value) in settings(spec.pg_major) {
         args.push("-c".to_owned());
         args.push(format!("{name}={value}"));
     }
     args
+}
+
+/// Shell that builds the locales, then hands over to the image's own entrypoint with
+/// `postgres -c ...` as its arguments.
+fn locale_script() -> String {
+    let names = LOCALES.join(" ");
+    format!(
+        "for l in {names}; do localedef -i $l -f UTF-8 {LOCALE_DIR}/$l.UTF-8 2>/dev/null; done; exec docker-entrypoint.sh \"$@\""
+    )
 }
 
 /// Runs `docker <args>` and returns trimmed stdout.
@@ -355,6 +384,18 @@ mod tests {
         assert!(has_pair(&args, "-v", "/abs/dataset:/dataset:ro"));
         assert!(has_pair(&args, "--label", LABEL));
         assert!(has_pair(&args, "-p", "127.0.0.1::5432"));
+    }
+
+    #[test]
+    fn locales_are_built_before_the_image_entrypoint_takes_over() {
+        let args = run_args(&spec());
+        assert!(has_pair(&args, "-e", "LOCPATH=/locales"));
+        assert!(has_pair(&args, "--entrypoint", "sh"));
+        let script = args.iter().find(|a| a.contains("localedef")).unwrap();
+        for locale in LOCALES {
+            assert!(script.contains(locale), "{locale}");
+        }
+        assert!(script.ends_with("exec docker-entrypoint.sh \"$@\""));
     }
 
     #[test]

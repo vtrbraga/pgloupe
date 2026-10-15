@@ -63,7 +63,15 @@ pub fn split_label(rest: &str) -> Option<(Label, &str)> {
         "CONTEXT" => Label::Context,
         "STATEMENT" => Label::Statement,
         "LOCATION" | "BACKTRACE" => Label::Location,
-        name => Label::Level(Severity::from_label(name)?),
+        name => match super::locale::localized_secondary(name) {
+            Some("DETAIL") => Label::Detail,
+            Some("HINT") => Label::Hint,
+            Some("QUERY") => Label::Query,
+            Some("CONTEXT") => Label::Context,
+            Some("STATEMENT") => Label::Statement,
+            Some(_) => Label::Location,
+            None => Label::Level(Severity::from_label(name)?),
+        },
     };
     Some((label, text))
 }

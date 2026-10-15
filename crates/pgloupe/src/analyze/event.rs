@@ -78,6 +78,22 @@ pub enum Event {
     Disconnection {
         session_ms: f64,
     },
+    /// pgBouncer's once-a-minute `stats:` line (rates per second, times in microseconds).
+    PoolStats {
+        xacts_s: f64,
+        queries_s: f64,
+        in_bytes_s: f64,
+        out_bytes_s: f64,
+        xact_us: f64,
+        query_us: f64,
+        wait_us: f64,
+    },
+    /// A pgBouncer session ended; `reason` is what it said.
+    PoolClose {
+        reason: String,
+    },
+    /// A client tried to log in through pgBouncer.
+    PoolLogin,
     Other,
 }
 
@@ -105,6 +121,9 @@ impl Event {
             Event::ConnectionAuthenticated => "connection_authenticated",
             Event::ConnectionAuthorized => "connection_authorized",
             Event::Disconnection { .. } => "disconnection",
+            Event::PoolStats { .. } => "pool_stats",
+            Event::PoolClose { .. } => "pool_close",
+            Event::PoolLogin => "pool_login",
             Event::Other => "other",
         }
     }
@@ -139,7 +158,46 @@ fn classify_log(message: &str) -> Event {
         .or_else(|| temp_file_event(message))
         .or_else(|| checkpoint_event(message))
         .or_else(|| autovacuum_event(message))
+        .or_else(|| pooler_event(message))
         .unwrap_or(Event::Other)
+}
+
+/// The pgBouncer lines that carry numbers: `stats:`, `login attempt:` and `closing because:`.
+fn pooler_event(message: &str) -> Option<Event> {
+    if message.starts_with("login attempt: ") {
+        return Some(Event::PoolLogin);
+    }
+    if let Some(rest) = message.strip_prefix("closing because: ") {
+        let reason = rest.split(" (").next().unwrap_or(rest).trim();
+        return Some(Event::PoolClose {
+            reason: reason.to_owned(),
+        });
+    }
+    let rest = message
+        .strip_prefix("stats: ")
+        .or_else(|| message.strip_prefix("Stats: "))?;
+    let before = |label: &str| -> f64 {
+        rest.find(label)
+            .and_then(|at| rest[..at].rsplit([' ', ',']).next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0.0)
+    };
+    let after = |label: &str| -> f64 {
+        rest.find(label)
+            .map(|at| &rest[at + label.len()..])
+            .and_then(|tail| tail.split([' ', ',']).next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0.0)
+    };
+    Some(Event::PoolStats {
+        xacts_s: before(" xacts/s"),
+        queries_s: before(" queries/s"),
+        in_bytes_s: after("in ").max(0.0),
+        out_bytes_s: after("out ").max(0.0),
+        xact_us: after("xact "),
+        query_us: after("query "),
+        wait_us: after("wait "),
+    })
 }
 
 /// `process N still waiting for LOCK on TARGET after X ms` and `process N acquired LOCK on

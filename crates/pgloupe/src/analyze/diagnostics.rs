@@ -53,7 +53,15 @@ pub fn build(output: &Output) -> Diagnostics {
     prefix_warnings(&output.files, &mut diagnostics.warnings);
     label_warning(&output.files, &mut diagnostics.warnings);
     inferred_prefix_warning(&output.files, &mut diagnostics.warnings);
-    absence_warnings(output, &mut diagnostics.warnings);
+    // A pooler's log holds none of the server events these warnings look for.
+    let pooler_only = !output.files.is_empty()
+        && output
+            .files
+            .iter()
+            .all(|f| f.format == crate::log::Format::Pgbouncer);
+    if !pooler_only {
+        absence_warnings(output, &mut diagnostics.warnings);
+    }
     if output.acc.overflow.calls > 0 {
         diagnostics.warnings.push(format!(
             "{} statements fell into the overflow bucket — raise --max-fingerprints to keep more distinct statements",
@@ -202,7 +210,7 @@ fn label_warning(files: &[FileSummary], warnings: &mut Vec<String>) {
         .sum();
     if no_label > 0 && no_label * 20 >= seen {
         warnings.push(
-            "many lines match the prefix but have an unknown severity label — lc_messages is probably not English; set lc_messages = 'C'"
+            "many lines match the prefix but have an unknown severity label — lc_messages is probably not English; pgloupe reads Portuguese (pt_BR), Spanish (es), French (fr) and German (de) with --lc-messages, or give --messages-file for another language"
                 .to_owned(),
         );
     }
@@ -296,6 +304,7 @@ mod tests {
             },
             stats,
             filtered: 0,
+            locale: None,
             content: None,
         }
     }

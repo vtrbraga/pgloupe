@@ -236,6 +236,51 @@ struct AnalyzeArgs {
     capture: CaptureArgs,
     #[command(flatten)]
     filters: FilterArgs,
+    #[command(flatten)]
+    language: LocaleArgs,
+}
+
+/// The language the server logs in (experimental).
+#[derive(Debug, Args)]
+struct LocaleArgs {
+    /// The language of the server's messages (`lc_messages`): `auto` (default) looks at the log,
+    /// `en` reads English, or one of `pt_BR`, `es`, `fr`, `de`.
+    #[arg(long = "lc-messages", default_value = "auto")]
+    lc_messages: String,
+    /// A translation table for another language: lines of `locale<TAB>english<TAB>translated`,
+    /// as in the built-in one.
+    #[arg(long = "messages-file")]
+    messages_file: Option<PathBuf>,
+}
+
+impl LocaleArgs {
+    /// The pipeline's `locale` and `messages` options.
+    fn options(&self) -> anyhow::Result<(Option<String>, Option<String>)> {
+        let messages = self
+            .messages_file
+            .as_ref()
+            .map(|path| {
+                std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+            })
+            .transpose()?;
+        let locale = (self.lc_messages != "auto").then(|| self.lc_messages.clone());
+        // A table given without a language means: use it, whatever the log looks like.
+        let locale = locale.or_else(|| {
+            messages
+                .as_ref()
+                .and_then(|_| first_locale(messages.as_deref()))
+        });
+        Ok((locale, messages))
+    }
+}
+
+/// The language of the first row of a translation table.
+fn first_locale(table: Option<&str>) -> Option<String> {
+    table?
+        .lines()
+        .find(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .and_then(|l| l.split('\t').next())
+        .map(str::to_owned)
 }
 
 /// Which records of the log files take part.
@@ -400,6 +445,8 @@ struct IngestArgs {
     capture: CaptureArgs,
     #[command(flatten)]
     filters: FilterArgs,
+    #[command(flatten)]
+    language: LocaleArgs,
 }
 
 #[derive(Debug, Args)]
@@ -519,6 +566,8 @@ struct CombinedArgs {
     capture: CaptureArgs,
     #[command(flatten)]
     filters: FilterArgs,
+    #[command(flatten)]
+    language: LocaleArgs,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -640,6 +689,8 @@ enum LogFormat {
     Csv,
     Json,
     Stderr,
+    /// The pgBouncer log (experimental).
+    Pgbouncer,
 }
 
 /// How a command ended, when it did not fail with an error.
@@ -719,6 +770,7 @@ fn logs_dump(args: &DumpArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyho
         LogFormat::Csv => Format::Csv,
         LogFormat::Json => Format::Json,
         LogFormat::Stderr => Format::Stderr,
+        LogFormat::Pgbouncer => Format::Pgbouncer,
         // A prefix only makes sense for stderr logs.
         LogFormat::Auto if args.prefix.is_some() => Format::Stderr,
         LogFormat::Auto => {
@@ -805,6 +857,7 @@ fn logs_ingest(
             LogFormat::Csv => Some(Format::Csv),
             LogFormat::Json => Some(Format::Json),
             LogFormat::Stderr => Some(Format::Stderr),
+            LogFormat::Pgbouncer => Some(Format::Pgbouncer),
         },
         prefix: args.prefix.clone(),
         log_tz: args.log_tz,
@@ -815,6 +868,8 @@ fn logs_ingest(
         hash_marks: None,
         slowest: args.capture.slowest(),
         params: args.capture.params,
+        locale: args.language.options()?.0,
+        messages: args.language.options()?.1,
     };
     let mut failed = false;
     for outcome in store::ingest(&mut store, &args.files, &options, args.force) {
@@ -927,6 +982,7 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
                 LogFormat::Csv => Some(Format::Csv),
                 LogFormat::Json => Some(Format::Json),
                 LogFormat::Stderr => Some(Format::Stderr),
+                LogFormat::Pgbouncer => Some(Format::Pgbouncer),
             },
             prefix: args.prefix.clone(),
             log_tz: args.log_tz,
@@ -937,6 +993,8 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
             hash_marks: None,
             slowest: args.capture.slowest(),
             params: args.capture.params,
+            locale: args.language.options()?.0,
+            messages: args.language.options()?.1,
             filter: args.filters.filter(),
         };
         let output = pipeline::run(&args.files, &pipeline_options).inspect_err(|error| {
@@ -1187,6 +1245,7 @@ fn logs_analyze(
             LogFormat::Csv => Some(Format::Csv),
             LogFormat::Json => Some(Format::Json),
             LogFormat::Stderr => Some(Format::Stderr),
+            LogFormat::Pgbouncer => Some(Format::Pgbouncer),
         },
         prefix: args.prefix.clone(),
         log_tz: args.log_tz,
@@ -1197,6 +1256,8 @@ fn logs_analyze(
         hash_marks: None,
         slowest: args.capture.slowest(),
         params: args.capture.params,
+        locale: args.language.options()?.0,
+        messages: args.language.options()?.1,
         filter: args.filters.filter(),
     };
     let output = match pipeline::run(&args.files, &options) {

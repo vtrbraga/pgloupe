@@ -26,6 +26,7 @@ use crate::log::{
     BlockPair, DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions,
     SetupError, Severity, decoder_for,
     infer::{Inference, SAMPLE_LINES, infer_prefix},
+    locale::{self, Translator},
     prefix::Prefix,
     source,
     tee::{self, Content, TeeHandle},
@@ -57,6 +58,11 @@ pub struct Options {
     pub params: bool,
     /// Which records take part.
     pub filter: Filter,
+    /// The language of the server's messages: `None` detects it per file, `Some("en")` reads them
+    /// as English, anything else names a language of the built-in table or of `messages`.
+    pub locale: Option<String>,
+    /// An extra translation table (see `log::locale`), as text.
+    pub messages: Option<String>,
 }
 
 impl Options {
@@ -75,6 +81,8 @@ impl Options {
             slowest: super::slowest::DEFAULT_KEPT,
             params: false,
             filter: Filter::default(),
+            locale: None,
+            messages: None,
         }
     }
 }
@@ -106,6 +114,8 @@ pub struct FileSummary {
     pub filtered: u64,
     /// Identity of the decompressed bytes; only when `Options::hash_marks` is set.
     pub content: Option<Content>,
+    /// The language the messages were translated from, when it was not English.
+    pub locale: Option<String>,
 }
 
 /// The result of a run.
@@ -140,6 +150,8 @@ pub enum AnalyzeError {
     Binary { path: PathBuf },
     #[error("{}: could not infer the log_line_prefix; pass --prefix with the server's setting", .path.display())]
     PrefixNotInferred { path: PathBuf, inference: Inference },
+    #[error("{}: {message}", .path.display())]
+    Locale { path: PathBuf, message: String },
     #[error("could not start the worker pool")]
     Pool(#[source] rayon::ThreadPoolBuildError),
 }
@@ -270,6 +282,8 @@ struct Current {
     tee: Option<TeeHandle>,
     /// Records the filter dropped so far.
     filtered: u64,
+    /// Rewrites another language's messages as English.
+    translator: Option<(String, Translator)>,
 }
 
 /// Yields batches of records, file after file.
@@ -307,6 +321,7 @@ impl Batches {
                     stats,
                     filtered: current.filtered,
                     content: current.tee.as_ref().map(TeeHandle::finish),
+                    locale: current.translator.as_ref().map(|(name, _)| name.clone()),
                 },
             ));
         }
@@ -347,6 +362,9 @@ impl Iterator for Batches {
                 while batch.len() < self.options.batch_size.max(1) {
                     match current.decoder.next_record() {
                         Ok(Some(mut record)) => {
+                            if let Some((_, translator)) = &current.translator {
+                                translate(translator, &mut record);
+                            }
                             // Before the filter: a cursor declared by a record the filter drops
                             // still has to be known when its fetches arrive.
                             self.correlator.apply(&mut record);
@@ -439,6 +457,13 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
             (sniffed, _) => sniffed,
         },
     };
+    let translator =
+        translator_for(&String::from_utf8_lossy(peek), options).map_err(|message| {
+            AnalyzeError::Locale {
+                path: path.to_path_buf(),
+                message,
+            }
+        })?;
     let (prefix, prefix_source) = if format == Format::Stderr && !blank {
         match &options.prefix {
             Some(prefix) => (Some(prefix.clone()), PrefixSource::Given),
@@ -472,7 +497,38 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
         decoder,
         tee,
         filtered: 0,
+        translator,
     })
+}
+
+/// The translator for a file, from the options or from what its first lines look like.
+fn translator_for(sample: &str, options: &Options) -> Result<Option<(String, Translator)>, String> {
+    let name = match options.locale.as_deref() {
+        Some("en" | "C") => return Ok(None),
+        Some(name) => name.to_owned(),
+        None => match locale::detect(sample) {
+            Some(found) => found.to_owned(),
+            None => return Ok(None),
+        },
+    };
+    let translator = Translator::new(&name, options.messages.as_deref())?;
+    if translator.is_empty() {
+        return Err(format!(
+            "no translations for {name:?}; the built-in languages are {}; add one with --messages-file",
+            locale::languages().join(", ")
+        ));
+    }
+    Ok(Some((name, translator)))
+}
+
+/// Rewrites the message and the DETAIL of `record` as English when a rule recognizes them.
+fn translate(translator: &Translator, record: &mut LogRecord) {
+    if let Some(english) = translator.apply(&record.message) {
+        record.message = english;
+    }
+    if let Some(detail) = record.detail.as_deref().and_then(|d| translator.apply(d)) {
+        record.detail = Some(detail);
+    }
 }
 
 /// True if `prefix` matches the first non-blank line in `peek`.
