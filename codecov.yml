@@ -1,0 +1,18 @@
+# Coverage is measured for the tool people install, not for the helpers that build or test it.
+ignore:
+  - "crates/synth"
+  - "crates/xtask"
+
+coverage:
+  status:
+    # Informational until there is a history to set a target from.
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+comment:
+  layout: "condensed_header, diff, files"
+  require_changes: true
