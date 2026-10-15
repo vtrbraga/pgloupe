@@ -187,6 +187,8 @@ complete -c pgloupe -n "__fish_pgloupe_using_subcommand report" -l before -d 'Ol
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand report" -l after -d 'Newer snapshot' -r -F
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand report" -l before-info -d '`pg_stat_statements_info` CSV taken with the older snapshot' -r -F
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand report" -l after-info -d '`pg_stat_statements_info` CSV taken with the newer snapshot' -r -F
+complete -c pgloupe -n "__fish_pgloupe_using_subcommand report" -l before-db -d '`pg_stat_database` CSV taken with the older snapshot; found beside it when it is named `pg_stat_database_<time>.csv`' -r -F
+complete -c pgloupe -n "__fish_pgloupe_using_subcommand report" -l after-db -d '`pg_stat_database` CSV taken with the newer snapshot' -r -F
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand report" -l format -d 'Log format of `FILES`; `auto` looks at each file\'s first line' -r -f -a "auto\t''
 csv\t''
 json\t''

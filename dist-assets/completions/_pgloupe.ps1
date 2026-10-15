@@ -222,6 +222,8 @@ Register-ArgumentCompleter -Native -CommandName 'pgloupe' -ScriptBlock {
             [CompletionResult]::new('--after', '--after', [CompletionResultType]::ParameterName, 'Newer snapshot')
             [CompletionResult]::new('--before-info', '--before-info', [CompletionResultType]::ParameterName, '`pg_stat_statements_info` CSV taken with the older snapshot')
             [CompletionResult]::new('--after-info', '--after-info', [CompletionResultType]::ParameterName, '`pg_stat_statements_info` CSV taken with the newer snapshot')
+            [CompletionResult]::new('--before-db', '--before-db', [CompletionResultType]::ParameterName, '`pg_stat_database` CSV taken with the older snapshot; found beside it when it is named `pg_stat_database_<time>.csv`')
+            [CompletionResult]::new('--after-db', '--after-db', [CompletionResultType]::ParameterName, '`pg_stat_database` CSV taken with the newer snapshot')
             [CompletionResult]::new('--format', '--format', [CompletionResultType]::ParameterName, 'Log format of `FILES`; `auto` looks at each file''s first line')
             [CompletionResult]::new('--prefix', '--prefix', [CompletionResultType]::ParameterName, 'The server''s `log_line_prefix` for `FILES`; inferred when omitted')
             [CompletionResult]::new('--log-tz', '--log-tz', [CompletionResultType]::ParameterName, 'Offset for timezone abbreviations the log does not spell out, e.g. `-03` or `+05:30`')

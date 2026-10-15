@@ -979,7 +979,7 @@ _pgloupe() {
             return 0
             ;;
         pgloupe__subcmd__report)
-            opts="-h --store --since --until --before --after --before-info --after-info --format --prefix --log-tz --max-fingerprints --threads --by --top --bucket --output --baseline --baseline-since --baseline-until --settings --vendor --display-tz --out --slowest --params --database --user --application --host --exclude-database --exclude-user --exclude-application --exclude-host --include-query --exclude-query --pid --exclude-message --between --exclude-hours --weekdays --tz --anonymize --anonymize-key --lc-messages --messages-file --help"
+            opts="-h --store --since --until --before --after --before-info --after-info --before-db --after-db --format --prefix --log-tz --max-fingerprints --threads --by --top --bucket --output --baseline --baseline-since --baseline-until --settings --vendor --display-tz --out --slowest --params --database --user --application --host --exclude-database --exclude-user --exclude-application --exclude-host --include-query --exclude-query --pid --exclude-message --between --exclude-hours --weekdays --tz --anonymize --anonymize-key --lc-messages --messages-file --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1010,6 +1010,14 @@ _pgloupe() {
                     return 0
                     ;;
                 --after-info)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --before-db)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --after-db)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

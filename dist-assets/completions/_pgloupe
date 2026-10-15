@@ -297,6 +297,8 @@ _arguments "${_arguments_options[@]}" : \
 '--after=[Newer snapshot]:AFTER:_files' \
 '--before-info=[\`pg_stat_statements_info\` CSV taken with the older snapshot]:BEFORE_INFO:_files' \
 '--after-info=[\`pg_stat_statements_info\` CSV taken with the newer snapshot]:AFTER_INFO:_files' \
+'--before-db=[\`pg_stat_database\` CSV taken with the older snapshot; found beside it when it is named \`pg_stat_database_<time>.csv\`]:BEFORE_DB:_files' \
+'--after-db=[\`pg_stat_database\` CSV taken with the newer snapshot]:AFTER_DB:_files' \
 '(--store)--format=[Log format of \`FILES\`; \`auto\` looks at each file'\''s first line]:FORMAT:((auto\:""
 csv\:""
 json\:""
