@@ -21,14 +21,18 @@ connections. It also tells you which server settings are limiting the report and
 - **One file in, one file out.** No agent, no extension, no database to host. The HTML report
   is a single file with no network requests; JSON, text and CSV come from the same run.
 - **Logs and statistics together.** The log shows what happened (errors, locks, slow runs);
-  `pg_stat_statements` counts everything the log never saw. pgloupe joins them per statement and
-  tells you when they disagree.
+  `pg_stat_statements` counts everything the log never saw, and `pg_stat_database` says how
+  loaded the server was. pgloupe joins them per statement and tells you when they disagree.
+- **One row per statement.** Statements are grouped by their parse tree, so the same query
+  with different literals is one row, and percentiles are per statement.
 - **Works on managed Postgres.** It only needs `pg_stat_statements`, which Amazon RDS, Cloud
   SQL, Azure and Aiven already have. It can fetch RDS logs itself.
 - **Tells you why a number is odd.** Resets, evictions, windows that do not match, unreadable
   query text, logs without durations: each becomes a plain sentence, not a silent zero.
-- **Fast.** About 45 MB/s of log per core, more with more cores. On the same generated logs it
-  ran roughly 30 times faster than pgBadger on one thread.
+- **Fast.** On an 11 GB set of generated PostgreSQL 17 logs it read about 141 MB/s on one
+  thread using about 44 MiB of memory, and about 187 MB/s on 16 threads (452 MiB). Throughput
+  and memory stayed flat from 0.5 GB to 11 GB; memory depends on the number of distinct
+  statements (625 there), not on log size. Figures vary by hardware.
 - **Safe to share.** `--anonymize` rewrites names and literals before anything is counted.
 
 ## Install
@@ -80,13 +84,16 @@ pgloupe report postgresql.log \
   --output html --out report.html
 ```
 
+`snap` also writes `pg_stat_database` and the server settings beside each snapshot; `report`
+picks them up from there (or take `--before-db`, `--after-db` and `--settings`).
+
 Only the statistics, no logs:
 
 ```bash
 pgloupe report --before old.csv --after new.csv
 ```
 
-Keep a live report fresh (it prints a local URL; nothing leaves your machine):
+Keep a live report fresh (it prints a local URL; the page is served on loopback only):
 
 ```bash
 pgloupe watch --conn postgres://me@db.example.com/postgres \
@@ -125,20 +132,24 @@ real services.
 
 | Section | What is in it |
 |---|---|
+| Overview | Health and load figures (errors, lock waits, deadlocks, temp files, rollbacks, abandoned sessions; running, idle-in-transaction and connected sessions, cache hit), the actions, the top five statements and the statement kinds. "Not logged" where a setting is off |
 | What to fix first | Ranked problems, each with the numbers, the advice and the statements involved |
-| Statements | Per statement: calls, total, mean, p50, p95, p99, max, errors, lock waits, temp files; parse, bind and cursor-fetch time; the log next to `pg_stat_statements` |
+| Statements | Per statement: calls, total, mean, p50, p95, p99, max, spread, errors, lock waits, temp files; parse, bind and cursor-fetch time; cache hit, I/O share, blocks read, rows and WAL per call; *slower* and *faster* flags; the log next to `pg_stat_statements` |
 | Errors | By SQLSTATE and message shape, with the statement, DETAIL and HINT |
 | Locks and temp files | Waits over time, who held the lock, deadlocks, temp-file spills |
 | Sessions | Connections, session durations, connections per host, sessions that ended abruptly |
 | Maintenance | Checkpoints (WAL between them, causes), autovacuum per table, schema changes and temporary tables |
-| Breakdowns | By database, user, application and host |
+| Breakdowns | By database, user, application and host; from the statistics when the log has none |
 | Slowest | The slowest single executions, with parameters only if you ask |
+| Pooler | pgBouncer logins, session endings and `stats:` lines (experimental) |
 | Comparison | One period against the one before it |
 | Settings | Which settings limit this report, and what to change |
+| Sources | What was read: files, statistics window, `pg_stat_database` totals |
 | Data caveats | Why a number may be off |
 
 The HTML report keeps its view in the URL, searches with `/`, and prints cleanly. The same data
-is available as JSON (`schema_version` in the file) and the statement table as CSV.
+is available as JSON (`schema_version` in the file) and the statement table as CSV. The
+[docs](https://vtrbraga.github.io/pgloupe/concepts/reading-the-report.html) explain each section.
 
 ## Commands
 
@@ -164,9 +175,11 @@ Useful flags, all of which work on `report`, `logs analyze` and `logs ingest`:
 - `--since`, `--until` and `--baseline previous` on a store report.
 - `--anonymize` (with `--anonymize-key` or `PGLOUPE_ANONYMIZE_KEY` for private pseudonyms).
 - `--top N|all`, `--slowest N`, `--params` (keeps bind values; they can hold personal data).
+- `--display-tz Europe/Paris` shows times in that zone in the HTML report.
 
-Run any command with `--help`. Exit codes: 0 success, 1 the work failed, 2 the command line is
-wrong.
+Run any command with `--help`, or read the
+[command reference](https://vtrbraga.github.io/pgloupe/reference/commands.html). Exit codes:
+0 success, 1 the work failed, 2 the command line is wrong.
 
 ## What it reads
 
@@ -179,24 +192,17 @@ wrong.
   `--messages-file` adds another from a table of `locale<TAB>english<TAB>translated`.
 - **pgBouncer logs (experimental):** logins, why sessions ended, and the once-a-minute `stats:`
   line (transactions, queries, wait time) get their own view.
-- **Statistics:** CSV exports of `pg_stat_statements` (and `pg_stat_statements_info`), which
-  `snap` writes.
+- **Statistics:** CSV exports of `pg_stat_statements`, `pg_stat_statements_info`,
+  `pg_stat_database` and `pg_settings`, which `snap` writes.
 
-## How it differs from pgBadger
-
-pgBadger is the established tool and covers more log formats (pgBouncer, syslog, several
-clouds). pgloupe is narrower and does these differently:
-
-- It joins logs with `pg_stat_statements` snapshots and understands resets and evictions.
-- Percentiles are per statement, not per minute.
-- A `log_line_prefix` mismatch is diagnosed, not silent.
-- Statements are grouped by their parse tree (`libpg_query`), not by regular expressions.
-- Reports for a time window come from a store, without re-parsing.
-- One static binary instead of Perl.
+Details, including what is not read, are in
+[supported versions and formats](https://vtrbraga.github.io/pgloupe/reference/formats-and-versions.html).
 
 ## Limits
 
 - It reads files you give it or fetch with the commands above; it is not a monitoring system.
+- Syslog output and `auto_explain` plans are not read. A log line, entry or csvlog record over
+  16 MiB is skipped and counted.
 - pgBouncer logs and non-English servers are experimental: tested on generated and invented
   input, not on production ones.
 - Non-English servers: autovacuum lines are not translated (the server builds them from several
@@ -219,8 +225,9 @@ cargo test -- --ignored
 ```
 
 `scripts/coverage.sh` measures line coverage with `cargo-llvm-cov`. See
-[CONTRIBUTING.md](https://github.com/vtrbraga/pgloupe/blob/main/CONTRIBUTING.md) for the layout and the rules, and
-[SECURITY.md](https://github.com/vtrbraga/pgloupe/blob/main/SECURITY.md) to report a vulnerability.
+[CONTRIBUTING.md](https://github.com/vtrbraga/pgloupe/blob/main/CONTRIBUTING.md) for the layout and the rules,
+[SECURITY.md](https://github.com/vtrbraga/pgloupe/blob/main/SECURITY.md) to report a vulnerability, and the
+[docs](https://vtrbraga.github.io/pgloupe/) for guides and the command reference.
 
 ## License
 

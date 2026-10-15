@@ -7,11 +7,13 @@ pgloupe logs ingest --store pg.db /var/log/postgresql/*.log
 pgloupe report --store pg.db --since 2026-10-14T09:00Z --until 2026-10-14T12:00Z --output html --out morning.html
 ```
 
-Re-running `ingest` on the same files says "unchanged"; a file that grew is replaced; renames and compression are recognised.
+Re-running `ingest` on the same files says "unchanged"; a file that grew is replaced; renames and compression are recognised (`--force` reads a file again anyway). `ingest` warns when two files cover the same time range, since a partial copy would count its events twice.
+
+`report --store` writes every format and can add snapshots with `--before` and `--after`. `logs report --store` is the log-only version, text or JSON. Neither reads the log files again.
 
 ## Filters are applied while ingesting
 
-Filters (`--database`, `--user`, `--application`, `--host`, `--between`, `--exclude-hours`, `--weekdays`, `--include-query`, and so on) shape what goes into the store, not what comes out. A store remembers the filter it was built with and refuses to mix logs ingested with a different one. `report --store` rejects filter flags and tells you to filter at ingest.
+Filters (`--database`, `--user`, `--application`, `--host`, `--between`, `--exclude-hours`, `--weekdays`, `--include-query`, and so on) and `--anonymize` shape what goes into the store, not what comes out. A store remembers the filter it was built with and refuses to mix logs ingested with a different one. `report --store` rejects filter flags and tells you to filter at ingest.
 
 ## Compare two periods
 

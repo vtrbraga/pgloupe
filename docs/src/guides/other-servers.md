@@ -4,7 +4,7 @@ These work, but they have been tested on generated and invented input rather tha
 
 ## pgBouncer logs
 
-pgloupe recognises a pgBouncer log by its shape. Logins, why sessions ended, and the once-a-minute `stats:` line (transactions, queries, wait time) get their own *Pooler* view. A log with a time-zone name other than UTC needs `--log-tz`, and pgloupe says so.
+pgloupe recognises a pgBouncer log by its shape (or give `--format pgbouncer`). Logins, why sessions ended, and the once-a-minute `stats:` line (transactions, queries, wait time) get their own *Pooler* view: logins, mean client wait, peak transactions per second. A log with a time-zone name other than UTC needs `--log-tz`, and pgloupe says so.
 
 ## Servers that log in another language
 

@@ -29,4 +29,5 @@ pgloupe export --provider aws-rds --instance my-db --since 24h --out export/ --r
 - RDS logs are hourly files named `error/postgresql.log.<date>-<hour>`. pgloupe downloads them resumably and notices when a file was rewritten.
 - RDS fixes `log_line_prefix`, which has no application name or SQLSTATE. The report says which columns that leaves empty.
 - RDS cuts very long entries and prints a marker. pgloupe counts them and keeps the entry's context and statement.
-- A heavily-used database can overflow `pg_stat_statements.max` many times over. The report counts the evicted entries and, when it can, names the cause.
+- A heavily-used database can overflow `pg_stat_statements.max` many times over. The report says how many eviction rounds happened, estimates the entries lost and, when it can, names the cause (see [evictions](../concepts/reading-the-report.md#evictions)).
+- The logs on a managed server often catch little (no durations, no lock waits). The report then leans on `pg_stat_statements` and `pg_stat_database`, and says what the log did not record.

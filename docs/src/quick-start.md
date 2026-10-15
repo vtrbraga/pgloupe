@@ -25,7 +25,7 @@ pgloupe report postgresql.log \
   --output html --out report.html
 ```
 
-`snap` is read-only and never resets anything. It also writes the server's settings next to each snapshot, so the report can say which settings limit it.
+`snap` is read-only and never resets anything. Beside each snapshot it also writes `pg_stat_database_<time>.csv` and `settings_<time>.csv`; `report` picks both up from there, so it can show the server's load (sessions, rollbacks, cache hit) and say which settings limit it. To name them yourself, use `--before-db`, `--after-db` and `--settings`.
 
 ## Statistics only
 
@@ -37,7 +37,8 @@ pgloupe report --before old.csv --after new.csv
 
 - **"0 records matched" or an empty report:** the report names the prefix it tried. Give the real one with `--prefix`, for example `--prefix '%m [%p] %q%u@%d/%a '`.
 - **No statements with durations:** the log has none because `log_min_duration_statement` is off. The report's *Settings* view says what to set.
-- **Times look shifted:** log lines with a time-zone name the parser does not know need `--log-tz`, for example `--log-tz +02`.
+- **Times look shifted:** log lines with a time-zone name the parser does not know need `--log-tz`, for example `--log-tz +02`. The HTML report shows times in UTC unless you give `--display-tz Europe/Paris`.
+- **"skipped" is not 0 in the diagnostics:** the report counts lines it could not decode, including any line or entry over 16 MiB.
 - `pgloupe doctor` checks your server and role and says what is missing.
 
-Next: [Amazon RDS](guides/rds.md), or [keep a live dashboard](guides/live.md).
+Next: [Amazon RDS](guides/rds.md), [keep a live dashboard](guides/live.md), or [keep logs in a store](guides/store.md).

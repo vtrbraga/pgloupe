@@ -37,7 +37,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-CI runs the same, plus MSRV, `cargo deny`, the PostgreSQL 14-18 corpus matrix and coverage.
+CI runs the same, plus MSRV, `cargo deny`, `typos`, the generated command reference, the
+PostgreSQL 14-18 corpus matrix, the docs build and coverage.
 
 ## How the code is laid out
 
@@ -47,14 +48,23 @@ Logs flow through one pipeline, and each stage only talks to its neighbours:
 source -> decoder -> assembler -> classifier -> accumulators -> store -> outputs
 ```
 
-- `crates/pgloupe/src/log` decodes stderr, csvlog and jsonlog into records.
-- `crates/pgloupe/src/analyze` turns records into events and mergeable statistics.
-- `crates/pgloupe/src/stats` diffs `pg_stat_statements` snapshots.
+- `crates/pgloupe/src/log` decodes stderr, csvlog, jsonlog and pgBouncer logs into records,
+  including translated messages (`locales.tsv`).
+- `crates/pgloupe/src/analyze` turns records into events and mergeable statistics; `anonymize`
+  and `filter` live here because they run while reading.
+- `crates/pgloupe/src/stats` diffs `pg_stat_statements` and `pg_stat_database` snapshots.
 - `crates/pgloupe/src/store` keeps statistics in SQLite so windows can be reported without
   re-reading logs.
-- `crates/pgloupe/src/combined` joins the two sources and renders text, JSON, CSV and HTML.
-- `crates/pgloupe/src/collect` reads a live server (snapshots, logs, `watch`).
-- `crates/synth` generates a corpus from a real PostgreSQL in Docker.
+- `crates/pgloupe/src/combined` joins the sources, computes findings and advice, and renders
+  text, JSON, CSV and HTML (`templates/` holds the dashboard's HTML, CSS and JavaScript).
+- `crates/pgloupe/src/collect` reads a live server (`snap`, `doctor`, `export`, `watch`) and
+  fetches logs; one file per vendor under `provider/`.
+- `crates/synth` generates a corpus from a real PostgreSQL in Docker, and a benchmark load with
+  ground truth (`synth bench`).
+- `crates/xtask` generates `docs/src/reference/commands.md` from the CLI definition. CI fails
+  if it is stale; after changing help text run `cargo run -p xtask -- generate`.
+- `docs/` is the mdBook behind the published docs (`mdbook build docs`). Everything else that
+  a user reads is `README.md` and the help text in `crates/pgloupe/src/cli.rs`.
 
 ## Style
 
