@@ -19,7 +19,7 @@ jobs:
     name: fmt, clippy, docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install libclang (pg_query's bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -40,7 +40,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install libclang (pg_query's bindgen)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
@@ -56,7 +56,7 @@ jobs:
     runs-on: windows-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build -p pgloupe
@@ -65,7 +65,7 @@ jobs:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install libclang (pg_query's bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -80,7 +80,7 @@ jobs:
     name: licenses and advisories
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   postgres:
@@ -91,7 +91,7 @@ jobs:
       matrix:
         pg: ["14", "15", "16", "17", "18"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install libclang (pg_query's bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - uses: dtolnay/rust-toolchain@stable
@@ -106,7 +106,7 @@ jobs:
     name: live-server tests (Docker)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install libclang (pg_query's bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - uses: dtolnay/rust-toolchain@stable
