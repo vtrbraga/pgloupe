@@ -4,7 +4,16 @@ logs:      files (1 input) 2026-10-14T10:01:00.1Z -> 2026-10-14T10:09:00.1Z
 stats:     2026-10-14T10:00:00Z -> 2026-10-14T10:10:00Z (server 170011), reset none, evictions unknown
 overlap:   100%
 
-findings
+what to fix first
+  1. [high] One statement takes 80% of the execution time (400 ms)
+     Start here. Run EXPLAIN (ANALYZE, BUFFERS) on it, check for a missing index, and look at its lock waits and errors in the detail.
+     log: UPDATE film SET rental_rate = $1
+     statements: f0e619a5
+  2. [medium] 1 error of 1 kind; most often 42P01 relation "nope" does not exist
+     A statement names a table or view that does not exist. Check that migrations ran, the search_path, and that the application connects to the right database.
+     statements: b84a3d2a
+
+data caveats
   [info] stats_blind_spot: no pg_stat_statements_info files were given, so a reset between the snapshots would go unnoticed; export the info row with each snapshot
   [warn] stats_only_heavy: 1 statement carries 14% of the execution time in pg_stat_statements but never appears in the logs: they run faster than log_min_duration_statement, or the logs miss that period
   [info] log_only_present: some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, the counters were reset, or they failed (pg_stat_statements does not count failed statements)

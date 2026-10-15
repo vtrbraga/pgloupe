@@ -170,26 +170,41 @@ var PgCharts = (function (L) {
     hit.addEventListener('dblclick', function () { if (opts.onRange) { opts.onRange(null); } });
   }
 
-  function rangeLabel(edgeMs) { return L.fmtMs(edgeMs).replace(/ /g, ''); }
+  /** An edge as number and unit, trimmed: 1000 -> {n: '1', u: 's'}. */
+  function edge(ms) {
+    var units = [[3600000, 'h'], [60000, 'min'], [1000, 's'], [1, 'ms']];
+    for (var i = 0; i < units.length; i++) {
+      if (ms >= units[i][0]) { return { n: String(parseFloat((ms / units[i][0]).toFixed(2))), u: units[i][1] }; }
+    }
+    return { n: String(parseFloat(ms.toFixed(3))), u: 'ms' };
+  }
+  function rangeLabel(edgeMs) { var e = edge(edgeMs); return e.n + e.u; }
+  /** `1\u20135ms`, `5ms\u201310s`, `\u22641s`, `>24h`. */
+  function bucketLabel(prev, le) {
+    if (le === null) { return '>' + rangeLabel(prev); }
+    if (prev === null) { return '\u2264' + rangeLabel(le); }
+    var a = edge(prev), b = edge(le);
+    return (a.u === b.u ? a.n : a.n + a.u) + '\u2013' + b.n + b.u;
+  }
 
   /** Vertical bars for `[{le_ms, count}]`; the last bucket has no edge. */
   function histogram(buckets, color) {
-    var W = 560, H = 190, left = 8, right = 8, top = 22, bottom = 34;
+    var W = 640, H = 200, left = 8, right = 8, top = 22, bottom = 34;
     var svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, 'class': 'histogram', role: 'img', 'aria-label': 'Duration histogram' });
     var max = Math.max.apply(null, buckets.map(function (b) { return b.count; }).concat([1]));
     var total = buckets.reduce(function (s, b) { return s + b.count; }, 0);
     var bw = (W - left - right) / buckets.length;
     buckets.forEach(function (b, i) {
-      var hgt = (b.count / max) * (H - top - bottom);
+      var hgt = Math.sqrt(b.count / max) * (H - top - bottom);
       var x = left + i * bw;
       var prev = i > 0 ? buckets[i - 1].le_ms : null;
-      var label = b.le_ms === null ? '>' + rangeLabel(prev) : (prev === null ? '≤' : '') + rangeLabel(b.le_ms);
+      var label = bucketLabel(prev, b.le_ms);
       var title = svgEl('title');
       title.textContent = label + ': ' + L.fmtInt(b.count) + ' (' + L.fmtPct(total ? b.count * 100 / total : 0) + ')';
       var bar = svgEl('rect', { x: (x + 3).toFixed(1), y: (H - bottom - hgt).toFixed(1), width: (bw - 6).toFixed(1), height: Math.max(hgt, b.count > 0 ? 1 : 0).toFixed(1), rx: 3, fill: color, opacity: b.count ? '0.9' : '0.15' }, [title]);
       svg.appendChild(bar);
       if (b.count > 0) { svg.appendChild(text('text', { x: (x + bw / 2).toFixed(1), y: (H - bottom - hgt - 5).toFixed(1), 'text-anchor': 'middle', 'class': 'value' }, L.fmtCompact(b.count))); }
-      svg.appendChild(text('text', { x: (x + bw / 2).toFixed(1), y: H - bottom + 14, 'text-anchor': 'middle', 'class': 'axis' }, label));
+      svg.appendChild(text('text', { x: (x + bw / 2).toFixed(1), y: H - bottom + 15, 'text-anchor': 'middle', 'class': 'axis' }, label));
     });
     svg.appendChild(svgEl('line', { x1: left, x2: W - right, y1: H - bottom + 0.5, y2: H - bottom + 0.5, 'class': 'grid' }));
     return svg;

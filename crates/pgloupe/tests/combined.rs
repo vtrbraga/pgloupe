@@ -236,3 +236,34 @@ fn logs_that_decode_to_nothing_still_report_but_fail() -> io::Result<()> {
     assert_eq!(report["kind"], "pgloupe.report");
     Ok(())
 }
+
+#[test]
+fn the_text_report_says_what_to_fix_first() -> io::Result<()> {
+    let line = |second: u32, severity: &str, message: &str, extra: &str| {
+        format!(
+            r#"{{"timestamp":"2026-10-14 10:00:{second:02}.000 UTC","pid":7,"session_id":"a.1","line_num":{second},"error_severity":"{severity}","message":"{message}"{extra},"backend_type":"client backend"}}"#
+        ) + "\n"
+    };
+    let log = line(1, "LOG", "duration: 5 ms  statement: SELECT 1 FROM a", "")
+        + &line(2, "LOG", "duration: 5 ms  statement: SELECT 1 FROM b", "")
+        + &line(3, "LOG", "duration: 5 ms  statement: SELECT 1 FROM c", "")
+        + &line(
+            4,
+            "ERROR",
+            "deadlock detected",
+            r#","state_code":"40P01","statement":"UPDATE t SET a = 1","detail":"Process 7 waits for ShareLock on transaction 9""#,
+        );
+    let path = std::env::temp_dir().join(format!("pgloupe-actions-{}.json", std::process::id()));
+    std::fs::write(&path, log)?;
+    let out = pgloupe(&["report", s(&path)])?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let at = text
+        .find("what to fix first")
+        .expect("a what-to-fix-first block");
+    let block = &text[at..];
+    assert!(block.contains("1. [high] 1 deadlock"), "{block}");
+    assert!(block.contains("same order"), "{block}");
+    assert!(block.contains("ShareLock"), "{block}");
+    Ok(())
+}

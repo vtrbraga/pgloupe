@@ -358,7 +358,8 @@ mod tests {
     fn every_section_is_rendered_without_javascript() {
         let page = fixture_html();
         for heading in [
-            "Findings",
+            "What to fix first",
+            "Data caveats",
             "Statements",
             "Errors",
             "Locks",

@@ -1,4 +1,27 @@
 {
+  "actions": [
+    {
+      "advice": "Start here. Run EXPLAIN (ANALYZE, BUFFERS) on it, check for a missing index, and look at its lock waits and errors in the detail.",
+      "code": "dominant_statement",
+      "evidence": "UPDATE film SET rental_rate = $1",
+      "priority": "high",
+      "section": "statements",
+      "statements": [
+        "f0e619a53604ffb7"
+      ],
+      "title": "One statement takes 80% of the execution time (400 ms)"
+    },
+    {
+      "advice": "A statement names a table or view that does not exist. Check that migrations ran, the search_path, and that the application connects to the right database.",
+      "code": "errors",
+      "priority": "medium",
+      "section": "errors",
+      "statements": [
+        "b84a3d2aac05c480"
+      ],
+      "title": "1 error of 1 kind; most often 42P01 relation \"nope\" does not exist"
+    }
+  ],
   "findings": [
     {
       "code": "stats_blind_spot",
@@ -133,11 +156,20 @@
     "errors": [
       {
         "count": 1,
+        "detail": null,
         "first_message": "relation \"nope\" does not exist",
         "first_seen": "2026-10-14T10:09:00.1Z",
+        "hint": null,
         "last_seen": "2026-10-14T10:09:00.1Z",
         "level": "ERROR",
-        "sqlstate": "42P01"
+        "pid": 96,
+        "sqlstate": "42P01",
+        "statements": [
+          {
+            "count": 1,
+            "fingerprint": "b84a3d2aac05c480"
+          }
+        ]
       }
     ],
     "files": [
@@ -470,6 +502,26 @@
       "log": {
         "calls": 2,
         "errors": 0,
+        "examples": [
+          {
+            "application": "synth:demo",
+            "database": "pagila",
+            "duration_ms": 120.0,
+            "host": null,
+            "params": null,
+            "timestamp": "2026-10-14T10:06:00.1Z",
+            "user": "postgres"
+          },
+          {
+            "application": "synth:demo",
+            "database": "pagila",
+            "duration_ms": 100.0,
+            "host": null,
+            "params": null,
+            "timestamp": "2026-10-14T10:05:00.1Z",
+            "user": "postgres"
+          }
+        ],
         "execute_calls": 0,
         "fingerprint": "f0e619a53604ffb7",
         "first_seen": "2026-10-14T10:05:00.1Z",
@@ -552,6 +604,35 @@
       "log": {
         "calls": 4,
         "errors": 0,
+        "examples": [
+          {
+            "application": "synth:demo",
+            "database": "pagila",
+            "duration_ms": 0.6,
+            "host": null,
+            "params": null,
+            "timestamp": "2026-10-14T10:02:00.2Z",
+            "user": "postgres"
+          },
+          {
+            "application": "synth:demo",
+            "database": "pagila",
+            "duration_ms": 0.5,
+            "host": null,
+            "params": null,
+            "timestamp": "2026-10-14T10:01:00.1Z",
+            "user": "postgres"
+          },
+          {
+            "application": "synth:demo",
+            "database": "pagila",
+            "duration_ms": 0.5,
+            "host": null,
+            "params": null,
+            "timestamp": "2026-10-14T10:04:00.4Z",
+            "user": "postgres"
+          }
+        ],
         "execute_calls": 0,
         "fingerprint": "9703bd645db62a78",
         "first_seen": "2026-10-14T10:01:00.1Z",
@@ -604,6 +685,26 @@
       "log": {
         "calls": 2,
         "errors": 0,
+        "examples": [
+          {
+            "application": "synth:demo",
+            "database": "pagila",
+            "duration_ms": 4.1,
+            "host": null,
+            "params": null,
+            "timestamp": "2026-10-14T10:08:00.1Z",
+            "user": "postgres"
+          },
+          {
+            "application": "synth:demo",
+            "database": "pagila",
+            "duration_ms": 3.2,
+            "host": null,
+            "params": null,
+            "timestamp": "2026-10-14T10:07:00.1Z",
+            "user": "postgres"
+          }
+        ],
         "execute_calls": 0,
         "fingerprint": "a8fbe6a1633776f6",
         "first_seen": "2026-10-14T10:07:00.1Z",
@@ -637,6 +738,7 @@
       "log": {
         "calls": 0,
         "errors": 1,
+        "examples": [],
         "execute_calls": 0,
         "fingerprint": "b84a3d2aac05c480",
         "first_seen": "2026-10-14T10:09:00.1Z",

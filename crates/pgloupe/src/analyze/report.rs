@@ -130,6 +130,15 @@ pub struct DimensionsReport {
     pub host: Vec<DimensionRow>,
 }
 
+/// A statement that failed with an error, and how often.
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorStatementRow {
+    /// 16 hex digits.
+    pub fingerprint: String,
+    /// Failures of this kind.
+    pub count: u64,
+}
+
 /// How many statements were cancelled, why, and which ones.
 #[derive(Debug, Clone, Serialize)]
 pub struct CancelledReport {
@@ -261,6 +270,23 @@ pub struct StatementRow {
     pub temp_bytes: u64,
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
+    /// The slowest runs of this statement and who ran them.
+    pub examples: Vec<ExampleRow>,
+}
+
+/// One slow run of a statement.
+#[derive(Debug, Clone, Serialize)]
+pub struct ExampleRow {
+    /// When the log recorded it.
+    pub timestamp: String,
+    /// How long it took, in milliseconds.
+    pub duration_ms: f64,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub application: Option<String>,
+    pub host: Option<String>,
+    /// Bind parameters, when kept (`--params`).
+    pub params: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -269,6 +295,14 @@ pub struct ErrorRow {
     pub sqlstate: Option<String>,
     pub count: u64,
     pub first_message: String,
+    /// The DETAIL of the first record (for a deadlock: who waited for whom).
+    pub detail: Option<String>,
+    /// The HINT of the first record.
+    pub hint: Option<String>,
+    /// The backend process that logged the first record.
+    pub pid: Option<u32>,
+    /// The statements that failed with this error, most often first.
+    pub statements: Vec<ErrorStatementRow>,
     pub first_seen: String,
     pub last_seen: String,
 }
@@ -558,6 +592,20 @@ fn statement_row(query: &QueryStats, total_us: u64) -> StatementRow {
         temp_bytes: query.temp_bytes,
         first_seen: time(query.first_seen),
         last_seen: time(query.last_seen),
+        examples: query
+            .examples
+            .rows()
+            .iter()
+            .map(|run| ExampleRow {
+                timestamp: run.ts.to_string(),
+                duration_ms: ms(run.duration_us),
+                database: run.database.clone(),
+                user: run.user.clone(),
+                application: run.application.clone(),
+                host: run.host.clone(),
+                params: run.params.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -571,6 +619,20 @@ fn errors(acc: &Accumulators) -> Vec<ErrorRow> {
             sqlstate: sqlstate.clone(),
             count: stat.count,
             first_message: stat.first_message.clone(),
+            detail: stat.first_detail.clone(),
+            hint: stat.first_hint.clone(),
+            pid: stat.first_pid,
+            statements: {
+                let mut busiest: Vec<(&u64, &u64)> = stat.statements.iter().collect();
+                busiest.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+                busiest
+                    .into_iter()
+                    .map(|(id, count)| ErrorStatementRow {
+                        fingerprint: format!("{id:016x}"),
+                        count: *count,
+                    })
+                    .collect()
+            },
             first_seen: stat.first_seen.to_string(),
             last_seen: stat.last_seen.to_string(),
         })
@@ -1077,5 +1139,40 @@ mod tests {
         assert_eq!(slowest.rows.len(), 2);
         assert!(approx_eq(slowest.rows[0].duration_ms, 70.0));
         assert_eq!(slowest.rows[0].params.as_deref(), Some("$1 = '2'"));
+    }
+
+    #[test]
+    fn errors_name_their_statements_and_keep_the_first_detail() {
+        let mut acc = Accumulators::new(100, 60);
+        for (second, sql) in [
+            (1, "SELECT * FROM a"),
+            (2, "SELECT * FROM a"),
+            (3, "SELECT * FROM b"),
+        ] {
+            let mut error = LogRecord::new(at(second), Severity::Error, "deadlock detected");
+            error.sqlstate = Some("40P01".to_owned());
+            error.statement = Some(sql.to_owned());
+            error.detail = Some(format!("Process {second} waits for ShareLock"));
+            error.hint = Some("See the server log".to_owned());
+            error.pid = Some(4_000 + u32::try_from(second).unwrap());
+            acc.add_record(&error);
+        }
+        let report = Report::build(
+            &Output {
+                acc,
+                files: Vec::new(),
+            },
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        let row = &report.errors[0];
+        assert_eq!(row.count, 3);
+        assert_eq!(row.detail.as_deref(), Some("Process 1 waits for ShareLock"));
+        assert_eq!(row.hint.as_deref(), Some("See the server log"));
+        assert_eq!(row.pid, Some(4_001));
+        let counts: Vec<u64> = row.statements.iter().map(|s| s.count).collect();
+        assert_eq!(counts, [2, 1]);
     }
 }

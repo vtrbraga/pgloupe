@@ -1,5 +1,6 @@
 //! The combined report: log statistics joined with `pg_stat_statements` deltas.
 
+mod actions;
 mod findings;
 mod html;
 mod join;
@@ -7,6 +8,7 @@ mod join;
 mod testkit;
 mod text;
 
+pub use actions::{Action, actions};
 pub use findings::{Context, findings};
 pub use html::{HtmlError, html};
 pub use join::{Joined, join, rank};
@@ -106,7 +108,9 @@ pub struct CombinedReport {
     pub inputs: Inputs,
     /// The periods the two sources cover and how they relate.
     pub windows: Windows,
-    /// What the reader should know before trusting the numbers.
+    /// The problems to look at first, most urgent first, each with what to do about it.
+    pub actions: Vec<Action>,
+    /// Caveats about the data: what the reader should know before trusting the numbers.
     pub findings: Vec<Finding>,
     /// What ranks `statements`: `total`, `calls`, `p95` or `max`.
     pub statements_by: &'static str,
@@ -256,6 +260,7 @@ pub fn build(
             .is_some_and(|input| input.source == "store"),
         log_overflow_calls,
     });
+    let to_do = actions(log_report.as_ref(), &joined);
     joined.rows.truncate(shown);
     CombinedReport {
         schema_version: SCHEMA_VERSION,
@@ -271,6 +276,7 @@ pub fn build(
             overlap_pct: overlap,
             length_ratio: ratio,
         },
+        actions: to_do,
         findings: found,
         statements_by: match options.by {
             SortBy::Total => "total",

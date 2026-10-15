@@ -16,6 +16,34 @@ use super::{
 };
 use crate::log::LogRecord;
 
+/// One execution of a statement, as the slowest lists keep it.
+fn execution(
+    record: &LogRecord,
+    fingerprint: u64,
+    text: String,
+    capture_params: bool,
+    duration_us: u64,
+) -> Execution {
+    Execution {
+        ts: record.ts,
+        duration_us,
+        fingerprint,
+        text,
+        params: if capture_params {
+            parameters(record).map(slowest::cut)
+        } else {
+            None
+        },
+        database: record.database.clone(),
+        user: record.user.clone(),
+        application: record.application.clone(),
+        host: record.host.clone(),
+    }
+}
+
+/// Slowest executions kept per statement, for "who ran this".
+const EXAMPLES_PER_STATEMENT: usize = 3;
+
 /// Milliseconds to whole microseconds (sums of integers are exact and order independent).
 #[must_use]
 #[expect(
@@ -112,6 +140,9 @@ pub struct QueryStats {
     pub errors: u64,
     /// Executions cancelled (timeout or request); also counted in `errors`.
     pub cancelled: u64,
+    /// The few slowest executions, without the statement text (it is `text`): who ran them and
+    /// when.
+    pub examples: Slowest,
     pub lock_waits: u64,
     pub lock_wait_us: u64,
     pub temp_files: u64,
@@ -139,6 +170,7 @@ impl QueryStats {
             last_seen: None,
             errors: 0,
             cancelled: 0,
+            examples: Slowest::new(EXAMPLES_PER_STATEMENT),
             lock_waits: 0,
             lock_wait_us: 0,
             temp_files: 0,
@@ -219,6 +251,7 @@ impl Merge for QueryStats {
         self.last_seen = latest(self.last_seen, other.last_seen);
         self.errors += other.errors;
         self.cancelled += other.cancelled;
+        self.examples.merge(other.examples);
         self.lock_waits += other.lock_waits;
         self.lock_wait_us += other.lock_wait_us;
         self.temp_files += other.temp_files;
@@ -231,20 +264,69 @@ impl Merge for QueryStats {
 pub struct ErrorStat {
     pub count: u64,
     pub first_message: String,
+    /// The DETAIL of the first record (for a deadlock: who waited for whom).
+    pub first_detail: Option<String>,
+    /// The HINT of the first record.
+    pub first_hint: Option<String>,
+    /// The backend process that logged the first record.
+    pub first_pid: Option<u32>,
     pub first_seen: Timestamp,
     pub last_seen: Timestamp,
+    /// Fingerprint of the statement that failed -> how many times. Capped to the busiest few when
+    /// a run ends (see [`Accumulators::recap`]).
+    #[serde(with = "pairs")]
+    pub statements: BTreeMap<u64, u64>,
+}
+
+/// Statements remembered per kind of error.
+const ERROR_STATEMENTS: usize = 5;
+
+impl ErrorStat {
+    /// What decides which record is "the first": earliest, then by content, so the choice does
+    /// not depend on arrival order.
+    fn first_key(
+        &self,
+    ) -> (
+        Timestamp,
+        &str,
+        &Option<String>,
+        &Option<String>,
+        Option<u32>,
+    ) {
+        (
+            self.first_seen,
+            &self.first_message,
+            &self.first_detail,
+            &self.first_hint,
+            self.first_pid,
+        )
+    }
+
+    fn keep_busiest_statements(&mut self) {
+        if self.statements.len() <= ERROR_STATEMENTS {
+            return;
+        }
+        let mut ranked: Vec<(u64, u64)> = self.statements.iter().map(|(id, n)| (*id, *n)).collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        ranked.truncate(ERROR_STATEMENTS);
+        self.statements = ranked.into_iter().collect();
+    }
 }
 
 impl Merge for ErrorStat {
     fn merge(&mut self, other: Self) {
         self.count += other.count;
-        if other.first_seen < self.first_seen
-            || (other.first_seen == self.first_seen && other.first_message < self.first_message)
-        {
+        if other.first_key() < self.first_key() {
             self.first_message = other.first_message;
+            self.first_detail = other.first_detail;
+            self.first_hint = other.first_hint;
+            self.first_pid = other.first_pid;
+            self.first_seen = other.first_seen;
         }
-        self.first_seen = self.first_seen.min(other.first_seen);
         self.last_seen = self.last_seen.max(other.last_seen);
+        for (id, n) in other.statements {
+            *self.statements.entry(id).or_insert(0) += n;
+        }
     }
 }
 
@@ -545,18 +627,30 @@ impl Totals {
         }
         self.timeline.add(ts, |b| b.errors += 1);
         let key = (record.level.label().to_owned(), record.sqlstate.clone());
-        let stat = self.errors.entry(key).or_insert_with(|| ErrorStat {
-            count: 0,
+        let this = ErrorStat {
+            count: 1,
             first_message: record.message.clone(),
+            first_detail: record.detail.as_deref().map(slowest::cut),
+            first_hint: record.hint.as_deref().map(slowest::cut),
+            first_pid: record.pid,
             first_seen: ts,
             last_seen: ts,
-        });
-        stat.count += 1;
-        if ts < stat.first_seen || (ts == stat.first_seen && record.message < stat.first_message) {
-            stat.first_seen = ts;
-            stat.first_message.clone_from(&record.message);
+            statements: BTreeMap::new(),
+        };
+        match self.errors.entry(key) {
+            std::collections::btree_map::Entry::Occupied(mut slot) => slot.get_mut().merge(this),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(this);
+            }
         }
-        stat.last_seen = stat.last_seen.max(ts);
+    }
+
+    /// Notes that the error `record` belongs to the statement with fingerprint `id`.
+    fn error_statement(&mut self, record: &LogRecord, id: u64) {
+        let key = (record.level.label().to_owned(), record.sqlstate.clone());
+        if let Some(stat) = self.errors.get_mut(&key) {
+            *stat.statements.entry(id).or_insert(0) += 1;
+        }
     }
 }
 
@@ -648,11 +742,18 @@ impl Accumulators {
                 text,
                 ..
             } => {
+                let capture_params = self.capture_params;
                 let query = self.query_for(text, ts, record.query_id);
                 query.call(*duration_ms, ts, *kind);
                 let (fingerprint, parsed) = (query.id, query.parsed);
                 if let Some(ms) = duration_ms {
-                    self.offer_slow(record, (fingerprint, parsed), text, to_micros(*ms));
+                    let us = to_micros(*ms);
+                    if fingerprint != 0 && query.examples.wants(us) {
+                        let example =
+                            execution(record, fingerprint, String::new(), capture_params, us);
+                        query.examples.offer(example);
+                    }
+                    self.offer_slow(record, (fingerprint, parsed), text, us);
                 }
             }
             Event::LockWait { .. } => {
@@ -687,6 +788,8 @@ impl Accumulators {
             query.seen(ts);
             query.errors += 1;
             query.cancelled += u64::from(cancelled);
+            let id = query.id;
+            self.totals.error_statement(record, id);
         }
     }
 
@@ -707,22 +810,14 @@ impl Accumulators {
         } else {
             display_text(text, parsed)
         };
-        let owned = |value: &Option<String>| value.clone();
-        self.slowest.offer(Execution {
-            ts: record.ts,
-            duration_us,
+        let capture_params = self.capture_params;
+        self.slowest.offer(execution(
+            record,
             fingerprint,
-            text: shown,
-            params: if self.capture_params {
-                parameters(record).map(slowest::cut)
-            } else {
-                None
-            },
-            database: owned(&record.database),
-            user: owned(&record.user),
-            application: owned(&record.application),
-            host: owned(&record.host),
-        });
+            shown,
+            capture_params,
+            duration_us,
+        ));
     }
 
     /// Counts the record under its database, user, application and host.
@@ -771,6 +866,9 @@ impl Accumulators {
     /// (ties: the larger id goes first), so the result does not depend on arrival order.
     pub fn recap(&mut self, limit: usize) {
         self.dims.recap(dimensions::LIMIT);
+        for stat in self.totals.errors.values_mut() {
+            stat.keep_busiest_statements();
+        }
         self.cap_queries(limit);
     }
 
@@ -1401,5 +1499,43 @@ mod tests {
                 .all(|row| row.params.is_none())
         );
         assert_eq!(without.slowest.rows()[0].duration_us, 90_000);
+    }
+
+    #[test]
+    fn each_statement_keeps_its_slowest_runs_and_who_ran_them() {
+        let mut a = acc();
+        for (second, ms, user) in [
+            (1, 5.0, "ann"),
+            (2, 90.0, "bob"),
+            (3, 40.0, "cy"),
+            (4, 60.0, "dee"),
+            (5, 1.0, "eve"),
+        ] {
+            a.add_record(&LogRecord {
+                user: Some(user.to_owned()),
+                ..statement(second, ms, "SELECT * FROM t WHERE id = 1")
+            });
+        }
+        let query = a.queries.values().next().unwrap();
+        let who: Vec<_> = query
+            .examples
+            .rows()
+            .iter()
+            .map(|e| {
+                (
+                    e.duration_us / 1_000,
+                    e.user.clone().unwrap_or_default(),
+                    e.text.is_empty(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            who,
+            [
+                (90, "bob".to_owned(), true),
+                (60, "dee".to_owned(), true),
+                (40, "cy".to_owned(), true)
+            ]
+        );
     }
 }

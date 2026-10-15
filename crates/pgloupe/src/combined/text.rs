@@ -24,9 +24,33 @@ pub fn text(report: &CombinedReport) -> String {
     if let Some(overlap) = report.windows.overlap_pct {
         lines.push(format!("overlap:   {overlap:.0}%"));
     }
+    if !report.actions.is_empty() {
+        lines.push(String::new());
+        lines.push("what to fix first".to_owned());
+        for (index, action) in report.actions.iter().enumerate() {
+            lines.push(format!(
+                "  {}. [{}] {}",
+                index + 1,
+                action.priority,
+                action.title
+            ));
+            lines.push(format!("     {}", action.advice));
+            if let Some(evidence) = &action.evidence {
+                lines.push(format!("     log: {evidence}"));
+            }
+            if !action.statements.is_empty() {
+                let short: Vec<&str> = action
+                    .statements
+                    .iter()
+                    .map(|fp| &fp[..fp.len().min(8)])
+                    .collect();
+                lines.push(format!("     statements: {}", short.join(" ")));
+            }
+        }
+    }
     if !report.findings.is_empty() {
         lines.push(String::new());
-        lines.push("findings".to_owned());
+        lines.push("data caveats".to_owned());
         for finding in &report.findings {
             lines.push(format!(
                 "  [{}] {}: {}",
@@ -150,7 +174,7 @@ mod tests {
                 .any(|l| l.starts_with("stats: 2026-10-14T10:00:00Z -> 2026-10-14T10:10:00Z"))
         );
         assert!(has(&lines, "overlap: 100%"));
-        assert!(has(&lines, "findings"));
+        assert!(has(&lines, "data caveats"));
         assert!(
             lines
                 .iter()

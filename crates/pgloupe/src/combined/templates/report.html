@@ -19,9 +19,18 @@
 </header>
 <main class="static">
 
+{% if report.actions %}
+<section id="actions">
+<h2>What to fix first</h2>
+<ol class="actions">
+{% for a in report.actions %}<li class="finding {{ 'warn' if a.priority == 'high' else 'info' }}"><b>{{ a.title }}</b> <code>{{ a.priority }}</code><div>{{ a.advice }}</div>{% if a.evidence %}<div>log: <code>{{ a.evidence }}</code></div>{% endif %}{% if a.statements %}<div>statements: {% for fp in a.statements %}<code>{{ fp|short }}</code> {% endfor %}</div>{% endif %}</li>
+{% endfor %}</ol>
+</section>
+{% endif %}
+
 {% if report.findings %}
 <section id="findings">
-<h2>Findings</h2>
+<h2>Data caveats</h2>
 <ul class="findings">
 {% for f in report.findings %}<li class="finding {{ f.severity }}"><code>{{ f.code }}</code>{{ f.message }}</li>
 {% endfor %}</ul>
