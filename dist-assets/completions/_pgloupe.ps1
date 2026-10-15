@@ -27,7 +27,7 @@ Register-ArgumentCompleter -Native -CommandName 'pgloupe' -ScriptBlock {
             [CompletionResult]::new('--version', '--version', [CompletionResultType]::ParameterName, 'Print version')
             [CompletionResult]::new('stats', 'stats', [CompletionResultType]::ParameterValue, 'Work with `pg_stat_statements` snapshots')
             [CompletionResult]::new('logs', 'logs', [CompletionResultType]::ParameterValue, 'Work with Postgres server logs')
-            [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or text, with the two joined per statement')
+            [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON, text or CSV, with the two joined per statement')
             [CompletionResult]::new('snap', 'snap', [CompletionResultType]::ParameterValue, 'Take a `pg_stat_statements` snapshot from a live server (read-only; never resets anything)')
             [CompletionResult]::new('doctor', 'doctor', [CompletionResultType]::ParameterValue, 'Check what the server and the role lack for a useful report, and how to fix it')
             [CompletionResult]::new('export', 'export', [CompletionResultType]::ParameterValue, 'Check the server, take a snapshot and fetch logs into one directory; optionally the report')
@@ -68,7 +68,7 @@ Register-ArgumentCompleter -Native -CommandName 'pgloupe' -ScriptBlock {
         'pgloupe;logs' {
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
-            [CompletionResult]::new('dump', 'dump', [CompletionResultType]::ParameterValue, 'Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON')
+            [CompletionResult]::new('dump', 'dump', [CompletionResultType]::ParameterValue, 'Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON')
             [CompletionResult]::new('analyze', 'analyze', [CompletionResultType]::ParameterValue, 'Summarize one or more logs: statements with percentiles, errors, locks, temp files, connections, checkpoints and autovacuum')
             [CompletionResult]::new('ingest', 'ingest', [CompletionResultType]::ParameterValue, 'Add logs to a store; files already ingested are skipped and grown ones replace their old version')
             [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'Report on a time window of a store')
@@ -188,7 +188,7 @@ Register-ArgumentCompleter -Native -CommandName 'pgloupe' -ScriptBlock {
             break
         }
         'pgloupe;logs;help' {
-            [CompletionResult]::new('dump', 'dump', [CompletionResultType]::ParameterValue, 'Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON')
+            [CompletionResult]::new('dump', 'dump', [CompletionResultType]::ParameterValue, 'Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON')
             [CompletionResult]::new('analyze', 'analyze', [CompletionResultType]::ParameterValue, 'Summarize one or more logs: statements with percentiles, errors, locks, temp files, connections, checkpoints and autovacuum')
             [CompletionResult]::new('ingest', 'ingest', [CompletionResultType]::ParameterValue, 'Add logs to a store; files already ingested are skipped and grown ones replace their old version')
             [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'Report on a time window of a store')
@@ -335,7 +335,7 @@ Register-ArgumentCompleter -Native -CommandName 'pgloupe' -ScriptBlock {
         'pgloupe;help' {
             [CompletionResult]::new('stats', 'stats', [CompletionResultType]::ParameterValue, 'Work with `pg_stat_statements` snapshots')
             [CompletionResult]::new('logs', 'logs', [CompletionResultType]::ParameterValue, 'Work with Postgres server logs')
-            [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or text, with the two joined per statement')
+            [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON, text or CSV, with the two joined per statement')
             [CompletionResult]::new('snap', 'snap', [CompletionResultType]::ParameterValue, 'Take a `pg_stat_statements` snapshot from a live server (read-only; never resets anything)')
             [CompletionResult]::new('doctor', 'doctor', [CompletionResultType]::ParameterValue, 'Check what the server and the role lack for a useful report, and how to fix it')
             [CompletionResult]::new('export', 'export', [CompletionResultType]::ParameterValue, 'Check the server, take a snapshot and fetch logs into one directory; optionally the report')
@@ -351,7 +351,7 @@ Register-ArgumentCompleter -Native -CommandName 'pgloupe' -ScriptBlock {
             break
         }
         'pgloupe;help;logs' {
-            [CompletionResult]::new('dump', 'dump', [CompletionResultType]::ParameterValue, 'Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON')
+            [CompletionResult]::new('dump', 'dump', [CompletionResultType]::ParameterValue, 'Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON')
             [CompletionResult]::new('analyze', 'analyze', [CompletionResultType]::ParameterValue, 'Summarize one or more logs: statements with percentiles, errors, locks, temp files, connections, checkpoints and autovacuum')
             [CompletionResult]::new('ingest', 'ingest', [CompletionResultType]::ParameterValue, 'Add logs to a store; files already ingested are skipped and grown ones replace their old version')
             [CompletionResult]::new('report', 'report', [CompletionResultType]::ParameterValue, 'Report on a time window of a store')

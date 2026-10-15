@@ -2,11 +2,11 @@
 .el .ds Aq '
 .TH pgloupe-report 1  "report " 
 .SH NAME
-pgloupe\-report \- One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or text, with the two joined per statement
+pgloupe\-report \- One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON, text or CSV, with the two joined per statement
 .SH SYNOPSIS
 \fBpgloupe report\fR [\fB\-\-store\fR] [\fB\-\-since\fR] [\fB\-\-until\fR] [\fB\-\-before\fR] [\fB\-\-after\fR] [\fB\-\-before\-info\fR] [\fB\-\-after\-info\fR] [\fB\-\-before\-db\fR] [\fB\-\-after\-db\fR] [\fB\-\-format\fR] [\fB\-\-prefix\fR] [\fB\-\-log\-tz\fR] [\fB\-\-max\-fingerprints\fR] [\fB\-\-threads\fR] [\fB\-\-by\fR] [\fB\-\-top\fR] [\fB\-\-bucket\fR] [\fB\-\-output\fR] [\fB\-\-baseline\fR] [\fB\-\-baseline\-since\fR] [\fB\-\-baseline\-until\fR] [\fB\-\-settings\fR] [\fB\-\-vendor\fR] [\fB\-\-display\-tz\fR] [\fB\-\-out\fR] [\fB\-\-slowest\fR] [\fB\-\-params\fR] [\fB\-\-database\fR] [\fB\-\-user\fR] [\fB\-\-application\fR] [\fB\-\-host\fR] [\fB\-\-exclude\-database\fR] [\fB\-\-exclude\-user\fR] [\fB\-\-exclude\-application\fR] [\fB\-\-exclude\-host\fR] [\fB\-\-include\-query\fR] [\fB\-\-exclude\-query\fR] [\fB\-\-pid\fR] [\fB\-\-exclude\-message\fR] [\fB\-\-between\fR] [\fB\-\-exclude\-hours\fR] [\fB\-\-weekdays\fR] [\fB\-\-tz\fR] [\fB\-\-anonymize\fR] [\fB\-\-anonymize\-key\fR] [\fB\-\-lc\-messages\fR] [\fB\-\-messages\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIFILES\fR] 
 .SH DESCRIPTION
-One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or text, with the two joined per statement
+One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON, text or CSV, with the two joined per statement
 .SH OPTIONS
 .TP
 \fB\-\-store\fR \fI<STORE>\fR

@@ -137,8 +137,8 @@ enum Command {
         #[command(subcommand)]
         command: LogsCommand,
     },
-    /// One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or
-    /// text, with the two joined per statement.
+    /// One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON, text or
+    /// CSV, with the two joined per statement.
     Report(Box<CombinedArgs>),
     /// Take a `pg_stat_statements` snapshot from a live server (read-only; never resets anything).
     Snap(collect::commands::SnapArgs),
@@ -158,7 +158,7 @@ enum StatsCommand {
 
 #[derive(Debug, Subcommand)]
 enum LogsCommand {
-    /// Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON.
+    /// Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON.
     Dump(DumpArgs),
     /// Summarize one or more logs: statements with percentiles, errors, locks, temp files,
     /// connections, checkpoints and autovacuum.
