@@ -13,8 +13,6 @@ installers = ["shell", "powershell", "homebrew"]
 tap = "vtrbraga/homebrew-tap"
 # After the GitHub Release exists: push the formula to the tap, publish the crate
 publish-jobs = ["homebrew", "./publish-crates"]
-# Alphas publish too, to prove the flow and claim the crate name. Remove before 0.1.0.
-publish-prereleases = true
 # Target platforms to build for. Native builds only: `pg_query` compiles C code.
 targets = [
   "aarch64-apple-darwin",
