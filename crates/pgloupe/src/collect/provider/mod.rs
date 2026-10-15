@@ -1,7 +1,13 @@
 //! Getting a time range of log text out of a vendor, through the vendor's command-line tool.
 
+pub mod aiven;
 pub mod aws;
+pub mod azure;
+pub mod cloudwatch;
 pub mod cmd;
+pub mod entries;
+pub mod gcp;
+pub mod heroku;
 pub mod sql;
 
 use std::collections::BTreeMap;

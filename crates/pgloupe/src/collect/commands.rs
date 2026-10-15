@@ -9,7 +9,16 @@ use super::{
     conn::ConnSpec,
     doctor::{self, Check},
     fetch::DirSink,
-    provider::{LogProvider, Request, aws::AwsRds, sql::SqlLogdir},
+    provider::{
+        LogProvider, Request,
+        aiven::Aiven,
+        aws::{AwsCli, AwsRds},
+        azure::AzureFlexible,
+        cloudwatch::AwsCloudWatch,
+        gcp::GcpCloudSql,
+        heroku::Heroku,
+        sql::SqlLogdir,
+    },
     sql,
 };
 use crate::cli::Exit;
@@ -186,12 +195,26 @@ fn write_text(out: &mut dyn Write, facts: &doctor::Facts, found: &[Check]) -> st
     Ok(())
 }
 
-/// Where logs come from.
+/// Where logs come from. Only `aws-rds` is confirmed against a real service; the others are
+/// experimental and say so every time they run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ProviderKind {
     /// Amazon RDS and Aurora PostgreSQL, through the `aws` CLI.
     #[value(name = "aws-rds")]
     AwsRds,
+    /// RDS/Aurora logs exported to `CloudWatch` Logs (EXPERIMENTAL).
+    #[value(name = "aws-cloudwatch")]
+    AwsCloudwatch,
+    /// Azure Database for PostgreSQL Flexible Server, through `az` (EXPERIMENTAL).
+    #[value(name = "azure-flexible")]
+    AzureFlexible,
+    /// Google Cloud SQL for PostgreSQL, through `gcloud` (EXPERIMENTAL).
+    #[value(name = "gcp-cloudsql")]
+    GcpCloudsql,
+    /// Aiven for PostgreSQL, through `avn` (EXPERIMENTAL).
+    Aiven,
+    /// Heroku Postgres, through `heroku`: recent lines only (EXPERIMENTAL).
+    Heroku,
     /// The server's own log directory over SQL (EXPERIMENTAL).
     Sql,
 }
@@ -202,18 +225,31 @@ pub struct TargetArgs {
     /// Log source.
     #[arg(long, value_enum)]
     provider: ProviderKind,
-    /// The instance identifier (`aws-rds`).
+    /// The instance: RDS instance identifier, Azure server name, Cloud SQL instance, Aiven
+    /// service, or Heroku app.
     #[arg(long)]
     instance: Option<String>,
-    /// AWS region (`aws-rds`); default from the AWS CLI configuration.
+    /// AWS region; default from the AWS CLI configuration.
     #[arg(long)]
     region: Option<String>,
-    /// AWS CLI profile (`aws-rds`).
+    /// AWS CLI profile.
     #[arg(long)]
     profile: Option<String>,
-    /// Path of the `aws` executable.
-    #[arg(long, default_value = "aws")]
-    aws_bin: PathBuf,
+    /// Google Cloud project (`gcp-cloudsql`) or Aiven project (`aiven`).
+    #[arg(long)]
+    project: Option<String>,
+    /// Azure resource group (`azure-flexible`).
+    #[arg(long)]
+    resource_group: Option<String>,
+    /// Azure subscription (`azure-flexible`).
+    #[arg(long)]
+    subscription: Option<String>,
+    /// `CloudWatch` log group (`aws-cloudwatch`); default `/aws/rds/instance/<instance>/postgresql`.
+    #[arg(long)]
+    log_group: Option<String>,
+    /// Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`).
+    #[arg(long)]
+    bin: Option<PathBuf>,
 }
 
 /// `logs fetch`: download a time range of log files.
@@ -276,23 +312,66 @@ pub fn build_provider(
     args: &TargetArgs,
     conn: Option<ConnSpec>,
 ) -> anyhow::Result<Box<dyn LogProvider>> {
-    match args.provider {
-        ProviderKind::AwsRds => {
-            let instance = args
-                .instance
-                .clone()
-                .context("--provider aws-rds needs --instance (the DB instance identifier)")?;
-            Ok(Box::new(AwsRds::new(
-                args.aws_bin.clone(),
-                instance,
-                args.region.clone(),
-                args.profile.clone(),
-            )))
+    let need = |value: &Option<String>, flag: &str, provider: &str| -> anyhow::Result<String> {
+        value
+            .clone()
+            .with_context(|| format!("--provider {provider} needs {flag}"))
+    };
+    let program = |default: &str| args.bin.clone().unwrap_or_else(|| PathBuf::from(default));
+    Ok(match args.provider {
+        ProviderKind::AwsRds => Box::new(AwsRds::new(
+            program("aws"),
+            need(
+                &args.instance,
+                "--instance (the DB instance identifier)",
+                "aws-rds",
+            )?,
+            args.region.clone(),
+            args.profile.clone(),
+        )),
+        ProviderKind::AwsCloudwatch => {
+            let group = match (&args.log_group, &args.instance) {
+                (Some(group), _) => group.clone(),
+                (None, Some(instance)) => AwsCloudWatch::instance_group(instance),
+                (None, None) => {
+                    anyhow::bail!("--provider aws-cloudwatch needs --log-group or --instance")
+                }
+            };
+            Box::new(AwsCloudWatch::new(
+                AwsCli::new(program("aws"), args.region.clone(), args.profile.clone()),
+                group,
+            ))
         }
-        ProviderKind::Sql => Ok(Box::new(SqlLogdir::new(
-            conn.context("--provider sql needs --conn")?,
-        ))),
-    }
+        ProviderKind::AzureFlexible => Box::new(AzureFlexible::new(
+            program("az"),
+            need(&args.resource_group, "--resource-group", "azure-flexible")?,
+            need(
+                &args.instance,
+                "--instance (the server name)",
+                "azure-flexible",
+            )?,
+            args.subscription.clone(),
+        )),
+        ProviderKind::GcpCloudsql => Box::new(GcpCloudSql::new(
+            program("gcloud"),
+            need(&args.project, "--project", "gcp-cloudsql")?,
+            need(
+                &args.instance,
+                "--instance (the Cloud SQL instance name)",
+                "gcp-cloudsql",
+            )?,
+        )),
+        ProviderKind::Aiven => Box::new(Aiven::new(
+            program("avn"),
+            need(&args.project, "--project", "aiven")?,
+            need(&args.instance, "--instance (the service name)", "aiven")?,
+        )),
+        ProviderKind::Heroku => Box::new(Heroku::new(
+            program("heroku"),
+            need(&args.instance, "--instance (the app name)", "heroku")?,
+        )),
+        ProviderKind::Sql => Box::new(SqlLogdir::new(conn.context("--provider sql needs --conn")?)),
+    })
 }
 
 /// Runs `logs fetch`.

@@ -18,17 +18,7 @@ const RETRIES: u32 = 4;
 const MAX_PORTIONS: u32 = 1_000_000;
 
 const INSTALL_HINT: &str =
-    "install the AWS CLI (https://docs.aws.amazon.com/cli/) or pass its path with --aws-bin";
-
-/// Where RDS/Aurora logs are read from.
-#[derive(Debug, Clone)]
-pub struct AwsRds {
-    tool: Tool,
-    instance: String,
-    region: Option<String>,
-    profile: Option<String>,
-    retry_delay: Duration,
-}
+    "install the AWS CLI (https://docs.aws.amazon.com/cli/) or pass its path with --bin";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -60,7 +50,7 @@ struct Portion {
 }
 
 /// What to try for the failures AWS reports most.
-fn explain(stderr: &str) -> &'static str {
+pub(super) fn explain(stderr: &str) -> &'static str {
     let lower = stderr.to_ascii_lowercase();
     if lower.contains("unable to locate credentials") || lower.contains("no credentials") {
         "no AWS credentials found: run `aws configure`, `aws sso login`, or pass --profile"
@@ -109,23 +99,26 @@ pub fn safe_name(remote: &str) -> String {
     }
 }
 
-impl AwsRds {
-    /// A provider for `instance`. `program` is the `aws` executable.
+/// The `aws` CLI with the account options every call carries; shared by the AWS connectors.
+#[derive(Debug, Clone)]
+pub struct AwsCli {
+    tool: Tool,
+    region: Option<String>,
+    profile: Option<String>,
+    retry_delay: Duration,
+}
+
+impl AwsCli {
+    /// The CLI at `program` with `--region` and `--profile` as given.
     #[must_use]
-    pub fn new(
-        program: PathBuf,
-        instance: String,
-        region: Option<String>,
-        profile: Option<String>,
-    ) -> Self {
-        AwsRds {
+    pub fn new(program: PathBuf, region: Option<String>, profile: Option<String>) -> Self {
+        AwsCli {
             tool: Tool {
                 program,
                 timeout_secs: 120,
                 install_hint: INSTALL_HINT,
                 env: vec![("AWS_PAGER", "")],
             },
-            instance,
             region,
             profile,
             retry_delay: Duration::from_secs(1),
@@ -139,7 +132,9 @@ impl AwsRds {
         self
     }
 
-    fn base(&self, service: &str, operation: &str) -> Vec<String> {
+    /// `service operation --region … --profile … --output json`.
+    #[must_use]
+    pub fn base(&self, service: &str, operation: &str) -> Vec<String> {
         let mut args = vec![service.to_owned(), operation.to_owned()];
         if let Some(region) = &self.region {
             args.push("--region".to_owned());
@@ -155,7 +150,11 @@ impl AwsRds {
     }
 
     /// Runs one call, retrying while AWS throttles.
-    fn call(&self, args: &[String], command: &str) -> Result<Vec<u8>, FetchError> {
+    ///
+    /// # Errors
+    ///
+    /// Fails with the fix for the failures AWS reports most.
+    pub fn call(&self, args: &[String], command: &str) -> Result<Vec<u8>, FetchError> {
         let mut delay = self.retry_delay;
         for attempt in 0..=RETRIES {
             let output: Output = self.tool.run(args)?;
@@ -183,6 +182,57 @@ impl AwsRds {
             });
         }
         unreachable_attempts(command)
+    }
+
+    /// The CLI is installed and its credentials work.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the fix when it is missing or not signed in.
+    pub fn check(&self) -> Result<(), FetchError> {
+        self.tool
+            .run_ok(&["--version".to_owned()], "--version", |_| "")?;
+        let mut args = self.base("sts", "get-caller-identity");
+        args.retain(|a| a != "json" && a != "--output");
+        self.call(&args, "sts get-caller-identity").map(|_| ())
+    }
+}
+
+/// Where RDS/Aurora logs are read from.
+#[derive(Debug, Clone)]
+pub struct AwsRds {
+    cli: AwsCli,
+    instance: String,
+}
+
+impl AwsRds {
+    /// A provider for `instance`. `program` is the `aws` executable.
+    #[must_use]
+    pub fn new(
+        program: PathBuf,
+        instance: String,
+        region: Option<String>,
+        profile: Option<String>,
+    ) -> Self {
+        AwsRds {
+            cli: AwsCli::new(program, region, profile),
+            instance,
+        }
+    }
+
+    /// Waits this long (doubling) before retrying a throttled call.
+    #[must_use]
+    pub fn with_retry_delay(mut self, delay: Duration) -> Self {
+        self.cli = self.cli.with_retry_delay(delay);
+        self
+    }
+
+    fn base(&self, service: &str, operation: &str) -> Vec<String> {
+        self.cli.base(service, operation)
+    }
+
+    fn call(&self, args: &[String], command: &str) -> Result<Vec<u8>, FetchError> {
+        self.cli.call(args, command)
     }
 
     fn list(&self, since: Timestamp) -> Result<Vec<LogFile>, FetchError> {
@@ -247,11 +297,7 @@ impl LogProvider for AwsRds {
     }
 
     fn check(&self) -> Result<(), FetchError> {
-        self.tool
-            .run_ok(&["--version".to_owned()], "--version", |_| "")?;
-        let mut args = self.base("sts", "get-caller-identity");
-        args.retain(|a| a != "json" && a != "--output");
-        self.call(&args, "sts get-caller-identity").map(|_| ())
+        self.cli.check()
     }
 
     fn fetch(

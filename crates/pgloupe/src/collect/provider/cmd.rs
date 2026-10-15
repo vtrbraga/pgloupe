@@ -44,10 +44,26 @@ impl Tool {
     ///
     /// Fails if the tool is missing, cannot start, or runs past its limit.
     pub fn run(&self, args: &[String]) -> Result<Output, FetchError> {
+        self.run_in(args, None)
+    }
+
+    /// Like [`Tool::run`], in directory `cwd` (for tools that write their downloads there).
+    ///
+    /// # Errors
+    ///
+    /// Fails like [`Tool::run`].
+    pub fn run_in(
+        &self,
+        args: &[String],
+        cwd: Option<&std::path::Path>,
+    ) -> Result<Output, FetchError> {
         let shown = self.program.display().to_string();
-        let mut child = Command::new(&self.program)
-            .args(args)
-            .envs(self.env.iter().copied())
+        let mut command = Command::new(&self.program);
+        command.args(args).envs(self.env.iter().copied());
+        if let Some(cwd) = cwd {
+            command.current_dir(cwd);
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

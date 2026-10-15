@@ -20,6 +20,8 @@ pub enum Reply {
     Out(String),
     /// Exit with `code`, printing `stderr`.
     Fail { code: i32, stderr: String },
+    /// Write `content` to `path` (relative to the working directory) and exit 0.
+    File { path: String, content: String },
 }
 
 struct Rule {
@@ -73,6 +75,11 @@ impl FakeCli {
                 let (out, err, code) = match reply {
                     Reply::Out(text) => (text.as_str(), "", 0),
                     Reply::Fail { code, stderr } => ("", stderr.as_str(), *code),
+                    Reply::File { path, content } => {
+                        fs::write(self.dir.join(format!("r{i}.{k}.file")), content).expect("write");
+                        fs::write(self.dir.join(format!("r{i}.{k}.path")), path).expect("write");
+                        ("", "", 0)
+                    }
                 };
                 fs::write(self.dir.join(format!("r{i}.{k}.out")), out).expect("write");
                 fs::write(self.dir.join(format!("r{i}.{k}.err")), err).expect("write");
@@ -93,7 +100,7 @@ impl FakeCli {
             let dir = self.dir.display();
             let last = rule.replies.len() - 1;
             script.push_str(&format!(
-                "if {cond}; then\n  n=$(cat '{dir}/c{i}' 2>/dev/null || echo 0); echo $((n+1)) > '{dir}/c{i}'\n  [ $n -gt {last} ] && n={last}\n  cat \"{dir}/r{i}.$n.out\"; cat \"{dir}/r{i}.$n.err\" >&2; exit $(cat \"{dir}/r{i}.$n.code\")\nfi\n"
+                "if {cond}; then\n  n=$(cat '{dir}/c{i}' 2>/dev/null || echo 0); echo $((n+1)) > '{dir}/c{i}'\n  [ $n -gt {last} ] && n={last}\n  if [ -f \"{dir}/r{i}.$n.path\" ]; then p=$(cat \"{dir}/r{i}.$n.path\"); mkdir -p \"$(dirname \"$p\")\"; cat \"{dir}/r{i}.$n.file\" > \"$p\"; fi\n  cat \"{dir}/r{i}.$n.out\"; cat \"{dir}/r{i}.$n.err\" >&2; exit $(cat \"{dir}/r{i}.$n.code\")\nfi\n"
             ));
         }
         script.push_str("echo \"unexpected call: $args\" >&2\nexit 99\n");

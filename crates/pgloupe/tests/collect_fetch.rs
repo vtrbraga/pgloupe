@@ -88,7 +88,7 @@ fn fetched_rds_logs_are_analyzed_with_the_inferred_prefix_and_reruns_continue() 
             "aws-rds",
             "--instance",
             "prod",
-            "--aws-bin",
+            "--bin",
         ]
         .iter()
         .map(|s| (*s).to_owned())
@@ -154,7 +154,7 @@ fn a_missing_aws_cli_and_a_missing_instance_fail_with_the_fix() {
             "aws-rds",
             "--instance",
             "x",
-            "--aws-bin",
+            "--bin",
             "/nonexistent/aws",
             "--out",
             dir.to_str().unwrap(),
@@ -264,4 +264,71 @@ fn the_sql_provider_reads_the_servers_log_and_continues() -> Result<(), String> 
     );
     assert!(!String::from_utf8_lossy(&second.stderr).contains(&pg.password));
     Ok(())
+}
+
+#[test]
+fn experimental_providers_warn_every_time_and_ask_for_what_they_need() {
+    let dir = scratch("experimental");
+    let heroku = FakeCli::new("cli-heroku")
+        .on(&["--version"], vec![Reply::Out("heroku/9\n".to_owned())])
+        .on(&["auth:whoami"], vec![Reply::Out("me\n".to_owned())])
+        .on(
+            &["logs"],
+            vec![Reply::Out(
+                "2026-10-14T10:00:01.000000+00:00 app[postgres.9]: LOG:  hello\n".to_owned(),
+            )],
+        );
+    let program = heroku.program();
+    let out = run(
+        &[
+            "logs",
+            "fetch",
+            "--provider",
+            "heroku",
+            "--instance",
+            "shop",
+            "--bin",
+            program.to_str().unwrap(),
+            "--since",
+            "2026-10-14",
+            "--out",
+            dir.to_str().unwrap(),
+        ],
+        &[],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("provider heroku is experimental"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    for (provider, needs) in [
+        ("azure-flexible", "--resource-group"),
+        ("gcp-cloudsql", "--project"),
+        ("aiven", "--project"),
+        ("aws-cloudwatch", "--log-group or --instance"),
+    ] {
+        let out = run(
+            &[
+                "logs",
+                "fetch",
+                "--provider",
+                provider,
+                "--out",
+                dir.to_str().unwrap(),
+            ],
+            &[],
+        );
+        assert_eq!(out.status.code(), Some(1), "{provider}");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(needs),
+            "{provider}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 }
