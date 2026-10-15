@@ -20,7 +20,7 @@ use super::{
 use crate::{
     bootstrap,
     cli::BenchRunArgs,
-    container::{PgContainer, RunSpec},
+    container::{PgContainer, RunSpec, docker},
     dataset,
     session::Target,
     snapshot,
@@ -182,8 +182,21 @@ fn start(
     bootstrap::load(&pg, target)?;
     say("loading pgbench data");
     let scale = args.scale.to_string();
-    pg.exec_unlogged(&[
-        "pgbench", "-i", "-q", "-s", &scale, "-U", "postgres", "bench",
+    // Index builds during the load spill to temp files, which the report would count but the
+    // counters read after the load would not.
+    docker(&[
+        "exec",
+        "-e",
+        "PGOPTIONS=-c log_min_duration_statement=-1 -c pg_stat_statements.track=none -c log_temp_files=-1",
+        pg.name(),
+        "pgbench",
+        "-i",
+        "-q",
+        "-s",
+        &scale,
+        "-U",
+        "postgres",
+        "bench",
     ])
     .context("initializing pgbench")?;
 

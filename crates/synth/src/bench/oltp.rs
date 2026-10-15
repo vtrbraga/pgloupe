@@ -278,7 +278,8 @@ pub fn churn(target: Target, stop: &AtomicBool) -> anyhow::Result<WorkerStats> {
         n += 1;
         if abrupt {
             let mut raw = Raw::connect(target.port, db, user, "bench:churn")?;
-            raw.query("SELECT 1")?;
+            // Leaving while idle is silent; leaving inside a transaction is what the server logs.
+            raw.query("BEGIN")?;
             raw.hang_up();
             bump(events, "abrupt");
         } else {

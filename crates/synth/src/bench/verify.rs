@@ -233,7 +233,8 @@ fn worker_checks(truth: &Truth, reports: &Reports) -> Vec<Check> {
     ));
 
     let rollbacks = u64::try_from(truth.delta.rollbacks).unwrap_or(0);
-    let expected = truth.event("locks", "explicit_rollbacks") + injected;
+    let expected =
+        truth.event("locks", "explicit_rollbacks") + injected + truth.event("churn", "abrupt");
     out.push(check(
         "server rollbacks match the workers",
         rollbacks.abs_diff(expected) <= ROLLBACK_SLACK.max(expected / 100),
@@ -458,7 +459,7 @@ mod tests {
             wall_secs: 60,
             delta: Counters {
                 commits: 1_045,
-                rollbacks: 15,
+                rollbacks: 17,
                 deadlocks: 3,
                 temp_files: 4,
                 temp_bytes: 4_096,
