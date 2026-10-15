@@ -238,6 +238,7 @@ fn run_with<S: Fold>(
     let failure = Arc::new(Mutex::new(None));
     let batches = Batches {
         correlator: Correlator::new(),
+        filtering: options.filter.narrows(),
         anonymizer: options.filter.anonymize.as_deref().map(Anonymizer::new),
         pending: paths.iter().cloned().collect(),
         current: None,
@@ -305,6 +306,8 @@ struct Batch {
 /// Yields batches of records, file after file.
 struct Batches {
     correlator: Correlator,
+    /// Whether the filter drops anything; if not, no record is asked.
+    filtering: bool,
     anonymizer: Option<Anonymizer>,
     pending: VecDeque<PathBuf>,
     current: Option<Current>,
@@ -388,7 +391,7 @@ impl Iterator for Batches {
                                 current.filtered += 1;
                                 continue;
                             }
-                            let keep = self.options.filter.keeps(&record);
+                            let keep = !self.filtering || self.options.filter.keeps(&record);
                             if !keep {
                                 self.correlator.dropped(&record);
                             }

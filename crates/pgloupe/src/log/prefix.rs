@@ -63,6 +63,10 @@ pub fn split_label(rest: &str) -> Option<(Label, &str)> {
         "CONTEXT" => Label::Context,
         "STATEMENT" => Label::Statement,
         "LOCATION" | "BACKTRACE" => Label::Location,
+        // The English severities are by far the most common label: no table lookup for them.
+        name @ ("DEBUG" | "INFO" | "NOTICE" | "WARNING" | "ERROR" | "LOG" | "FATAL" | "PANIC") => {
+            Label::Level(Severity::from_label(name)?)
+        }
         name => match super::locale::localized_secondary(name) {
             Some("DETAIL") => Label::Detail,
             Some("HINT") => Label::Hint,

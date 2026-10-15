@@ -91,7 +91,16 @@ impl Correlator {
                 };
                 let effective = correlation.as_ref().map_or(text, |c| c.sql.clone());
                 self.settle(pid, record, duration_ms, &effective);
-                self.last.insert(pid, effective.clone());
+                // Reuse the previous statement's buffer: this runs for every statement logged.
+                match self.last.get_mut(&pid) {
+                    Some(last) => {
+                        last.clear();
+                        last.push_str(&effective);
+                    }
+                    None => {
+                        self.last.insert(pid, effective.clone());
+                    }
+                }
                 if duration_ms.is_none() {
                     self.untimed.insert(
                         pid,
@@ -196,9 +205,15 @@ impl Correlator {
     /// Statements that change or use correlation state, in the simple protocol.
     fn simple(&mut self, pid: u32, text: &str) -> Option<Correlation> {
         let trimmed = text.trim_start();
-        let lower = trimmed.to_ascii_lowercase();
-        let word = lower.split(|c: char| !c.is_ascii_alphabetic()).next()?;
-        match word {
+        // Most statements are not worth a look: judge by the first word, lowercased alone.
+        let end = trimmed
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(trimmed.len());
+        if end == 0 || end > "deallocate".len() {
+            return None;
+        }
+        let word = trimmed[..end].to_ascii_lowercase();
+        match word.as_str() {
             "declare" => {
                 let (name, inner, hold) = declared(trimmed)?;
                 self.cursors.insert(
@@ -236,9 +251,9 @@ impl Correlator {
             }
             "rollback" => {
                 // `ROLLBACK TO SAVEPOINT` keeps the transaction, and with it its cursors.
-                if !lower
-                    .trim_start_matches("rollback")
+                if !trimmed[end..]
                     .trim_start()
+                    .to_ascii_lowercase()
                     .starts_with("to")
                 {
                     self.cursors.retain(|(p, _), c| *p != pid || c.hold);
