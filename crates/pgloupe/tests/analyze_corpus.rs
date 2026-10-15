@@ -421,7 +421,9 @@ fn the_generator_s_lock_waits_name_their_holders() -> io::Result<()> {
         .iter()
         .find(|b| b.blocker_text.starts_with("UPDATE film SET rental_rate"))
         .expect("the updating holder");
-    assert_eq!(update.count, 3);
+    // At least the scenario's three waits: a statement from another scenario can land on the same
+    // open transaction, which depends on timing and has shown up on Postgres 14.
+    assert!(update.count >= 3, "{}", update.count);
     let lock_table: u64 = pairs
         .iter()
         .filter(|b| b.blocker_text.starts_with("LOCK TABLE synth_phase"))
