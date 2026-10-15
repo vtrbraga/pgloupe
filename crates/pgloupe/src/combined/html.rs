@@ -9,8 +9,19 @@ use super::CombinedReport;
 use crate::analyze::report::TimelineReport;
 
 const TEMPLATE: &str = include_str!("templates/report.html");
-const CSS: &str = include_str!("templates/report.css");
-const JS: &str = include_str!("templates/report.js");
+const CSS: &str = concat!(
+    include_str!("templates/report.css"),
+    "\n",
+    include_str!("templates/app.css")
+);
+/// The dashboard script: pure helpers, charts, then the application.
+const JS: &str = concat!(
+    include_str!("templates/lib.js"),
+    "\n",
+    include_str!("templates/charts.js"),
+    "\n",
+    include_str!("templates/app.js")
+);
 /// Bars in the timeline chart; longer timelines are merged into this many.
 const MAX_BARS: usize = 240;
 
@@ -42,8 +53,19 @@ pub fn html(report: &CombinedReport) -> Result<String, HtmlError> {
             )
         },
     );
+    let (hist_statements, hist_sessions) = report.logs.as_ref().map_or_else(
+        || (Vec::new(), Vec::new()),
+        |logs| {
+            (
+                bucket_rows(&logs.histograms.statements),
+                bucket_rows(&logs.histograms.sessions),
+            )
+        },
+    );
     let page = env.get_template("report.html")?.render(context! {
         report => Value::from(Serde(report)),
+        hist_statements => Value::from(Serde(&hist_statements)),
+        hist_sessions => Value::from(Serde(&hist_sessions)),
         css => Value::from_safe_string(CSS.to_owned()),
         js => Value::from_safe_string(JS.to_owned()),
         data_json => Value::from_safe_string(embedded_json(report)?),
@@ -66,6 +88,37 @@ fn environment() -> Result<Environment<'static>, minijinja::Error> {
     env.add_filter("short", |text: &str| short(text));
     env.add_filter("cut", |text: &str, max: usize| cut(text, max));
     Ok(env)
+}
+
+/// A histogram bucket as the static view lists it.
+#[derive(serde::Serialize)]
+struct BucketRow {
+    label: String,
+    count: u64,
+}
+
+/// Labels the buckets `up to X`, `X to Y`, `above Z`; nothing at all for an empty histogram.
+fn bucket_rows(buckets: &[crate::analyze::histogram::HistogramBucket]) -> Vec<BucketRow> {
+    if buckets.iter().all(|bucket| bucket.count == 0) {
+        return Vec::new();
+    }
+    let mut previous: Option<f64> = None;
+    buckets
+        .iter()
+        .map(|bucket| {
+            let label = match (previous, bucket.le_ms) {
+                (None, Some(hi)) => format!("up to {}", fmt_ms(Some(hi))),
+                (Some(lo), Some(hi)) => format!("{} to {}", fmt_ms(Some(lo)), fmt_ms(Some(hi))),
+                (Some(lo), None) => format!("above {}", fmt_ms(Some(lo))),
+                (None, None) => "all".to_owned(),
+            };
+            previous = bucket.le_ms.or(previous);
+            BucketRow {
+                label,
+                count: bucket.count,
+            }
+        })
+        .collect()
 }
 
 /// The report as JSON that is safe inside a `<script>` element.
@@ -211,6 +264,46 @@ mod tests {
     };
 
     const HOSTILE: &str = "</script><img src=x onerror=alert(1)>";
+
+    #[test]
+    fn the_dashboard_is_embedded_and_uses_no_dangerous_apis() {
+        let page = fixture_html();
+        assert!(
+            page.contains("id=\"app\"")
+                && page.contains("var PgLib")
+                && page.contains("var PgCharts")
+        );
+        assert!(
+            page.contains("class=\"static\""),
+            "the static view stays for print and no-script use"
+        );
+        for forbidden in [
+            "innerHTML",
+            "outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+            "eval(",
+            "new Function",
+            "XMLHttpRequest",
+            "fetch(",
+            "WebSocket",
+            "import(",
+            "sendBeacon",
+        ] {
+            assert!(!page.contains(forbidden), "the page uses {forbidden}");
+        }
+    }
+
+    #[test]
+    fn a_filtered_report_says_so_in_the_header() {
+        let mut report = fixture_report(SortBy::Total, 20, true, false);
+        if let Some(logs) = report.logs.as_mut() {
+            logs.diagnostics.filtered = 7;
+        }
+        let page = html(&report).unwrap();
+        assert!(page.contains("filtered: 7 records dropped"), "header");
+        assert!(page.contains("Filtered out 7 records"), "diagnostics");
+    }
 
     #[test]
     fn every_template_is_escaped_whatever_its_name() {

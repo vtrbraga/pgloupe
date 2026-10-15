@@ -385,7 +385,7 @@ fn slowest(report: &SlowestReport) -> Vec<String> {
         }
     }
     if !report.rows.is_empty() && !report.has_params {
-        lines.push("(bind parameters were not kept; pass --params to keep them)".to_owned());
+        lines.push("(no bind parameters: kept only with --params, and only extended-protocol statements log them)".to_owned());
     }
     lines
 }

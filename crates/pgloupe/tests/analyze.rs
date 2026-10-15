@@ -409,7 +409,7 @@ fn slowest_executions_and_cancellations_are_listed_and_parameters_are_opt_in() -
     assert!(text.contains("1 cancelled: statement_timeout=1"), "{text}");
     assert!(text.contains("90.00 ms"), "{text}");
     assert!(!text.contains("$1 = '2'"), "{text}");
-    assert!(text.contains("bind parameters were not kept"), "{text}");
+    assert!(text.contains("no bind parameters"), "{text}");
 
     let with = analyze(&["--params", "--slowest", "1"], std::slice::from_ref(&log))?;
     let text = stdout(&with);

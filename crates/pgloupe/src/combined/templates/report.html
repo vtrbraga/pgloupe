@@ -7,16 +7,17 @@
 <style>{{ css }}</style>
 </head>
 <body>
-<header>
+<header class="static">
 <h1>pgloupe report</h1>
 <p class="meta">
 <span>{{ report.generator }}</span>
 {% if report.inputs.logs %}<span>logs: {{ report.inputs.logs.source }} ({{ report.inputs.logs.inputs }} input{% if report.inputs.logs.inputs != 1 %}s{% endif %}){% if report.windows.logs %} {{ report.windows.logs.from }} → {{ report.windows.logs.to }}{% endif %}</span>{% else %}<span>logs: none</span>{% endif %}
 {% if report.inputs.stats %}<span>pg_stat_statements: {{ report.windows.stats.from }} → {{ report.windows.stats.to }} (server {{ report.inputs.stats.server_version_num }}, reset {{ report.inputs.stats.reset }})</span>{% else %}<span>pg_stat_statements: none</span>{% endif %}
 {% if report.windows.overlap_pct is not none %}<span>overlap: {{ report.windows.overlap_pct|round(0)|int }}%</span>{% endif %}
+{% if report.logs and report.logs.diagnostics.filtered %}<span>filtered: {{ report.logs.diagnostics.filtered|n }} records dropped</span>{% endif %}
 </p>
 </header>
-<main>
+<main class="static">
 
 {% if report.findings %}
 <section id="findings">
@@ -47,12 +48,11 @@
 <section id="statements">
 <h2>Statements</h2>
 {% if report.statements %}
-<input id="filter" class="filter" type="search" placeholder="filter statements (needs JavaScript)" aria-label="filter statements">
 <table id="statements-table">
 <thead><tr>
-<th data-sort>link</th><th class="num" data-sort>log calls</th><th class="num" data-sort>stats calls</th><th class="num" data-sort>coverage</th>
-<th class="num" data-sort>total</th><th class="num" data-sort>mean</th><th class="num" data-sort>p95</th><th class="num" data-sort>max</th>
-<th class="num" data-sort>share</th><th class="num" data-sort>errors</th><th data-sort>statement</th>
+<th>link</th><th class="num">log calls</th><th class="num">stats calls</th><th class="num">coverage</th>
+<th class="num">total</th><th class="num">mean</th><th class="num">p95</th><th class="num">max</th>
+<th class="num">share</th><th class="num">errors</th><th>statement</th>
 </tr></thead>
 <tbody>
 {% for row in report.statements %}
@@ -128,6 +128,58 @@
 {% else %}<p class="none">None.</p>{% endif %}
 </section>
 
+<section id="kinds">
+<h2>Query types</h2>
+{% if report.logs.kinds %}
+<table><thead><tr><th>kind</th><th class="num">calls</th><th class="num">total</th><th class="num">mean</th><th class="num">share</th></tr></thead><tbody>
+{% for k in report.logs.kinds %}<tr><td>{{ k.kind }}</td><td class="num">{{ k.calls|n }}</td><td class="num">{{ k.total_ms|ms }}</td><td class="num">{{ k.mean_ms|ms }}</td><td class="num">{{ k.share_pct|pct }}</td></tr>
+{% endfor %}</tbody></table>
+{% else %}<p class="none">None.</p>{% endif %}
+</section>
+
+<section id="histograms">
+<h2>Durations</h2>
+<h3>Statements</h3>
+{% if hist_statements %}<table><thead><tr><th>range</th><th class="num">count</th></tr></thead><tbody>
+{% for b in hist_statements %}<tr><td>{{ b.label }}</td><td class="num">{{ b.count|n }}</td></tr>
+{% endfor %}</tbody></table>{% else %}<p class="none">None.</p>{% endif %}
+<h3>Sessions</h3>
+{% if hist_sessions %}<table><thead><tr><th>range</th><th class="num">count</th></tr></thead><tbody>
+{% for b in hist_sessions %}<tr><td>{{ b.label }}</td><td class="num">{{ b.count|n }}</td></tr>
+{% endfor %}</tbody></table>{% else %}<p class="none">None.</p>{% endif %}
+</section>
+
+<section id="cancelled">
+<h2>Cancelled</h2>
+{% if report.logs.cancelled.total %}
+<p>{{ report.logs.cancelled.total|n }} cancelled: {% for r in report.logs.cancelled.by_reason %}{{ r.reason }} {{ r.count|n }}{% if not loop.last %}, {% endif %}{% endfor %}.</p>
+<table><thead><tr><th>statement</th><th class="num">cancelled</th><th class="num">calls</th></tr></thead><tbody>
+{% for s in report.logs.cancelled.statements %}<tr><td><code>{{ s.text|cut(110) }}</code></td><td class="num">{{ s.cancelled|n }}</td><td class="num">{{ s.calls|n }}</td></tr>
+{% endfor %}</tbody></table>
+{% else %}<p class="none">None.</p>{% endif %}
+</section>
+
+<section id="slowest">
+<h2>Slowest executions</h2>
+{% if report.logs.slowest.rows %}
+{% if not report.logs.slowest.has_params %}<p class="none">No row carries bind parameters (kept only with --params, and only extended-protocol statements log them).</p>{% endif %}
+<table><thead><tr><th class="num">duration</th><th>when</th><th>who</th><th>statement</th></tr></thead><tbody>
+{% for r in report.logs.slowest.rows %}<tr><td class="num">{{ r.duration_ms|ms }}</td><td>{{ r.timestamp }}</td><td>{{ [r.database, r.user, r.application, r.host]|select|join(" / ") }}</td><td><code>{{ r.text|cut(110) }}</code>{% if r.params %}<div>parameters: <code>{{ r.params }}</code></div>{% endif %}</td></tr>
+{% endfor %}</tbody></table>
+{% else %}<p class="none">None.</p>{% endif %}
+</section>
+
+{% for title, rows in [("Databases", report.logs.dimensions.database), ("Users", report.logs.dimensions.user), ("Applications", report.logs.dimensions.application), ("Hosts", report.logs.dimensions.host)] %}
+<section>
+<h2>{{ title }}</h2>
+{% if rows %}
+<table><thead><tr><th>value</th><th class="num">statements</th><th class="num">total</th><th class="num">mean</th><th class="num">errors</th><th class="num">connections</th><th class="num">sessions</th></tr></thead><tbody>
+{% for r in rows %}<tr><td>{{ r.value }}</td><td class="num">{{ r.statements|n }}</td><td class="num">{{ r.total_ms|ms }}</td><td class="num">{{ r.mean_ms|ms }}</td><td class="num">{{ r.errors|n }}</td><td class="num">{{ r.connections|n }}</td><td class="num">{{ r.sessions|n }}</td></tr>
+{% endfor %}</tbody></table>
+{% else %}<p class="none">None.</p>{% endif %}
+</section>
+{% endfor %}
+
 <section id="timeline">
 <h2>Timeline</h2>
 <p class="none">Statements per {{ bucket_label }} bucket, errors in red.</p>
@@ -136,6 +188,7 @@
 
 <section id="diagnostics">
 <h2>Diagnostics</h2>
+{% if report.logs.diagnostics.filtered %}<p class="finding warn">Filtered out {{ report.logs.diagnostics.filtered|n }} records: this report covers only what the filters kept.</p>{% endif %}
 <p>{{ report.logs.diagnostics.lines|int }} lines, {{ report.logs.diagnostics.records|n }} records, {{ report.logs.diagnostics.skipped|int }} skipped, {{ report.logs.diagnostics.unparsed_statements|int }} unparsed statements.</p>
 {% if report.logs.diagnostics.warnings %}<ul>{% for w in report.logs.diagnostics.warnings %}<li>{{ w }}</li>{% endfor %}</ul>{% endif %}
 {% if report.logs.diagnostics.unmatched_shapes %}<p>Most common lines that could not be decoded:</p><ul>{% for s in report.logs.diagnostics.unmatched_shapes %}<li>{{ s.count }}× <code>{{ s.shape }}</code> (first at line {{ s.first_line }})</li>{% endfor %}</ul>{% endif %}
@@ -144,7 +197,8 @@
 {% endif %}
 
 </main>
-<footer>{{ report.generator }} · schema {{ report.schema_version }}</footer>
+<footer class="static-footer">{{ report.generator }} · schema {{ report.schema_version }}</footer>
+<div id="app"></div>
 <script type="application/json" id="pgloupe-data">{{ data_json }}</script>
 <script>{{ js }}</script>
 </body>
