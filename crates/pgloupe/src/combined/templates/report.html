@@ -41,6 +41,15 @@
 </section>
 {% endif %}
 
+{% if report.advice %}
+<section id="advice">
+<h2>Settings that limit this report</h2>
+<ul class="findings">
+{% for a in report.advice %}<li class="finding {{ a.severity }}"><code>{{ a.code }}</code>{{ a.message }} <i>({{ 'from the settings' if a.source == 'settings' else 'from the data' }})</i></li>
+{% endfor %}</ul>
+</section>
+{% endif %}
+
 {% if report.findings %}
 <section id="findings">
 <h2>Data caveats</h2>

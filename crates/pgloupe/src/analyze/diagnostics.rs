@@ -25,6 +25,8 @@ pub struct Diagnostics {
     /// Records the `--database`, `--user`, `--application`, `--host` and query filters dropped.
     pub filtered: u64,
     pub unparsed_statements: u64,
+    /// Entries the server cut short and said so.
+    pub truncated: u64,
     /// Statements and attributions that landed in the fingerprint overflow bucket.
     pub overflow_calls: u64,
     pub unmatched_shapes: Vec<ShapeRow>,
@@ -43,6 +45,7 @@ pub fn build(output: &Output) -> Diagnostics {
         skipped,
         filtered: output.files.iter().map(|f| f.filtered).sum(),
         unparsed_statements: totals.unparsed_statements,
+        truncated: output.files.iter().map(|f| f.stats.truncated).sum(),
         overflow_calls: output.acc.overflow.calls,
         unmatched_shapes: unmatched_shapes(&output.files),
         warnings: Vec::new(),

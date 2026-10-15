@@ -500,6 +500,14 @@ struct CombinedArgs {
     /// End of the baseline window.
     #[arg(long, value_parser = store_report::parse_time)]
     baseline_until: Option<Timestamp>,
+    /// `pg_settings` as CSV (`name,setting`, the export of `SELECT * FROM pg_settings`): the report
+    /// then says exactly which settings limit it. `snap` writes one next to each snapshot, and it
+    /// is picked up from beside `--after` when this is not given.
+    #[arg(long)]
+    settings: Option<PathBuf>,
+    /// Where the server runs, to word advice about settings (`rds`; detected when it can be).
+    #[arg(long)]
+    vendor: Option<String>,
     /// Show times in this IANA zone in the HTML dashboard (default UTC); JSON and text stay UTC.
     #[arg(long, value_parser = parse_zone)]
     display_tz: Option<(jiff::tz::TimeZone, String)>,
@@ -952,6 +960,7 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
     let mut combined = combined::build(logs, delta.as_ref(), &options);
     combined.display_tz = args.display_tz.as_ref().map(|(_, name)| name.clone());
     combined.comparison = baseline;
+    combined.advice = report_advice(args, &combined, delta.as_ref(), err)?;
     write_report(&combined, args, out, err)?;
     Ok(if failed { Exit::Failed } else { Exit::Ok })
 }
@@ -1070,6 +1079,42 @@ fn anonymize_inputs(
         }
     }
     Ok(())
+}
+
+/// The settings advice for `combined`, from the settings file when there is one.
+fn report_advice(
+    args: &CombinedArgs,
+    combined: &combined::CombinedReport,
+    delta: Option<&delta::Delta>,
+    err: &mut dyn Write,
+) -> anyhow::Result<Vec<combined::Advice>> {
+    let path = args.settings.clone().or_else(|| {
+        let after = args.after.as_deref()?;
+        let stamp = after
+            .file_name()?
+            .to_str()?
+            .strip_prefix("pgss_")?
+            .strip_suffix(".csv")?;
+        let beside = after.with_file_name(format!("settings_{stamp}.csv"));
+        beside.exists().then_some(beside)
+    });
+    let settings = match path {
+        Some(path) => match combined::read_settings(&path) {
+            Ok(settings) => Some(settings),
+            Err(message) if args.settings.is_some() => bail!(message),
+            Err(message) => {
+                writeln!(err, "note: {message}")?;
+                None
+            }
+        },
+        None => None,
+    };
+    Ok(combined::advise(&combined::AdviceInput {
+        logs: combined.logs.as_ref(),
+        delta,
+        settings: settings.as_ref(),
+        vendor: args.vendor.as_deref(),
+    }))
 }
 
 /// The window to compare with, from `--baseline previous` or the explicit pair.

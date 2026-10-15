@@ -109,6 +109,9 @@ pub fn snap(args: &SnapArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyhow
             "note: this server has no pg_stat_statements_info (Postgres 13 and older), so a reset between snapshots cannot be proven"
         )?,
     }
+    if let Some(settings) = &snapshot.settings {
+        writeln!(out, "wrote {}", settings.display())?;
+    }
     if snapshot.unreadable_text > 0 {
         writeln!(
             err,

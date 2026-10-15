@@ -23,6 +23,10 @@ pub const PGSS: &str = "COPY (SELECT now() AS snapshot_at, \
 pub const PGSS_INFO: &str = "COPY (SELECT now() AS snapshot_at, * FROM pg_stat_statements_info) \
     TO STDOUT WITH (FORMAT csv, HEADER)";
 
+/// The server's settings, so a report can say which ones limit it without asking the server again.
+pub const SETTINGS: &str = "COPY (SELECT name, setting, unit, source, pending_restart \
+    FROM pg_settings ORDER BY name) TO STDOUT WITH (FORMAT csv, HEADER)";
+
 /// Where one snapshot went.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -30,6 +34,8 @@ pub struct Snapshot {
     pub pgss: PathBuf,
     /// The info file, on servers that have the view.
     pub info: Option<PathBuf>,
+    /// The settings file written beside it, when the role could read them.
+    pub settings: Option<PathBuf>,
     /// Server time of the snapshot.
     pub taken_at: Timestamp,
     /// Entries whose query text the role may not read.
@@ -120,6 +126,11 @@ pub fn take(client: &mut Client, dir: &Path) -> Result<Snapshot, CollectError> {
     } else {
         None
     };
+    // Settings help the report but are not worth failing a snapshot for.
+    let settings_path = dir.join(format!("settings_{name}.csv"));
+    let settings = write_atomically(client, SETTINGS, &settings_path, "reading pg_settings")
+        .ok()
+        .map(|()| settings_path);
     let unreadable_text: i64 = client
         .query_one(
             "SELECT count(*) FROM pg_stat_statements WHERE query = '<insufficient privilege>'",
@@ -130,6 +141,7 @@ pub fn take(client: &mut Client, dir: &Path) -> Result<Snapshot, CollectError> {
     Ok(Snapshot {
         pgss,
         info,
+        settings,
         taken_at,
         unreadable_text: u64::try_from(unreadable_text).unwrap_or(0),
     })
@@ -149,7 +161,7 @@ mod tests {
 
     #[test]
     fn the_snapshot_sql_only_reads() {
-        for sql in [PGSS, PGSS_INFO] {
+        for sql in [PGSS, PGSS_INFO, SETTINGS] {
             let lower = sql.to_ascii_lowercase();
             assert!(lower.starts_with("copy (select"), "{sql}");
             assert!(lower.contains("to stdout"));

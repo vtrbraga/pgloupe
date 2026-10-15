@@ -24,6 +24,7 @@
       "title": "1 error: 42P01 relation \"nope\" does not exist"
     }
   ],
+  "advice": [],
   "findings": [
     {
       "code": "stats_blind_spot",
@@ -104,6 +105,7 @@
       "overflow_calls": 0,
       "records": 9,
       "skipped": 0,
+      "truncated": 0,
       "unmatched_shapes": [],
       "unparsed_statements": 0,
       "warnings": [

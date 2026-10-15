@@ -6,7 +6,7 @@
   var root = document.getElementById('app');
   if (!dataNode || !root) { return; }
   var state = L.parseHash(location.hash);
-  var rawJson, D, logs, stats, rows, findings, actions, errorsByFp, byFp, newShare, hideNew, display, sections;
+  var rawJson, D, logs, stats, rows, findings, advice, actions, errorsByFp, byFp, newShare, hideNew, display, sections;
 
   /** Reads a report (JSON text) into the derived state; false if it is not one. */
   function load(raw) {
@@ -20,6 +20,7 @@
     stats = D.inputs && D.inputs.stats;
     rows = D.statements || [];
     findings = D.findings || [];
+    advice = D.advice || [];
     actions = D.actions || [];
     errorsByFp = Object.create(null);
     if (logs) { (logs.errors || []).forEach(function (e) { (e.statements || []).forEach(function (s) { (errorsByFp[s.fingerprint] = errorsByFp[s.fingerprint] || []).push({ error: e, count: s.count }); }); }); }
@@ -41,6 +42,7 @@
       { id: 'breakdowns', label: 'Breakdowns', show: !!logs },
       { id: 'slowest', label: 'Slowest', show: !!(logs && logs.slowest && logs.slowest.rows.length) },
       { id: 'comparison', label: 'Comparison', show: !!D.comparison },
+      { id: 'advice', label: 'Settings', show: advice.length > 0 },
       { id: 'findings', label: 'Data caveats', show: findings.length > 0 }
     ].filter(function (s) { return s.show; });
     if (!sections.some(function (s) { return s.id === state.s; })) { state.s = 'overview'; }
@@ -798,9 +800,18 @@
     out.push(panel('What moved most', simpleTable([{ label: 'Change' }, { label: 'Calls', num: true }, { label: 'Mean', num: true }, { label: 'Total time', num: true }, { label: '%', num: true }, { label: 'Statement' }], rows)));
     return out;
   }
+  function viewAdvice() {
+    var out = [h('p', { 'class': 'muted', text: 'Settings that decide what this report can show. Each one says what is lost and what to change; the badge says whether it was read from the server\'s settings or inferred from the data.' })];
+    advice.forEach(function (a) {
+      out.push(h('div', { 'class': 'finding ' + a.severity }, [h('span', { 'class': 'dot' }), h('div', null, [
+        h('div', null, [h('code', { text: a.code }), ' ', badge(a.source === 'settings' ? 'from the settings' : 'from the data', a.source === 'settings' ? 'info' : '')]),
+        h('div', { text: a.message })])]));
+    });
+    return out;
+  }
   function viewFindings() { return [h('div', { 'class': 'findings' }, findings.map(findingNode))]; }
 
-  var VIEWS = { overview: viewOverview, statements: viewStatements, errors: viewErrors, locks: viewLocks, sessions: viewSessions, maintenance: viewMaintenance, breakdowns: viewBreakdowns, slowest: viewSlowest, comparison: viewComparison, findings: viewFindings };
+  var VIEWS = { overview: viewOverview, statements: viewStatements, errors: viewErrors, locks: viewLocks, sessions: viewSessions, maintenance: viewMaintenance, breakdowns: viewBreakdowns, slowest: viewSlowest, comparison: viewComparison, advice: viewAdvice, findings: viewFindings };
 
   /* ---------- render ---------- */
   var viewNode = null;

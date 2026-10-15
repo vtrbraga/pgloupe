@@ -38,6 +38,18 @@ fn snap_on(major: u32) -> Result<(), String> {
         assert!(first.info.as_ref().is_some_and(|p| p.exists()), "info file");
     }
 
+    // The server's settings come with each snapshot, in the format a report reads.
+    let settings = first.settings.as_ref().ok_or("no settings file")?;
+    let read = pgloupe::combined::read_settings(settings)?;
+    assert_eq!(
+        read.get("server_version_num")
+            .map(String::as_str)
+            .map(str::len),
+        Some(6)
+    );
+    assert!(read.contains_key("log_min_duration_statement"));
+    assert!(read["shared_preload_libraries"].contains("pg_stat_statements"));
+
     // Read-only: writing fails, and the statistics were not reset.
     let write = client
         .batch_execute("CREATE TABLE nope (a int)")

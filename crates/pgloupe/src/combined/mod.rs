@@ -1,6 +1,7 @@
 //! The combined report: log statistics joined with `pg_stat_statements` deltas.
 
 mod actions;
+mod advice;
 mod compare;
 mod csv;
 mod findings;
@@ -11,6 +12,7 @@ mod testkit;
 mod text;
 
 pub use actions::{Action, actions};
+pub use advice::{Advice, Input as AdviceInput, advise, detect_vendor, read_settings};
 pub use compare::{Comparison, compare};
 pub use csv::csv;
 pub use findings::{Context, findings};
@@ -114,6 +116,8 @@ pub struct CombinedReport {
     pub windows: Windows,
     /// The problems to look at first, most urgent first, each with what to do about it.
     pub actions: Vec<Action>,
+    /// Settings that limit what this report can show, and what to change.
+    pub advice: Vec<Advice>,
     /// Caveats about the data: what the reader should know before trusting the numbers.
     pub findings: Vec<Finding>,
     /// What ranks `statements`: `total`, `calls`, `p95` or `max`.
@@ -318,6 +322,7 @@ pub fn build(
             report.statements.clear();
             report
         }),
+        advice: Vec::new(),
         comparison: None,
         display_tz: None,
     }

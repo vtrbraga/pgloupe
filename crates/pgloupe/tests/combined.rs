@@ -1,5 +1,6 @@
 //! End-to-end tests of `pgloupe report`.
 
+use std::fmt::Write as _;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -494,5 +495,148 @@ fn anonymize_covers_messages_details_comments_and_the_key_may_come_from_the_envi
     let other = ingest("two")?;
     assert!(!other.status.success());
     assert!(stderr(&other).contains("filter"), "{}", stderr(&other));
+    Ok(())
+}
+
+#[test]
+fn settings_that_limit_the_report_are_named_with_what_to_change() -> io::Result<()> {
+    let log = fixtures().join("logs/chatter.log");
+    let settings = fixtures().join("stats/settings_limiting.csv");
+    let run = |extra: &[&str], format: &str| -> io::Result<Output> {
+        let mut args = vec![
+            "report",
+            s(&log),
+            "--prefix",
+            "%t:%r:%u@%d:[%p]:",
+            "--output",
+            format,
+        ];
+        args.extend(extra);
+        pgloupe(&args)
+    };
+    // From the data alone: no statement has a duration.
+    let out = run(&[], "json")?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let value: Value = serde_json::from_str(&stdout(&out))?;
+    let codes = |v: &Value| -> Vec<String> {
+        v["advice"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|a| a["code"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    };
+    assert!(
+        codes(&value).contains(&"no_statement_timings".to_owned()),
+        "{value}"
+    );
+    assert_eq!(value["advice"][0]["source"], "data");
+    // From the settings: definitive, worded for RDS, and more of them.
+    let out = run(&["--settings", s(&settings)], "json")?;
+    let value: Value = serde_json::from_str(&stdout(&out))?;
+    let found = codes(&value);
+    for code in [
+        "no_statement_timings",
+        "no_lock_waits",
+        "no_temp_files",
+        "no_sessions",
+        "no_io_timing",
+    ] {
+        assert!(found.contains(&code.to_owned()), "{code} in {found:?}");
+    }
+    assert_eq!(
+        found
+            .iter()
+            .filter(|c| *c == "no_statement_timings")
+            .count(),
+        1
+    );
+    let timings = value["advice"]
+        .as_array()
+        .and_then(|a| a.iter().find(|a| a["code"] == "no_statement_timings"))
+        .expect("timings advice");
+    assert_eq!(timings["source"], "settings");
+    assert!(
+        timings["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("parameter group")
+    );
+    // Shown in every format.
+    for (format, needle) in [
+        ("text", "settings that limit this report"),
+        ("html", "Settings that limit this report"),
+    ] {
+        let out = run(&["--settings", s(&settings)], format)?;
+        assert!(stdout(&out).contains(needle), "{format}");
+    }
+    // A settings file that is not one is refused.
+    let bad = run(&["--settings", s(&log)], "json")?;
+    assert!(!bad.status.success());
+    Ok(())
+}
+
+#[test]
+fn a_statement_list_that_turns_over_asks_for_a_bigger_pgss_and_closer_snapshots() -> io::Result<()>
+{
+    let d = dir("churn")?;
+    let header = "snapshot_at,server_version_num,datname,rolname,userid,dbid,toplevel,queryid,query,calls,total_exec_time,rows";
+    let snapshot = |name: &str, at: &str, ids: std::ops::Range<u32>| -> io::Result<PathBuf> {
+        let mut text = format!("{header}\n");
+        for id in ids {
+            writeln!(
+                text,
+                "{at},170011,db,u,10,1,t,{id},SELECT * FROM t_{id} WHERE a = $1,1,1.0,1"
+            )
+            .map_err(io::Error::other)?;
+        }
+        let path = d.join(name);
+        fs::write(&path, text)?;
+        Ok(path)
+    };
+    let before = snapshot("before.csv", "2026-10-14 10:00:00+00", 0..150)?;
+    let after = snapshot("after.csv", "2026-10-14 16:00:00+00", 150..300)?;
+    let info = |name: &str, at: &str, dealloc: u32| -> io::Result<PathBuf> {
+        let path = d.join(name);
+        fs::write(
+            &path,
+            format!("snapshot_at,dealloc,stats_reset\n{at},{dealloc},2026-09-01 00:00:00+00\n"),
+        )?;
+        Ok(path)
+    };
+    let before_info = info("bi.csv", "2026-10-14 10:00:00+00", 10)?;
+    let after_info = info("ai.csv", "2026-10-14 16:00:00+00", 400)?;
+    let out = pgloupe(&[
+        "report",
+        "--before",
+        s(&before),
+        "--after",
+        s(&after),
+        "--before-info",
+        s(&before_info),
+        "--after-info",
+        s(&after_info),
+        "--output",
+        "json",
+    ])?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let value: Value = serde_json::from_str(&stdout(&out))?;
+    let advice = value["advice"].as_array().expect("advice");
+    let find = |code: &str| advice.iter().find(|a| a["code"] == code);
+    let evictions = find("pgss_evictions").expect("evictions");
+    assert_eq!(evictions["severity"], "warn");
+    assert!(
+        evictions["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("pg_stat_statements.max")
+    );
+    let churn = find("pgss_churn").expect("churn");
+    assert!(
+        churn["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("closer together")
+    );
     Ok(())
 }

@@ -314,7 +314,16 @@ impl Live {
             let why = notes.join("; ");
             return Err(fail("report", format!("nothing to report yet: {why}")));
         }
-        let combined = combined::build(logs, delta.as_ref(), &options);
+        let mut combined = combined::build(logs, delta.as_ref(), &options);
+        let settings = snapshot_files(&self.snapshots_dir())
+            .last()
+            .and_then(|newest| combined::read_settings(&settings_path(newest)).ok());
+        combined.advice = combined::advise(&combined::AdviceInput {
+            logs: combined.logs.as_ref(),
+            delta: delta.as_ref(),
+            settings: settings.as_ref(),
+            vendor: None,
+        });
         let html = combined::html_live(&combined, LIVE_POLL_SECS)
             .map_err(|e| fail("report", e.to_string()))?;
         let page = combined::html(&combined).map_err(|e| fail("report", e.to_string()))?;
@@ -362,6 +371,7 @@ fn prune_snapshots(dir: &Path, keep: usize) {
     for old in files.iter().take(files.len().saturating_sub(keep)) {
         drop(fs::remove_file(old));
         drop(fs::remove_file(info_path(old)));
+        drop(fs::remove_file(settings_path(old)));
     }
 }
 
@@ -403,6 +413,16 @@ impl Cycle for Live {
         }
         self.report(notes)
     }
+}
+
+/// The settings file taken with a statistics snapshot.
+fn settings_path(snapshot: &Path) -> PathBuf {
+    let name = snapshot
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+        .replacen("pgss_", "settings_", 1);
+    snapshot.with_file_name(name)
 }
 
 /// The `pgss_<time>.csv` files in `dir`, oldest first.

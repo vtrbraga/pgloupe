@@ -1,0 +1,17 @@
+name,setting,unit,source,pending_restart
+autovacuum,on,,default,f
+compute_query_id,auto,,default,f
+log_autovacuum_min_duration,10000,ms,configuration file,f
+log_checkpoints,on,,configuration file,f
+log_connections,off,,default,f
+log_destination,stderr,,configuration file,f
+log_disconnections,off,,default,f
+log_line_prefix,%t:%r:%u@%d:[%p]:,,configuration file,f
+log_lock_waits,off,,default,f
+log_min_duration_statement,-1,ms,default,f
+log_temp_files,-1,kB,default,f
+pg_stat_statements.max,5000,,configuration file,t
+rds.extensions,pg_stat_statements,,configuration file,f
+server_version_num,160013,,default,f
+shared_preload_libraries,pg_stat_statements,,configuration file,t
+track_io_timing,off,,default,f

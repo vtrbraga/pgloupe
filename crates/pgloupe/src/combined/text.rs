@@ -59,6 +59,23 @@ pub fn text(report: &CombinedReport) -> String {
         lines.push(String::new());
         lines.extend(comparison_lines(comparison));
     }
+    if !report.advice.is_empty() {
+        lines.push(String::new());
+        lines.push("settings that limit this report".to_owned());
+        for item in &report.advice {
+            lines.push(format!(
+                "  [{}] {} ({}): {}",
+                item.severity,
+                item.code,
+                if item.source == "settings" {
+                    "from the settings"
+                } else {
+                    "from the data"
+                },
+                item.message
+            ));
+        }
+    }
     if !report.findings.is_empty() {
         lines.push(String::new());
         lines.push("data caveats".to_owned());
