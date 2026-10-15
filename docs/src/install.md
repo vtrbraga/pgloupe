@@ -6,11 +6,11 @@ pgloupe is one binary. Pick the channel that suits you; each channel updates the
 
 | Channel | Install | Update |
 |---|---|---|
-| Installer script (Linux, macOS) | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/vtrbraga/pgloupe/releases/download/v0.1.0-alpha.1/pgloupe-installer.sh \| sh` (the `latest` URL works once there is a stable release) | `pgloupe-update --prerelease` |
-| Installer script (Windows) | `powershell -ExecutionPolicy Bypass -c "irm https://github.com/vtrbraga/pgloupe/releases/download/v0.1.0-alpha.1/pgloupe-installer.ps1 \| iex"` | `pgloupe-update --prerelease` |
+| Installer script (Linux, macOS) | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/vtrbraga/pgloupe/releases/download/v0.1.0-alpha.2/pgloupe-installer.sh \| sh` (the `latest` URL works once there is a stable release) | `pgloupe-update --prerelease` |
+| Installer script (Windows) | `powershell -ExecutionPolicy Bypass -c "irm https://github.com/vtrbraga/pgloupe/releases/download/v0.1.0-alpha.2/pgloupe-installer.ps1 \| iex"` | `pgloupe-update --prerelease` |
 | Homebrew | `brew install vtrbraga/tap/pgloupe` | `brew upgrade pgloupe` |
-| Cargo | `cargo install pgloupe --version 0.1.0-alpha.1` (needs a C toolchain and `libclang`; a pre-release is only installed when you name its version) | the same command with the new version |
-| Prebuilt, through cargo-binstall | `cargo binstall pgloupe@0.1.0-alpha.1` | the same command |
+| Cargo | `cargo install pgloupe --version 0.1.0-alpha.2` (needs a C toolchain and `libclang`; a pre-release is only installed when you name its version) | the same command with the new version |
+| Prebuilt, through cargo-binstall | `cargo binstall pgloupe@0.1.0-alpha.2` | the same command |
 | Docker | `docker run --rm -v "$PWD:/data" ghcr.io/vtrbraga/pgloupe:<version> report /data/postgresql.log` (the `latest` tag appears with the first stable release) | `docker pull ghcr.io/vtrbraga/pgloupe:<version>` |
 | Archive | download from the [releases page](https://github.com/vtrbraga/pgloupe/releases), unpack, put `pgloupe` on your `PATH` | download again |
 
