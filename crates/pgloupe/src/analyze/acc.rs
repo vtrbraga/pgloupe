@@ -692,7 +692,7 @@ impl Accumulators {
     }
 
     /// Offers one execution to the slowest list. The statement is kept as the log spelled it only
-    /// with parameters on; otherwise it is normalized, so literals do not reach the report.
+    /// with parameters on; otherwise it is normalized (a statement that cannot be parsed keeps its text).
     fn offer_slow(
         &mut self,
         record: &LogRecord,

@@ -169,7 +169,7 @@ struct DiffArgs {
 
 #[derive(Debug, Args)]
 struct AnalyzeArgs {
-    /// Log files (csvlog, jsonlog or stderr; gzip is detected automatically).
+    /// Log files (csvlog, jsonlog or stderr; compression is detected automatically).
     #[arg(required = true)]
     files: Vec<PathBuf>,
     /// Log format; `auto` looks at each file's first line.
@@ -285,7 +285,7 @@ impl CaptureArgs {
 
 #[derive(Debug, Args)]
 struct IngestArgs {
-    /// Log files (csvlog, jsonlog or stderr; gzip is detected automatically).
+    /// Log files (csvlog, jsonlog or stderr; compression is detected automatically).
     #[arg(required = true)]
     files: Vec<PathBuf>,
     /// The store file; created when missing.
@@ -340,7 +340,7 @@ struct StoreReportArgs {
 
 #[derive(Debug, Args)]
 struct CombinedArgs {
-    /// Log files (csvlog, jsonlog or stderr; gzip is detected automatically), analyzed on the fly.
+    /// Log files (csvlog, jsonlog or stderr; compression is detected automatically), analyzed on the fly.
     #[arg(conflicts_with = "store")]
     files: Vec<PathBuf>,
     /// A store written by `logs ingest`, instead of log files.
@@ -452,7 +452,7 @@ fn parse_bucket(text: &str) -> Result<i64, String> {
 
 #[derive(Debug, Args)]
 struct DumpArgs {
-    /// Log file; gzip is detected automatically.
+    /// Log file; compression is detected automatically.
     file: PathBuf,
     /// Log format; `auto` looks at the first line.
     #[arg(long, value_enum, default_value_t = LogFormat::Auto)]

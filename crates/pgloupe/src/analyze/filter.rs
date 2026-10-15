@@ -2,6 +2,7 @@
 
 use regex::Regex;
 
+use super::event::{Event, StatementKind, classify};
 use crate::log::LogRecord;
 
 /// Values a record must (include) or must not (exclude) carry, per attribute.
@@ -33,13 +34,17 @@ impl Facets {
 
 /// Which records are kept: every include list that is set must contain the record's value, no
 /// exclude list may, and the statement patterns must agree.
+///
+/// The statement patterns judge only statement records (`statement:` and `execute`); every other
+/// record, including bare `duration:` lines and the errors or lock waits of a dropped statement,
+/// is kept, because it cannot be tied to the statement's text.
 #[derive(Debug, Clone, Default)]
 pub struct Filter {
     pub include: Facets,
     pub exclude: Facets,
-    /// Keep only records whose message or statement matches.
+    /// Keep only statements whose text matches.
     pub include_query: Option<Regex>,
-    /// Drop records whose message or statement matches.
+    /// Drop statements whose text matches.
     pub exclude_query: Option<Regex>,
 }
 
@@ -68,22 +73,24 @@ impl Filter {
                 return false;
             }
         }
-        let matches = |pattern: &Regex| {
-            pattern.is_match(&record.message)
-                || record
-                    .statement
-                    .as_deref()
-                    .is_some_and(|statement| pattern.is_match(statement))
-        };
-        if let Some(pattern) = &self.include_query
-            && !matches(pattern)
+        let judges_statements = self.include_query.is_some() || self.exclude_query.is_some();
+        if judges_statements
+            && let Event::Statement {
+                kind: StatementKind::Statement | StatementKind::Execute,
+                text,
+                ..
+            } = classify(record)
         {
-            return false;
-        }
-        if let Some(pattern) = &self.exclude_query
-            && matches(pattern)
-        {
-            return false;
+            if let Some(pattern) = &self.include_query
+                && !pattern.is_match(&text)
+            {
+                return false;
+            }
+            if let Some(pattern) = &self.exclude_query
+                && pattern.is_match(&text)
+            {
+                return false;
+            }
         }
         true
     }

@@ -4,6 +4,10 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader, Read},
     path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use flate2::read::MultiGzDecoder;
@@ -30,14 +34,17 @@ pub fn open_reader(inner: impl Read + Send + 'static) -> io::Result<Box<dyn BufR
     if head.starts_with(&[0x1f, 0x8b]) {
         Ok(Box::new(BufReader::new(MultiGzDecoder::new(buffered))))
     } else if head.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
-        Ok(Box::new(BufReader::new(zstd::Decoder::new(buffered)?)))
+        let mut decoder = zstd::Decoder::new(buffered)?;
+        // Logs compressed with `--long=31` or `--ultra` need a window above the default limit.
+        decoder.window_log_max(31)?;
+        Ok(Box::new(BufReader::new(decoder)))
     } else if head.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
         Ok(Box::new(BufReader::new(
             xz2::read::XzDecoder::new_multi_decoder(buffered),
         )))
     } else if head.starts_with(&[0x04, 0x22, 0x4d, 0x18]) {
         Ok(Box::new(BufReader::new(Lz4Frames::new(buffered))))
-    } else if head.starts_with(b"BZh") {
+    } else if is_bzip2(head) {
         Ok(Box::new(BufReader::new(bzip2::read::MultiBzDecoder::new(
             buffered,
         ))))
@@ -46,26 +53,72 @@ pub fn open_reader(inner: impl Read + Send + 'static) -> io::Result<Box<dyn BufR
     }
 }
 
+/// Whether `head` starts a bzip2 stream: `BZh`, a block size digit, then the block magic
+/// (`pi`) or, for an empty stream, the end-of-stream magic (`sqrt(pi)`). Text that merely starts
+/// with `BZh` is not mistaken for it.
+fn is_bzip2(head: &[u8]) -> bool {
+    head.len() >= 10
+        && head.starts_with(b"BZh")
+        && (b'1'..=b'9').contains(&head[3])
+        && (head[4..10] == [0x31, 0x41, 0x59, 0x26, 0x53, 0x59]
+            || head[4..10] == [0x17, 0x72, 0x45, 0x38, 0x50, 0x90])
+}
+
 /// The magic number every lz4 frame starts with.
 const LZ4_MAGIC: [u8; 4] = [0x04, 0x22, 0x4d, 0x18];
 
 /// Reads concatenated lz4 frames to the end; the library's decoder stops after the first one.
+///
+/// The library also reports a frame cut at a block boundary as a clean end, so the reader under
+/// it is watched: hitting the end of the input while a frame is open means truncation.
 struct Lz4Frames<R: BufRead> {
     state: Lz4State<R>,
+    hit_end: Arc<AtomicBool>,
 }
 
 enum Lz4State<R: BufRead> {
     /// Inside a frame.
-    Decoding(lz4_flex::frame::FrameDecoder<R>),
+    Decoding(lz4_flex::frame::FrameDecoder<Watched<R>>),
     /// Between frames, at a frame boundary.
-    Between(R),
+    Between(Watched<R>),
     Done,
+}
+
+/// Remembers whether a read found the end of the input.
+struct Watched<R> {
+    inner: R,
+    hit_end: Arc<AtomicBool>,
+}
+
+impl<R: Read> Read for Watched<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n == 0 && !buf.is_empty() {
+            self.hit_end.store(true, Ordering::Relaxed);
+        }
+        Ok(n)
+    }
+}
+
+impl<R: BufRead> BufRead for Watched<R> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        self.inner.fill_buf()
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.inner.consume(amount);
+    }
 }
 
 impl<R: BufRead> Lz4Frames<R> {
     fn new(inner: R) -> Self {
+        let hit_end = Arc::new(AtomicBool::new(false));
         Lz4Frames {
-            state: Lz4State::Between(inner),
+            state: Lz4State::Between(Watched {
+                inner,
+                hit_end: Arc::clone(&hit_end),
+            }),
+            hit_end,
         }
     }
 }
@@ -80,6 +133,12 @@ impl<R: BufRead> Read for Lz4Frames<R> {
                         self.state = Lz4State::Decoding(decoder);
                         return Ok(n);
                     }
+                    if self.hit_end.load(Ordering::Relaxed) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "the lz4 stream ends inside a frame",
+                        ));
+                    }
                     self.state = Lz4State::Between(decoder.into_inner());
                 }
                 Lz4State::Between(mut inner) => {
@@ -93,6 +152,7 @@ impl<R: BufRead> Read for Lz4Frames<R> {
                             "data after the end of an lz4 frame is not another frame",
                         ));
                     }
+                    self.hit_end.store(false, Ordering::Relaxed);
                     self.state = Lz4State::Decoding(lz4_flex::frame::FrameDecoder::new(inner));
                 }
                 Lz4State::Done => return Ok(0),
@@ -253,6 +313,36 @@ mod tests {
     }
 
     #[test]
+    fn an_lz4_stream_cut_anywhere_is_an_error() {
+        // Incompressible data makes several blocks; every cut must be noticed, including the
+        // ones that fall exactly on a block header or on the missing end mark.
+        let mut state = 0x2545_f491_u32;
+        let data: Vec<u8> = (0..200_000)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                b'a' + u8::try_from(state >> 28).unwrap()
+            })
+            .collect();
+        let full = lz4(&data);
+        assert_eq!(read_text(full.clone()).unwrap().len(), data.len());
+        let tail = full.len().saturating_sub(40)..full.len();
+        for cut in (8..full.len()).step_by(499).chain(tail) {
+            assert!(read_text(full[..cut].to_vec()).is_err(), "cut at {cut}");
+        }
+        // A killed writer leaves no end mark: drop the last four bytes of the full frame.
+        read_text(full[..full.len() - 4].to_vec()).unwrap_err();
+    }
+
+    #[test]
+    fn text_that_starts_like_bzip2_is_read_as_text() {
+        assert_eq!(
+            read_text(b"BZh is not a log line\n".to_vec()).unwrap(),
+            "BZh is not a log line\n"
+        );
+        assert_eq!(read_text(b"BZh9".to_vec()).unwrap(), "BZh9");
+    }
+
+    #[test]
     fn a_damaged_stream_is_an_error() {
         let text = "a line of log text\n".repeat(20_000);
         for (name, compress) in FORMATS {
@@ -261,10 +351,7 @@ mod tests {
             for byte in &mut bytes[middle..middle + 16] {
                 *byte ^= 0xff;
             }
-            assert!(
-                read_text(bytes).is_err_and(|_| true),
-                "{name} accepted damaged bytes"
-            );
+            assert!(read_text(bytes).is_err(), "{name} accepted damaged bytes");
         }
     }
 

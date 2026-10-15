@@ -224,6 +224,10 @@ fn absence_warnings(output: &Output, warnings: &mut Vec<String>) {
             calls - timed
         ));
     }
+    // Filters drop records of every kind; what is missing is then no sign of a server setting.
+    if output.files.iter().any(|f| f.filtered > 0) {
+        return;
+    }
     let seen = |kind: &str| totals.events.get(kind).copied().unwrap_or(0) > 0;
     if !(seen("statement") || seen("execute") || seen("duration")) {
         warnings.push(
