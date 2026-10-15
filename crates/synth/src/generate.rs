@@ -75,6 +75,7 @@ pub fn run_with(args: &GenerateArgs, scenarios: &[&Scenario]) -> anyhow::Result<
         gid: owner.gid(),
         log_dir: &log_dir,
         dataset_dir: &dataset_dir,
+        overrides: &[],
     })?;
     let target = Target { port: pg.port() };
 

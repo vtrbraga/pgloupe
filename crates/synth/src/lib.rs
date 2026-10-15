@@ -1,5 +1,6 @@
 //! Synthetic Postgres log and `pg_stat_statements` corpus generator for pgloupe tests.
 
+pub mod bench;
 pub mod bootstrap;
 pub mod cli;
 pub mod container;

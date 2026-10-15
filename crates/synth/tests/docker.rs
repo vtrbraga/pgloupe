@@ -31,6 +31,7 @@ fn start(name: &str, label: &str) -> PgContainer {
         gid: meta.gid(),
         log_dir: &log,
         dataset_dir: &dataset,
+        overrides: &[],
     })
     .unwrap()
 }
@@ -195,6 +196,7 @@ fn failed_startup_reports_container_logs_quickly() {
         gid: 54321,
         log_dir: &log,
         dataset_dir: &dataset,
+        overrides: &[],
     })
     .unwrap_err();
     let message = format!("{err:#}");
