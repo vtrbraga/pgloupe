@@ -64,6 +64,9 @@ pub fn findings(ctx: &Context<'_>) -> Vec<Finding> {
     if let Some(delta) = ctx.delta {
         stats_rules(delta, &mut found);
     }
+    if ctx.delta.is_some() {
+        cache_and_io(ctx, &mut found);
+    }
     if let Some(overlap) = ctx.overlap_pct
         && overlap < MIN_OVERLAP_PCT
     {
@@ -223,6 +226,70 @@ fn is_nested_only(row: &JoinedRow) -> bool {
     row.stats
         .as_ref()
         .is_some_and(|stats| stats.flags.contains(&"nested"))
+}
+
+/// A statement reading most of its blocks from outside shared buffers, with this many calls...
+const MIN_CALLS_LOW_HIT: u64 = 100;
+/// ...and this many blocks read, has a hit rate under this share.
+const MIN_BLOCKS_LOW_HIT: u64 = 10_000;
+const LOW_HIT_PCT: f64 = 90.0;
+/// File I/O above this share of execution time, and above this many milliseconds, is worth a note.
+const IO_HEAVY_PCT: f64 = 30.0;
+const IO_HEAVY_MIN_MS: f64 = 1_000.0;
+
+fn cache_and_io(ctx: &Context<'_>, found: &mut Vec<Finding>) {
+    let Some(delta) = ctx.delta else {
+        return;
+    };
+    let totals = &delta.totals;
+    if totals.exec_ms > 0.0
+        && totals.io_ms >= IO_HEAVY_MIN_MS
+        && totals.io_ms * 100.0 / totals.exec_ms >= IO_HEAVY_PCT
+    {
+        found.push(finding(
+            "io_heavy",
+            "info",
+            format!(
+                "{:.0}% of the execution time was spent reading and writing files ({:.1} s of {:.1} s). Either the working set does not fit in memory (shared_buffers and the OS cache) or statements read much more than they return: see Blocks read per row in the statements.",
+                totals.io_ms * 100.0 / totals.exec_ms,
+                totals.io_ms / 1000.0,
+                totals.exec_ms / 1000.0
+            ),
+        ));
+    }
+    let mut missing: Vec<&JoinedRow> = ctx
+        .joined
+        .rows
+        .iter()
+        .filter(|row| {
+            row.stats.as_ref().is_some_and(|s| {
+                s.calls >= MIN_CALLS_LOW_HIT
+                    && s.shared_blks_read >= MIN_BLOCKS_LOW_HIT
+                    && s.hit_pct.is_some_and(|p| p < LOW_HIT_PCT)
+            })
+        })
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    missing.sort_by(|a, b| {
+        let reads = |r: &JoinedRow| r.stats.as_ref().map_or(0, |s| s.shared_blks_read);
+        reads(b)
+            .cmp(&reads(a))
+            .then_with(|| a.fingerprint.cmp(&b.fingerprint))
+    });
+    let mut f = finding(
+        "low_cache_hit",
+        "info",
+        format!(
+            "{} {} most of {} blocks from outside shared buffers (hit rate under {LOW_HIT_PCT:.0}%). A missing index, a scan over a table bigger than memory, or a cold cache after a restart.",
+            statements_of(missing.len()),
+            if missing.len() == 1 { "reads" } else { "read" },
+            if missing.len() == 1 { "its" } else { "their" }
+        ),
+    );
+    f.statements = listed(ctx, missing.iter().copied());
+    found.push(f);
 }
 
 fn heavy_stats_only(ctx: &Context<'_>, found: &mut Vec<Finding>) {

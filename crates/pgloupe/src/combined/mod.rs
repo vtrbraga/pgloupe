@@ -91,6 +91,12 @@ pub struct StatsSide {
     pub blocks_read_per_row: Option<f64>,
     /// WAL bytes per call.
     pub wal_per_call: Option<f64>,
+    /// Standard deviation and slowest run, in milliseconds, since the entry was created or last
+    /// reset (not window figures).
+    pub stddev_ms: Option<f64>,
+    pub max_ms: Option<f64>,
+    /// Standard deviation over the mean: how uneven the run times are.
+    pub variability: Option<f64>,
     /// Share of all execution time in the window, in percent.
     pub share_pct: f64,
     /// Calls of the same statement inside functions (`track = all`), kept out of `calls`.
@@ -101,7 +107,8 @@ pub struct StatsSide {
     pub queryid_count: usize,
     /// The first five, ascending, as text (64-bit ids do not survive JSON numbers).
     pub queryids: Vec<String>,
-    /// `new`, `restarted`, `partial`, `evicted_suspect`, `nested` (only ever run inside functions).
+    /// `new`, `restarted`, `partial`, `evicted_suspect`, `nested` (only ever run inside functions),
+    /// `slower` and `faster` (the mean moved by half or more since before the window).
     pub flags: Vec<&'static str>,
 }
 
@@ -199,6 +206,47 @@ pub struct StatsInput {
     pub blind_spot: bool,
     /// How many entries were new, restarted, gone and so on.
     pub counts: Counts,
+    /// What every entry did in the window, added up, and the ratios worth knowing.
+    pub totals: StatsTotals,
+    /// The same per database and per role, busiest first (top-level statements only).
+    pub by_database: Vec<StatsRollup>,
+    pub by_user: Vec<StatsRollup>,
+}
+
+/// What the statements of one database or role did in the window.
+#[derive(Debug, Clone, Serialize)]
+pub struct StatsRollup {
+    pub name: String,
+    /// Statements (distinct entries) that ran.
+    pub entries: usize,
+    pub calls: u64,
+    pub total_ms: f64,
+    /// Share of all execution time, in percent.
+    pub share_pct: f64,
+    pub rows: u64,
+    pub hit_pct: Option<f64>,
+    /// File I/O as a share of this group's execution time.
+    pub io_pct: Option<f64>,
+}
+
+/// The statistics of the whole window, over all entries.
+#[derive(Debug, Clone, Serialize)]
+pub struct StatsTotals {
+    pub calls: u64,
+    pub exec_ms: f64,
+    /// Planning time, in milliseconds (0 unless `pg_stat_statements.track_planning` is on).
+    pub plan_ms: f64,
+    /// Planning time as a share of execution time.
+    pub plan_pct: Option<f64>,
+    /// Time reading and writing files (`track_io_timing`), and its share of execution time.
+    pub io_ms: f64,
+    pub io_pct: Option<f64>,
+    /// Blocks found in shared buffers as a share of all blocks asked for.
+    pub hit_pct: Option<f64>,
+    pub blocks_read: u64,
+    pub wal_bytes: u64,
+    /// Entries that only ran inside functions.
+    pub nested_entries: usize,
 }
 
 /// The periods the two sources cover.
@@ -423,6 +471,81 @@ fn stats_input(delta: &Delta) -> StatsInput {
         evicted_estimate: delta.evicted_estimate,
         blind_spot: delta.blind_spot,
         counts: delta.counts,
+        totals: stats_totals(&delta.totals),
+        by_database: rollups(delta, |row| row.datname.as_deref()),
+        by_user: rollups(delta, |row| row.rolname.as_deref()),
+    }
+}
+
+/// Databases or roles listed in a rollup.
+const ROLLUP_LISTED: usize = 20;
+
+/// Adds the top-level entries up by the name `of` gives, busiest first.
+fn rollups(
+    delta: &Delta,
+    of: impl Fn(&crate::stats::delta::Row) -> Option<&str>,
+) -> Vec<StatsRollup> {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<&str, (usize, crate::stats::snapshot::Counters)> = BTreeMap::new();
+    for row in delta
+        .rows
+        .iter()
+        .filter(|r| r.key.toplevel && r.delta.calls > 0)
+    {
+        let slot = groups.entry(of(row).unwrap_or("(unknown)")).or_default();
+        slot.0 += 1;
+        join::add_counters(&mut slot.1, &row.delta);
+    }
+    let total: f64 = groups.values().map(|(_, c)| c.total_exec_time).sum();
+    let mut out: Vec<StatsRollup> = groups
+        .into_iter()
+        .map(|(name, (entries, c))| StatsRollup {
+            name: name.to_owned(),
+            entries,
+            calls: c.calls,
+            total_ms: c.total_exec_time,
+            share_pct: if total > 0.0 {
+                c.total_exec_time * 100.0 / total
+            } else {
+                0.0
+            },
+            rows: c.rows,
+            hit_pct: join::ratio_pct(c.shared_blks_hit, c.shared_blks_hit + c.shared_blks_read),
+            io_pct: (c.total_exec_time > 0.0).then(|| {
+                (c.blk_read_time + c.blk_write_time + c.temp_blk_read_time + c.temp_blk_write_time)
+                    * 100.0
+                    / c.total_exec_time
+            }),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.total_ms
+            .total_cmp(&a.total_ms)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    out.truncate(ROLLUP_LISTED);
+    out
+}
+
+fn stats_totals(t: &crate::stats::delta::Totals) -> StatsTotals {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "block counts stay far below 2^53"
+    )]
+    let hit_pct = (t.shared_blks_hit + t.shared_blks_read > 0).then(|| {
+        t.shared_blks_hit as f64 * 100.0 / (t.shared_blks_hit + t.shared_blks_read) as f64
+    });
+    StatsTotals {
+        calls: t.calls,
+        exec_ms: t.exec_ms,
+        plan_ms: t.plan_ms,
+        plan_pct: (t.exec_ms > 0.0 && t.plan_ms > 0.0).then(|| t.plan_ms * 100.0 / t.exec_ms),
+        io_ms: t.io_ms,
+        io_pct: (t.exec_ms > 0.0).then(|| t.io_ms * 100.0 / t.exec_ms),
+        hit_pct,
+        blocks_read: t.shared_blks_read,
+        wal_bytes: t.wal_bytes,
+        nested_entries: t.nested_entries,
     }
 }
 

@@ -923,9 +923,43 @@ fn statements_carry_cache_hit_io_share_and_blocks_per_row() -> io::Result<()> {
     );
     assert!((orders["rows_per_call"].as_f64().unwrap() - 2.0).abs() < 1e-9);
     assert!((orders["blocks_read_per_row"].as_f64().unwrap() - 25.0).abs() < 1e-9);
+    // Twice the mean since before the window, and an uneven run time (60 ms spread on a 17 ms mean).
+    assert!(
+        orders["flags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f == "slower"),
+        "{orders}"
+    );
+    assert_eq!(orders["max_ms"], 900.0);
+    assert!(
+        (orders["variability"].as_f64().unwrap() - 3.6).abs() < 0.01,
+        "{orders}"
+    );
     // A delete returning nothing per call but reading thousands of blocks and writing WAL.
     let delete = find("DELETE");
     assert_eq!(delete["wal_per_call"], 200_000.0);
+    let codes: Vec<&str> = report["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f["code"].as_str())
+        .collect();
+    assert!(codes.contains(&"io_heavy"), "{codes:?}");
+    assert!(codes.contains(&"low_cache_hit"), "{codes:?}");
+    let stats = &report["inputs"]["stats"];
+    assert_eq!(stats["by_database"][0]["name"], "shop");
+    assert_eq!(stats["by_database"][0]["calls"], 210);
+    assert_eq!(stats["by_user"][0]["name"], "app");
+    assert!((stats["by_user"][0]["share_pct"].as_f64().unwrap() - 100.0).abs() < 1e-9);
+    let totals = &report["inputs"]["stats"]["totals"];
+    assert_eq!(totals["calls"], 210);
+    assert!(
+        (totals["hit_pct"].as_f64().unwrap() - 60.17).abs() < 0.05,
+        "{totals}"
+    );
+    assert!(totals["io_pct"].as_f64().unwrap() > 30.0, "{totals}");
     assert!(delete["io_pct"].as_f64().unwrap() > 20.0);
     Ok(())
 }

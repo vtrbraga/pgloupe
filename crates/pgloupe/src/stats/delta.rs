@@ -64,6 +64,9 @@ pub struct Row {
     pub mean_before: Option<f64>,
     /// Cumulative mean execution time (ms) in the `after` snapshot.
     pub mean_after: Option<f64>,
+    /// Standard deviation and slowest run (ms) since the entry was created or last reset.
+    pub stddev_ms: Option<f64>,
+    pub max_ms: Option<f64>,
     /// Share of the window's total execution time, in percent.
     pub share_pct: f64,
 }
@@ -113,8 +116,26 @@ pub struct Delta {
     /// A reset would go unnoticed: no info files, no `stats_since`, and none detected.
     pub blind_spot: bool,
     pub counts: Counts,
+    /// What every entry did in the window, added up.
+    pub totals: Totals,
     /// All compared entries, ordered by key.
     pub rows: Vec<Row>,
+}
+
+/// The window's activity over all entries, top-level and nested alike.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize)]
+pub struct Totals {
+    pub calls: u64,
+    pub exec_ms: f64,
+    pub plan_ms: f64,
+    pub plans: u64,
+    /// Time reading and writing files, in milliseconds (`track_io_timing`).
+    pub io_ms: f64,
+    pub shared_blks_hit: u64,
+    pub shared_blks_read: u64,
+    pub wal_bytes: u64,
+    /// Entries that only ran inside functions.
+    pub nested_entries: usize,
 }
 
 /// An `after` entry with its `before` counterpart.
@@ -149,6 +170,7 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Result<Delta, DeltaError> {
         .collect();
     fill_shares(&mut rows);
     let counts = count(before, after, &rows);
+    let totals = add_up(&rows);
     let evicted_estimate =
         evictions.map(|rounds| rounds.saturating_mul(round_size(after.entries.len())));
     let utility_churn_pct = utility_churn(before, &rows);
@@ -163,6 +185,7 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Result<Delta, DeltaError> {
         utility_churn_pct,
         blind_spot,
         counts,
+        totals,
         rows,
     })
 }
@@ -336,6 +359,24 @@ fn count_evictions(infos: Option<(Info, Info)>, reset: Reset) -> Option<u64> {
     })
 }
 
+fn add_up(rows: &[Row]) -> Totals {
+    let mut totals = Totals::default();
+    for row in rows {
+        let d = &row.delta;
+        totals.calls += d.calls;
+        totals.exec_ms += d.total_exec_time;
+        totals.plan_ms += d.total_plan_time;
+        totals.plans += d.plans;
+        totals.io_ms +=
+            d.blk_read_time + d.blk_write_time + d.temp_blk_read_time + d.temp_blk_write_time;
+        totals.shared_blks_hit += d.shared_blks_hit;
+        totals.shared_blks_read += d.shared_blks_read;
+        totals.wal_bytes += d.wal_bytes;
+        totals.nested_entries += usize::from(!row.key.toplevel);
+    }
+    totals
+}
+
 /// Entries one eviction round removes: 5% of the table, at least 10.
 fn round_size(entries: usize) -> u64 {
     u64::try_from(entries / 20).unwrap_or(u64::MAX).max(10)
@@ -450,6 +491,8 @@ fn build_row(p: &Paired<'_>, partial: bool, evictions: Option<u64>) -> Row {
             .before
             .and_then(|b| mean(b.counters.total_exec_time, b.counters.calls)),
         mean_after: mean(after.total_exec_time, after.calls),
+        stddev_ms: p.after.stddev_exec_time,
+        max_ms: p.after.max_exec_time,
         share_pct: 0.0,
     }
 }

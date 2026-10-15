@@ -48,9 +48,22 @@ struct Group {
     top_share_pct: f64,
     nested_share_pct: f64,
     flags: BTreeSet<&'static str>,
+    /// The top-level entry with the most calls in the window, which speaks for the spread and
+    /// for whether the statement got slower.
+    lead: Option<Lead>,
 }
 
-fn add_counters(into: &mut Counters, d: &Counters) {
+/// What one entry says about how the statement's time behaves.
+#[derive(Clone, Copy)]
+struct Lead {
+    calls: u64,
+    mean_before: Option<f64>,
+    mean_after: Option<f64>,
+    stddev_ms: Option<f64>,
+    max_ms: Option<f64>,
+}
+
+pub(super) fn add_counters(into: &mut Counters, d: &Counters) {
     into.calls += d.calls;
     into.rows += d.rows;
     into.plans += d.plans;
@@ -77,6 +90,16 @@ impl Group {
         self.entries += 1;
         self.queryids.insert(row.key.queryid);
         if row.key.toplevel {
+            let lead = Lead {
+                calls: row.delta.calls,
+                mean_before: row.mean_before,
+                mean_after: row.mean_after,
+                stddev_ms: row.stddev_ms,
+                max_ms: row.max_ms,
+            };
+            if self.lead.is_none_or(|best| lead.calls > best.calls) {
+                self.lead = Some(lead);
+            }
             self.top_entries += 1;
             add_counters(&mut self.top, &row.delta);
             self.top_share_pct += row.share_pct;
@@ -114,6 +137,11 @@ impl Group {
         self.top_share_pct += other.top_share_pct;
         self.nested_share_pct += other.nested_share_pct;
         self.flags.extend(other.flags);
+        if let Some(lead) = other.lead
+            && self.lead.is_none_or(|best| lead.calls > best.calls)
+        {
+            self.lead = Some(lead);
+        }
     }
 
     #[expect(
@@ -130,7 +158,20 @@ impl Group {
             (&self.top, self.top_share_pct)
         };
         let calls = counted.calls;
+        let window_mean = (calls > 0).then(|| counted.total_exec_time / calls as f64);
         let mut flags = self.flags.clone();
+        // A mean that moved a lot since before the window, on enough calls to mean something.
+        if let (Some(lead), Some(now)) = (self.lead.filter(|_| !nested_only), window_mean)
+            && let Some(before) = lead.mean_before
+            && calls >= MIN_CALLS_FOR_TREND
+            && (now - before).abs() >= MIN_TREND_MS
+        {
+            if now >= before * TREND_RATIO {
+                flags.insert("slower");
+            } else if now * TREND_RATIO <= before {
+                flags.insert("faster");
+            }
+        }
         if nested_only {
             flags.insert("nested");
         }
@@ -165,6 +206,11 @@ impl Group {
             blocks_read_per_row: (counted.rows > 0)
                 .then(|| counted.shared_blks_read as f64 / counted.rows as f64),
             wal_per_call: (calls > 0).then(|| counted.wal_bytes as f64 / calls as f64),
+            stddev_ms: self.lead.and_then(|l| l.stddev_ms),
+            max_ms: self.lead.and_then(|l| l.max_ms),
+            variability: self
+                .lead
+                .and_then(|l| Some(l.stddev_ms? / l.mean_after.filter(|m| *m > 0.0)?)),
             share_pct,
             nested_calls: if nested_only { 0 } else { self.nested.calls },
             entries: self.entries,
@@ -180,12 +226,19 @@ impl Group {
     }
 }
 
+/// A statement needs this many calls in the window before it is called slower or faster...
+const MIN_CALLS_FOR_TREND: u64 = 10;
+/// ...its mean must have moved by at least this many milliseconds...
+const MIN_TREND_MS: f64 = 1.0;
+/// ...and by this factor.
+const TREND_RATIO: f64 = 1.5;
+
 /// `part` as a percentage of `whole`, if there is a whole.
 #[expect(
     clippy::cast_precision_loss,
     reason = "block counts stay far below 2^53"
 )]
-fn ratio_pct(part: u64, whole: u64) -> Option<f64> {
+pub(super) fn ratio_pct(part: u64, whole: u64) -> Option<f64> {
     (whole > 0).then(|| part as f64 * 100.0 / whole as f64)
 }
 
