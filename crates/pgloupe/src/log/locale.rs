@@ -8,7 +8,10 @@
 //! EXPERIMENTAL: the table covers Portuguese (Brazil), Spanish, French and German; any other
 //! language can be added with a table of the same shape (`--messages-file`).
 
-use std::{collections::HashMap, sync::LazyLock};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, RwLock},
+};
 
 use regex::Regex;
 
@@ -107,10 +110,34 @@ static SEVERITY_WORDS: LazyLock<HashMap<&'static str, Severity>> = LazyLock::new
     words
 });
 
+/// Labels from the tables given with `--messages-file`. Decoders look labels up without a
+/// translator at hand, so they are kept here for the rest of the run.
+static EXTRA_LABELS: RwLock<Vec<Entry>> = RwLock::new(Vec::new());
+
+fn remember_labels(entries: &[Entry]) {
+    let mut kept = EXTRA_LABELS
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for entry in entries {
+        if !kept.contains(entry) {
+            kept.push(entry.clone());
+        }
+    }
+}
+
 /// The severity a translated label stands for (`ERRO`, `FEHLER`, `ATTENTION`, ...).
 #[must_use]
 pub fn localized_severity(label: &str) -> Option<Severity> {
-    SEVERITY_WORDS.get(label).copied()
+    if let Some(severity) = SEVERITY_WORDS.get(label) {
+        return Some(*severity);
+    }
+    let kept = EXTRA_LABELS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    kept.iter()
+        .filter(|e| e.translated == label)
+        .find_map(|e| SEVERITIES.iter().find(|(name, _)| *name == e.english))
+        .map(|(_, severity)| *severity)
 }
 
 const SECONDARY: [&str; 6] = [
@@ -140,7 +167,18 @@ static SECONDARY_WORDS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock
 /// The English name (`HINT`, `CONTEXT`, ...) of a translated secondary label.
 #[must_use]
 pub fn localized_secondary(label: &str) -> Option<&'static str> {
-    SECONDARY_WORDS.get(label).copied()
+    if let Some(name) = SECONDARY_WORDS.get(label) {
+        return Some(*name);
+    }
+    let kept = EXTRA_LABELS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    kept.iter()
+        .filter(|e| e.translated.trim_end().trim_end_matches(':') == label)
+        .find_map(|e| {
+            let english = e.english.trim_end().trim_end_matches(':');
+            SECONDARY.iter().find(|name| **name == english).copied()
+        })
 }
 
 /// A piece of a message template.
@@ -267,6 +305,34 @@ fn build(entry: &Entry) -> Option<Rule> {
     })
 }
 
+/// Which `%s` of a template stands for a translated word (`execute`), if the template has one.
+fn word_slot(english: &str) -> Option<usize> {
+    match english {
+        "%s %s%s%s: %s" => Some(0),
+        "duration: %s ms  %s %s%s%s: %s" => Some(1),
+        _ => None,
+    }
+}
+
+/// `template` with its `n`-th `%s` (0-based) replaced by `word`.
+fn fill_nth(template: &str, n: usize, word: &str) -> String {
+    let mut out = String::with_capacity(template.len() + word.len());
+    let mut seen = 0;
+    let mut rest = template;
+    while let Some(at) = rest.find("%s") {
+        out.push_str(&rest[..at]);
+        if seen == n {
+            out.push_str(word);
+        } else {
+            out.push_str("%s");
+        }
+        seen += 1;
+        rest = &rest[at + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Rewrites one language's messages as English.
 #[derive(Debug, Default)]
 pub struct Translator {
@@ -289,7 +355,33 @@ impl Translator {
             .cloned()
             .collect();
         if let Some(text) = extra {
-            entries.extend(parse_table(text)?);
+            let rows = parse_table(text)?;
+            remember_labels(&rows);
+            entries.extend(rows);
+        }
+        // `execute` is translated on its own and then put into a message that is not: one rule
+        // per word, so the rule can say which word it is and a statement that happens to contain
+        // `": "` is not mistaken for one.
+        let words: Vec<(String, String)> = entries
+            .iter()
+            .filter(|e| matches!(e.english.as_str(), "execute" | "execute fetch from"))
+            .map(|e| (e.translated.clone(), e.english.clone()))
+            .collect();
+        let templates: Vec<Entry> = entries
+            .iter()
+            .filter(|e| word_slot(&e.english).is_some())
+            .cloned()
+            .collect();
+        entries.retain(|e| word_slot(&e.english).is_none());
+        for template in &templates {
+            let slot = word_slot(&template.english).unwrap_or_default();
+            for (translated, english) in &words {
+                entries.push(Entry {
+                    locale: template.locale.clone(),
+                    english: fill_nth(&template.english, slot, english),
+                    translated: fill_nth(&template.translated, slot, translated),
+                });
+            }
         }
         // Longer templates first, so a message is not taken for a shorter one it starts with.
         entries.sort_by_key(|e| std::cmp::Reverse(e.translated.len()));
@@ -359,6 +451,12 @@ impl Translator {
     }
 }
 
+/// Whether `english` is a severity or secondary label rather than a message.
+fn is_label(english: &str) -> bool {
+    let name = english.trim_end().trim_end_matches(':');
+    SEVERITIES.iter().any(|(n, _)| *n == name) || SECONDARY.contains(&name)
+}
+
 /// The language `sample` (a few kilobytes of log text) is written in, if it is one of the
 /// built-in ones and clearly so.
 #[must_use]
@@ -368,12 +466,22 @@ pub fn detect(sample: &str) -> Option<&'static str> {
         let prefixes: Vec<&str> = BUILT_IN
             .iter()
             .filter(|e| e.locale == locale)
+            .filter(|e| !is_label(&e.english))
             .map(|e| e.translated.split('%').next().unwrap_or_default())
             .filter(|p| p.chars().count() >= 5 && !p.contains('\n'))
             .collect();
+        // A message opens after its `LOG:  ` label (or a quote, in csvlog and jsonlog): the same
+        // words inside a statement do not count.
         let hits = sample
             .lines()
-            .filter(|line| prefixes.iter().any(|p| line.contains(p)))
+            .filter(|line| {
+                prefixes.iter().any(|p| {
+                    line.match_indices(p).any(|(at, _)| {
+                        let before = &line[..at];
+                        before.ends_with(":  ") || before.ends_with('"')
+                    })
+                })
+            })
             .count();
         if hits > best.map_or(0, |(_, n)| n) {
             best = Some((locale, hits));
@@ -389,6 +497,80 @@ mod tests {
 
     fn translator(locale: &str) -> Translator {
         Translator::new(locale, None).unwrap()
+    }
+
+    #[test]
+    fn a_statement_with_a_colon_in_it_is_still_a_statement() {
+        let pt = translator("pt_BR");
+        assert_eq!(
+            pt.apply(r#"duração: 13.5 ms  comando: SELECT '{"a": 1}'::jsonb"#)
+                .as_deref(),
+            Some(r#"duration: 13.5 ms  statement: SELECT '{"a": 1}'::jsonb"#)
+        );
+    }
+
+    #[test]
+    fn the_translated_execute_word_is_put_back() {
+        for (locale, timed, untimed) in [
+            (
+                "pt_BR",
+                "duração: 2.0 ms  executar S_1/C_2: SELECT 1",
+                "executar S_1/C_2: SELECT 1",
+            ),
+            (
+                "de",
+                "Dauer: 2.0 ms  Ausführen S_1/C_2: SELECT 1",
+                "Ausführen S_1/C_2: SELECT 1",
+            ),
+        ] {
+            let t = translator(locale);
+            assert_eq!(
+                t.apply(timed).as_deref(),
+                Some("duration: 2.0 ms  execute S_1/C_2: SELECT 1"),
+                "{locale}"
+            );
+            assert_eq!(
+                t.apply(untimed).as_deref(),
+                Some("execute S_1/C_2: SELECT 1"),
+                "{locale}"
+            );
+        }
+        let pt = translator("pt_BR");
+        assert_eq!(
+            pt.apply("duração: 2.0 ms  executar busca de S_1/C_2: SELECT 1")
+                .as_deref(),
+            Some("duration: 2.0 ms  execute fetch from S_1/C_2: SELECT 1")
+        );
+        assert_eq!(pt.apply("alguma coisa: qualquer"), None);
+    }
+
+    #[test]
+    fn english_text_that_mentions_translated_words_is_not_detected() {
+        let log = "2026-10-14 10:00:00 UTC [1] LOG:  statement: SELECT * FROM AVISO\n".repeat(5);
+        assert_eq!(detect(&log), None);
+        let pt = "2026-10-14 10:00:00 UTC [1] LOG:  duração: 1.0 ms  comando: SELECT 1\n".repeat(5);
+        assert_eq!(detect(&pt), Some("pt_BR"));
+    }
+
+    #[test]
+    fn labels_from_an_extra_table_are_known_to_the_decoders() {
+        let table = "it\tERROR\tERRORE\nit\tSTATEMENT:  \tISTRUZIONE:  \n";
+        Translator::new("it", Some(table)).unwrap();
+        assert_eq!(localized_severity("ERRORE"), Some(Severity::Error));
+        assert_eq!(localized_secondary("ISTRUZIONE"), Some("STATEMENT"));
+    }
+
+    #[test]
+    fn no_label_means_two_things_in_the_built_in_languages() {
+        let mut seen: HashMap<&str, &str> = HashMap::new();
+        for entry in BUILT_IN.iter().filter(|e| is_label(&e.english)) {
+            let english = entry.english.trim_end().trim_end_matches(':');
+            if let Some(previous) =
+                seen.insert(entry.translated.trim_end().trim_end_matches(':'), english)
+            {
+                assert_eq!(previous, english, "{:?}", entry.translated);
+            }
+        }
     }
 
     #[test]

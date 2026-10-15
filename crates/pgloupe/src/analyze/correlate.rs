@@ -270,6 +270,7 @@ fn pair(pid: u32, blocker: Option<String>, hold: Hold) -> BlockPair {
         blocker_pid: pid,
         waiter: hold.waiter,
         waited_ms: hold.waited_ms,
+        at: hold.at,
     }
 }
 

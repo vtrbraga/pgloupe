@@ -2,6 +2,7 @@
 # PostgreSQL 14-18 (PostgreSQL License, Copyright PostgreSQL Global Development Group).
 # locale<TAB>english<TAB>translated
 de	 at character %d	 bei Zeichen %d
+de	%s %s%s%s: %s	%s %s%s%s: %s
 de	CONTEXT:  	ZUSAMMENHANG:  
 de	ERROR	FEHLER
 de	HINT:  	TIPP:  
@@ -16,6 +17,7 @@ de	automatic analyze of table "%s.%s.%s"	automatisches Analysieren der Tabelle �
 de	automatic analyze of table "%s.%s.%s"\n	automatisches Analysieren der Tabelle »%s.%s.%s«\n
 de	automatic vacuum of table "%s.%s.%s"	automatisches Vacuum der Tabelle »%s.%s.%s«
 de	automatic vacuum of table "%s.%s.%s": index scans: %d\n	automatisches Vacuum der Tabelle »%s.%s.%s«: Index-Scans: %d\n
+de	canceling authentication due to timeout	storniere Authentifizierung wegen Zeitüberschreitung
 de	canceling autovacuum task	storniere Autovacuum-Aufgabe
 de	canceling statement due to conflict with recovery	storniere Anfrage wegen Konflikt mit der Wiederherstellung
 de	canceling statement due to lock timeout	storniere Anfrage wegen Zeitüberschreitung einer Sperre
@@ -24,11 +26,13 @@ de	canceling statement due to user request	storniere Anfrage wegen Benutzerauffo
 de	checkpoint complete: wrote %d buffers (%.1f%%), wrote %d SLRU buffers; %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X	Checkpoint komplett: %d Puffer geschrieben (%.1f%%), %d SLRU-Puffer geschrieben; %d WAL-Datei(en) hinzugefügt, %d entfernt, %d wiederverwendet; Schreiben=%ld,%03d s, Sync=%ld,%03d s, gesamt=%ld,%03d s; sync. Dateien=%d, längste=%ld,%03d s, Durchschnitt=%ld.%03d s; Entfernung=%d kB, Schätzung=%d kB; LSN=%X/%X, Redo-LSN=%X/%X
 de	checkpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB	Checkpoint komplett: %d Puffer geschrieben (%.1f%%); %d WAL-Datei(en) hinzugefügt, %d entfernt, %d wiederverwendet; Schreiben=%ld,%03d s, Sync=%ld,%03d s, gesamt=%ld,%03d s; sync. Dateien=%d, längste=%ld,%03d s, Durchschnitt=%ld.%03d s; Entfernung=%d kB, Schätzung=%d kB
 de	checkpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X	Checkpoint komplett: %d Puffer geschrieben (%.1f%%); %d WAL-Datei(en) hinzugefügt, %d entfernt, %d wiederverwendet; Schreiben=%ld,%03d s, Sync=%ld,%03d s, gesamt=%ld,%03d s; sync. Dateien=%d, längste=%ld,%03d s, Durchschnitt=%ld.%03d s; Entfernung=%d kB, Schätzung=%d kB; LSN=%X/%X, Redo-LSN=%X/%X
+de	checkpoint starting:%s%s%s%s%s%s%s%s	Checkpoint beginnt:%s%s%s%s%s%s%s%s
 de	connection authenticated: identity="%s" method=%s (%s:%d)	Verbindung authentifiziert: Identität=»%s« Methode=%s (%s:%d)
 de	connection authenticated: user="%s" method=%s (%s:%d)	Verbindung authentifiziert: Benutzer=»%s« Methode=%s (%s:%d)
 de	connection authorized: user=%s	Verbindung autorisiert: Benutzer=%s
 de	connection received: host=%s	Verbindung empfangen: Host=%s
 de	connection received: host=%s port=%s	Verbindung empfangen: Host=%s Port=%s
+de	connection to client lost	Verbindung zum Client wurde verloren
 de	could not receive data from client: %m	konnte Daten vom Client nicht empfangen: %m
 de	could not send data to client: %m	konnte Daten nicht an den Client senden: %m
 de	deadlock detected	Verklemmung (Deadlock) entdeckt
@@ -47,6 +51,8 @@ de	process %d still waiting for %s on %s after %ld.%03d ms	Prozess %d wartet imm
 de	restartpoint complete: wrote %d buffers (%.1f%%), wrote %d SLRU buffers; %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X	Restart-Punkt komplett: %d Puffer geschrieben (%.1f%%), %d SLRU-Puffer geschrieben; %d WAL-Datei(en) hinzugefügt, %d entfernt, %d wiederverwendet; Schreiben=%ld,%03d s, Sync=%ld,%03d s, gesamt=%ld,%03d s; sync. Dateien=%d, längste=%ld,%03d s, Durchschnitt=%ld.%03d s; Entfernung=%d kB, Schätzung=%d kB; LSN=%X/%X, Redo-LSN=%X/%X
 de	restartpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB	Restart-Punkt komplett: %d Puffer geschrieben (%.1f%%); %d WAL-Datei(en) hinzugefügt, %d entfernt, %d wiederverwendet; Schreiben=%ld,%03d s, Sync=%ld,%03d s, gesamt=%ld,%03d s; sync. Dateien=%d, längste=%ld,%03d s, Durchschnitt=%ld.%03d s; Entfernung=%d kB, Schätzung=%d kB
 de	restartpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X	Restart-Punkt komplett: %d Puffer geschrieben (%.1f%%); %d WAL-Datei(en) hinzugefügt, %d entfernt, %d wiederverwendet; Schreiben=%ld,%03d s, Sync=%ld,%03d s, gesamt=%ld,%03d s; sync. Dateien=%d, längste=%ld,%03d s, Durchschnitt=%ld.%03d s; Entfernung=%d kB, Schätzung=%d kB; LSN=%X/%X, Redo-LSN=%X/%X
+de	restartpoint starting:%s%s%s%s%s%s%s%s	Restart-Punkt beginnt:%s%s%s%s%s%s%s%s
+de	statement: %s	Anweisung: %s
 de	temporary file: path "%s", size %lu	temporäre Datei: Pfad »%s«, Größe %lu
 de	terminating connection because of crash of another server process	Verbindung wird abgebrochen wegen Absturz eines anderen Serverprozesses
 de	terminating connection because of unexpected SIGQUIT signal	Verbindung wird abgebrochen wegen unerwartetem SIGQUIT-Signal
@@ -60,6 +66,7 @@ de	terminating connection due to transaction timeout	Verbindung wird abgebrochen
 de	terminating connection due to unexpected postmaster exit	Verbindung wird abgebrochen wegen unerwartetem Ende des Postmasters
 de	unexpected EOF on client connection with an open transaction	unerwartetes EOF auf Client-Verbindung mit einer offenen Transaktion
 es	 at character %d	 en carácter %d
+es	%s %s%s%s: %s	%s %s%s%s: %s
 es	CONTEXT:  	CONTEXTO:  
 es	DETAIL:  	DETALLE:  
 es	QUERY:  	CONSULTA:  
@@ -70,6 +77,7 @@ es	automatic analyze of table "%s.%s.%s"	análisis automático de la tabla «%s.
 es	automatic analyze of table "%s.%s.%s"\n	análisis automático de la tabla «%s.%s.%s»\n
 es	automatic vacuum of table "%s.%s.%s"	vacuum automático de la tabla «%s.%s.%s»
 es	automatic vacuum of table "%s.%s.%s": index scans: %d\n	vacuum automático de la tabla «%s.%s.%s»: recorridos de índice: %d\n
+es	canceling authentication due to timeout	cancelando la autentificación debido a que se agotó el tiempo de espera
 es	canceling autovacuum task	cancelando tarea de autovacuum
 es	canceling statement due to conflict with recovery	cancelando la sentencia debido a un conflicto con la recuperación
 es	canceling statement due to lock timeout	cancelando la sentencia debido a que se agotó el tiempo de espera de candados (locks)
@@ -80,11 +88,13 @@ es	checkpoint complete: wrote %d buffers (%.1f%%), wrote %d SLRU buffers; %d WAL
 es	checkpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB	checkpoint completado: se escribió %d buffers (%.1f%%); %d archivo(s) WAL añadido(s), %d eliminado(s), %d reciclado(s); escritura=%ld.%03d s, sincronización=%ld.%03d s, total=%ld.%03d s; archivos sincronizados=%d, más largo=%ld.%03d s, promedio=%ld.%03d s; distancia=%d kB, estimado=%d kB
 es	checkpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB	checkpoint completado: se escribió %d buffers (%.1f%%); %d archivo(s) de WAL añadido(s), %d eliminado(s), %d reciclado(s); escritura=%ld.%03d s, sincronización=%ld.%03d s, total=%ld.%03d s; archivos sincronizados=%d, más largo=%ld.%03d s, promedio=%ld.%03d s; distancia=%d kB, estimado=%d kB
 es	checkpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X	checkpoint completo: escritos %d búfers (%.1f%%); %d archivos WAL añadidos, %d eliminados, %d reciclados; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; archivos sincronizados=%d, más largo=%ld.%03d s, promedio=%ld.%03d s; distancia=%d kB, estimación=%d kB; lsn=%X/%X, lsn de redo=%X/%X
+es	checkpoint starting:%s%s%s%s%s%s%s%s	empezando checkpoint:%s%s%s%s%s%s%s%s
 es	connection authenticated: identity="%s" method=%s (%s:%d)	conexión autenticada: identidad=«%s» método=%s (%s:%d)
 es	connection authenticated: user="%s" method=%s (%s:%d)	conexión autenticada: usuario=«%s» método=%s (%s:%d)
 es	connection authorized: user=%s	conexión autorizada: usuario=%s
 es	connection received: host=%s	conexión recibida: host=%s
 es	connection received: host=%s port=%s	conexión recibida: host=%s port=%s
+es	connection to client lost	se ha perdido la conexión al cliente
 es	could not receive data from client: %m	no se pudo recibir datos del cliente: %m
 es	could not send data to client: %m	no se pudo enviar datos al cliente: %m
 es	deadlock detected	se ha detectado un deadlock
@@ -104,6 +114,8 @@ es	restartpoint complete: wrote %d buffers (%.1f%%), wrote %d SLRU buffers; %d W
 es	restartpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB	restartpoint completado: se escribió %d buffers (%.1f%%); %d archivo(s) WAL añadido(s), %d eliminado(s), %d reciclado(s); escritura=%ld.%03d s, sincronización=%ld.%03d s, total=%ld.%03d s; archivos sincronizados=%d, más largo=%ld.%03d s, promedio=%ld.%03d s; distancia=%d kB, estimado=%d kB
 es	restartpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB	restartpoint completado: se escribió %d buffers (%.1f%%); %d archivo(s) de WAL añadido(s), %d eliminado(s), %d reciclado(s); escritura=%ld.%03d s, sincronización=%ld.%03d s, total=%ld.%03d s; archivos sincronizados=%d, más largo=%ld.%03d s, promedio=%ld.%03d s; distancia=%d kB, estimado=%d kB
 es	restartpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X	restartpoint completo: escritos %d búfers (%.1f%%); %d archivos WAL añadidos, %d eliminados, %d reciclados; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; archivos sincronizados=%d, más largo=%ld.%03d s, promedio=%ld.%03d s; distancia=%d kB, estimación=%d kB; lsn=%X/%X, lsn de redo=%X/%X
+es	restartpoint starting:%s%s%s%s%s%s%s%s	empezando restartpoint:%s%s%s%s%s%s%s%s
+es	statement: %s	sentencia: %s
 es	temporary file: path "%s", size %lu	archivo temporal: ruta «%s», tamaño %lu
 es	terminating connection because of crash of another server process	terminando la conexión debido a una falla en otro proceso servidor
 es	terminating connection because of unexpected SIGQUIT signal	terminando la conexión debido a una señal SIGQUIT inesperada
@@ -117,6 +129,7 @@ es	terminating connection due to transaction timeout	terminando la conexión deb
 es	terminating connection due to unexpected postmaster exit	terminando la conexión debido al término inesperado de postmaster
 es	unexpected EOF on client connection with an open transaction	se encontró fin de archivo inesperado en una conexión con una transacción abierta
 fr	 at character %d	 au caractère %d
+fr	%s %s%s%s: %s	%s %s%s%s: %s
 fr	CONTEXT:  	CONTEXTE :  
 fr	DETAIL:  	DÉTAIL:  
 fr	ERROR	ERREUR
@@ -130,16 +143,19 @@ fr	automatic analyze of table "%s.%s.%s"	ANALYZE automatique de la table « %s.%
 fr	automatic analyze of table "%s.%s.%s"\n	ANALYZE automatique de la table « %s.%s.%s »\n
 fr	automatic vacuum of table "%s.%s.%s"	VACUUM automatique de la table « %s.%s.%s »
 fr	automatic vacuum of table "%s.%s.%s": index scans: %d\n	VACUUM automatique de la table « %s.%s.%s » : %d parcours d'index\n
+fr	canceling authentication due to timeout	annulation de l'authentification à cause du délai écoulé
 fr	canceling autovacuum task	annulation de la tâche d'autovacuum
 fr	canceling statement due to conflict with recovery	annulation de la requête à cause d'un conflit avec la restauration
 fr	canceling statement due to lock timeout	annulation de la requête à cause du délai écoulé pour l'obtention des verrous
 fr	canceling statement due to statement timeout	annulation de la requête à cause du délai écoulé pour l'exécution de l'instruction
 fr	canceling statement due to user request	annulation de la requête à la demande de l'utilisateur
 fr	checkpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB	checkpoint terminé : a écrit %d tampons (%.1f%%); %d fichiers WAL ajoutés, %d supprimés, %d recyclés ; écriture=%ld.%03d s, synchronisation=%ld.%03d s, total=%ld.%03d s; fichiers synchronisés=%d, plus long=%ld.%03d s, moyenne=%ld.%03d s; distance=%d kB, estimation=%d kB
+fr	checkpoint starting:%s%s%s%s%s%s%s%s	début du checkpoint :%s%s%s%s%s%s%s%s
 fr	connection authenticated: identity="%s" method=%s (%s:%d)	connexion authentifiée : identité="%s" méthode=%s (%s:%d)
 fr	connection authorized: user=%s	connexion autorisée : utilisateur=%s
 fr	connection received: host=%s	connexion reçue : hôte=%s
 fr	connection received: host=%s port=%s	connexion reçue : hôte=%s port=%s
+fr	connection to client lost	connexion au client perdue
 fr	could not receive data from client: %m	n'a pas pu recevoir les données du client : %m
 fr	could not send data to client: %m	n'a pas pu envoyer les données au client : %m
 fr	deadlock detected	interblocage (deadlock) détecté
@@ -156,6 +172,8 @@ fr	process %d acquired %s on %s after %ld.%03d ms	le processus %d a acquis %s su
 fr	process %d avoided deadlock for %s on %s by rearranging queue order after %ld.%03d ms	le processus %d a évité un verrou mortel pour %s sur %s en modifiant l'ordre\nde la queue après %ld.%03d ms
 fr	process %d still waiting for %s on %s after %ld.%03d ms	le processus %d est toujours en attente de %s sur %s après %ld.%03d ms
 fr	restartpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB	restartpoint terminé : a écrit %d tampons (%.1f%%); %d fichiers WAL ajoutés, %d supprimés, %d recyclés ; écriture=%ld.%03d s, synchronisation=%ld.%03d s, total=%ld.%03d s; fichiers synchronisés=%d, plus long=%ld.%03d s, moyenne=%ld.%03d s; distance=%d kB, estimation=%d kB
+fr	restartpoint starting:%s%s%s%s%s%s%s%s	début du restartpoint :%s%s%s%s%s%s%s%s
+fr	statement: %s	instruction : %s
 fr	temporary file: path "%s", size %lu	fichier temporaire : chemin « %s », taille %lu
 fr	terminating connection because of crash of another server process	arrêt de la connexion à cause de l'arrêt brutal d'un autre processus serveur
 fr	terminating connection because of unexpected SIGQUIT signal	arrêt des connexions suite à un signal SIGQUIT inattendu
@@ -169,6 +187,7 @@ fr	terminating connection due to unexpected postmaster exit	arrêt des connexion
 fr	terminating connection due to unexpected postmaster exit	arrêt des connexions suite à un arrêt inattendu du postmaster
 fr	unexpected EOF on client connection with an open transaction	fin de fichier (EOF) inattendue de la connexion du client avec une\ntransaction ouverte
 pt_BR	 at character %d	 no caractere %d
+pt_BR	%s %s%s%s: %s	%s %s%s%s: %s
 pt_BR	CONTEXT:  	CONTEXTO:  
 pt_BR	DEBUG	DEPURAÇÃO
 pt_BR	DETAIL:  	DETALHE:  
@@ -187,6 +206,7 @@ pt_BR	automatic analyze of table "%s.%s.%s"	análise automática da tabela "%s.%
 pt_BR	automatic analyze of table "%s.%s.%s"\n	análise automática da tabela "%s.%s.%s"\n
 pt_BR	automatic vacuum of table "%s.%s.%s"	limpeza automática da tabela "%s.%s.%s"
 pt_BR	automatic vacuum of table "%s.%s.%s": index scans: %d\n	limpeza automática da tabela "%s.%s.%s": varreduras de índice: %d\n
+pt_BR	canceling authentication due to timeout	cancelando autenticação por causa do tempo de espera (timeout)
 pt_BR	canceling autovacuum task	cancelando tarefa de limpeza automática
 pt_BR	canceling autovacuum task	cancelando tarefa de limpeza automática (autovacuum)
 pt_BR	canceling statement due to conflict with recovery	cancelando a instrução devido a um conflito com a recuperação
@@ -197,10 +217,12 @@ pt_BR	canceling statement due to statement timeout	cancelando comando por causa 
 pt_BR	canceling statement due to user request	cancelando a instrução devido a pedido do usuário
 pt_BR	canceling statement due to user request	cancelando o comando devido a um pedido do usuário
 pt_BR	checkpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X	ponto de verificação concluído: escritos %d buffers (%.1f%%); %d arquivo(s) do WAL adicionados, %d removidos, %d reciclados; escritos=%ld.%03d s, sincronizados=%ld.%03d s, total=%ld.%03d s; sincronizados files=%d, mais longo=%ld.%03d s, média=%ld.%03d s; distância=%d kB, estimado=%d kB; lsn=%X/%X, refeito lsn=%X/%X
+pt_BR	checkpoint starting:%s%s%s%s%s%s%s%s	ponto de verificação começando: %s%s%s%s%s%s%s%s
 pt_BR	connection authenticated: identity="%s" method=%s (%s:%d)	conexão autenticada: identidade="%s" método=%s (%s:%d)
 pt_BR	connection authorized: user=%s	conexão autorizada: usuário=%s
 pt_BR	connection received: host=%s	conexão recebida: host=%s
 pt_BR	connection received: host=%s port=%s	conexão recebida: host=%s porta=%s
+pt_BR	connection to client lost	conexão com cliente foi perdida
 pt_BR	could not receive data from client: %m	não foi possível receber dados do cliente: %m
 pt_BR	could not send data to client: %m	não foi possível enviar dados para cliente: %m
 pt_BR	deadlock detected	impasse detectado
@@ -218,6 +240,9 @@ pt_BR	process %d acquired %s on %s after %ld.%03d ms	processo %d obteve %s em %s
 pt_BR	process %d avoided deadlock for %s on %s by rearranging queue order after %ld.%03d ms	processo %d evitou impasse por %s em %s ao reorganizar a ordem da fila após %ld.%03d ms
 pt_BR	process %d still waiting for %s on %s after %ld.%03d ms	processo %d ainda espera por %s em %s após %ld.%03d ms
 pt_BR	restartpoint complete: wrote %d buffers (%.1f%%); %d WAL file(s) added, %d removed, %d recycled; write=%ld.%03d s, sync=%ld.%03d s, total=%ld.%03d s; sync files=%d, longest=%ld.%03d s, average=%ld.%03d s; distance=%d kB, estimate=%d kB; lsn=%X/%X, redo lsn=%X/%X	ponto de reinício concluído: escritos %d buffers (%.1f%%); %d arquivo(s) do WAL adicionados, %d removidos, %d reciclados; escritos=%ld.%03d s, sincronizados=%ld.%03d s, total=%ld.%03d s; sincronizados files=%d, mais longo=%ld.%03d s, média=%ld.%03d s; distância=%d kB, estimado=%d kB; lsn=%X/%X, refeito lsn=%X/%X
+pt_BR	restartpoint starting:%s%s%s%s%s%s%s%s	ponto de reinício começando: %s%s%s%s%s%s%s%s
+pt_BR	statement: %s	comando: %s
+pt_BR	statement: %s	instrução: %s
 pt_BR	temporary file: path "%s", size %lu	arquivo temporário: caminho "%s", tamanho %lu
 pt_BR	terminating connection because of crash of another server process	terminando a conexão devido a queda de um outro processo servidor
 pt_BR	terminating connection because of unexpected SIGQUIT signal	terminando a conexão devido ao sinal SIGQUIT não esperado

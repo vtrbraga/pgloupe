@@ -103,6 +103,8 @@ pub struct BlockPair {
     pub waiter: Option<String>,
     /// How long it had waited when the log said so.
     pub waited_ms: f64,
+    /// When the wait was logged.
+    pub at: Timestamp,
 }
 
 /// One log entry. Optional fields are `None` when the format or the prefix does not carry them.

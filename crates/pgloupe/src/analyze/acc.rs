@@ -16,7 +16,7 @@ use super::{
     sketch::Sketch,
     slowest::{self, Example, Examples, Execution, Slowest, Who, who_key},
 };
-use crate::log::{LogRecord, Phase};
+use crate::log::{BlockPair, LogRecord, Phase};
 
 /// One execution of a statement, as the slowest lists keep it.
 fn execution(
@@ -1357,7 +1357,6 @@ impl Accumulators {
             }
             _ => {}
         }
-        self.add_blocks(record);
         if record.level.is_error()
             && let Some(sql) = record.statement.as_deref()
         {
@@ -1389,10 +1388,10 @@ impl Accumulators {
         self.totals.timeline.add(record.ts, |b| b.ddl += 1);
     }
 
-    /// Counts the lock waits `record` settles, by the statement that held and the one that waited.
-    fn add_blocks(&mut self, record: &LogRecord) {
-        let ts = record.ts;
-        for block in &record.blocks {
+    /// Counts lock waits by the statement that held the lock and the one that waited.
+    pub fn add_blocks(&mut self, blocks: &[BlockPair]) {
+        for block in blocks {
+            let ts = block.at;
             let blocker = block
                 .blocker
                 .as_deref()

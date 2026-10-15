@@ -6,7 +6,7 @@ use super::{
     Merge,
     acc::{Accumulators, add_maps},
 };
-use crate::log::LogRecord;
+use crate::log::{BlockPair, LogRecord};
 
 /// Seconds in a slice.
 pub const HOUR: i64 = 3_600;
@@ -57,6 +57,20 @@ impl Slices {
             .entry(hour_of(record.ts.as_second()))
             .or_insert_with(|| Accumulators::new(limit, bucket_secs).with_capture(slowest, params))
             .add_record(record);
+    }
+
+    /// Folds lock waits into the hour they were logged in.
+    pub fn add_blocks(&mut self, blocks: &[BlockPair]) {
+        let (limit, bucket_secs, slowest, params) =
+            (self.limit, self.bucket_secs, self.slowest, self.params);
+        for block in blocks {
+            self.by_hour
+                .entry(hour_of(block.at.as_second()))
+                .or_insert_with(|| {
+                    Accumulators::new(limit, bucket_secs).with_capture(slowest, params)
+                })
+                .add_blocks(std::slice::from_ref(block));
+        }
     }
 
     /// Lowers every hour's fingerprint limit.

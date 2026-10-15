@@ -46,7 +46,9 @@ fn severity(word: &str) -> Option<Severity> {
 /// Whether `line` is a pgBouncer log line: a timestamp, `[pid]`, then a bare severity word.
 #[must_use]
 pub fn looks_like(line: &str) -> bool {
-    parse_line(line, None).is_some()
+    // Only the shape matters here: a zone name the parser does not know still parses with a
+    // stand-in offset, and the real one comes from `--log-tz`.
+    parse_line(line, Some(Offset::UTC)).is_some()
 }
 
 /// `db/user@host:port` -> `(db, user, host)`.
@@ -130,6 +132,16 @@ impl<R: BufRead> Decoder for PgbouncerDecoder<R> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_zone_abbreviation_does_not_stop_the_format_being_recognized() {
+        assert!(looks_like(
+            "2026-10-14 10:00:00.123 CEST [1234] LOG C-0x5593a8: shop/app@10.0.0.1:50000 login attempt: db=shop user=app tls=no"
+        ));
+        assert!(!looks_like(
+            "2026-10-14 10:00:00.123 CEST [1234] LOG:  hello"
+        ));
+    }
+
     use super::*;
 
     fn decode(text: &str) -> (Vec<LogRecord>, DecodeStats) {

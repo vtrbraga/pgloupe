@@ -97,6 +97,12 @@ pub fn build(
     build_parts(store, path, since, until, options, bucket_secs).map(|(report, _acc)| report)
 }
 
+/// `since..until` widened to whole hours, the unit a store reports in.
+#[must_use]
+pub fn hour_bounds(since: Timestamp, until: Timestamp) -> (i64, i64) {
+    (floor_hour(since), ceil_hour(until))
+}
+
 /// The window of the same whole-hour length that ends where `since`'s hour starts: what a report
 /// for `since..until` is compared with by default.
 #[must_use]

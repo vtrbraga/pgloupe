@@ -107,14 +107,16 @@ fn run_autovacuum(ctx: &mut Ctx) -> anyhow::Result<()> {
     }
     let deadline = Instant::now() + Duration::from_secs(90);
     let result = loop {
-        let done: i64 = control
-            .query_one(
-                "SELECT count(*) FROM pg_stat_user_tables \
-                 WHERE relname IN ('synth_vac_a', 'synth_vac_b') \
-                   AND last_autovacuum IS NOT NULL AND last_autoanalyze IS NOT NULL",
-                &[],
-            )?
-            .get(0);
+        // A failed query still has to turn autovacuum off again below.
+        let done: i64 = match control.query_one(
+            "SELECT count(*) FROM pg_stat_user_tables \
+             WHERE relname IN ('synth_vac_a', 'synth_vac_b') \
+               AND last_autovacuum IS NOT NULL AND last_autoanalyze IS NOT NULL",
+            &[],
+        ) {
+            Ok(row) => row.get(0),
+            Err(err) => break Err(err.into()),
+        };
         if done == 2 {
             break Ok(());
         }
@@ -126,7 +128,8 @@ fn run_autovacuum(ctx: &mut Ctx) -> anyhow::Result<()> {
         thread::sleep(Duration::from_millis(500));
     };
     for sql in [
-        "ALTER SYSTEM RESET autovacuum",
+        // Back to off, not to the default: the bootstrap turned it off for every scenario.
+        "ALTER SYSTEM SET autovacuum = off",
         "ALTER SYSTEM RESET autovacuum_naptime",
         "ALTER SYSTEM RESET log_autovacuum_min_duration",
         "SELECT pg_reload_conf()",

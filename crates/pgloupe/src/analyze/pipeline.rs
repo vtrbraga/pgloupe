@@ -206,17 +206,26 @@ fn worker_limit(options: &Options) -> usize {
 /// What a worker folds records into.
 trait Fold: Merge + Send {
     fn add(&mut self, record: &LogRecord);
+    fn add_blocks(&mut self, blocks: &[BlockPair]);
 }
 
 impl Fold for Accumulators {
     fn add(&mut self, record: &LogRecord) {
         self.add_record(record);
     }
+
+    fn add_blocks(&mut self, blocks: &[BlockPair]) {
+        Self::add_blocks(self, blocks);
+    }
 }
 
 impl Fold for Slices {
     fn add(&mut self, record: &LogRecord) {
         self.add_record(record);
+    }
+
+    fn add_blocks(&mut self, blocks: &[BlockPair]) {
+        Self::add_blocks(self, blocks);
     }
 }
 
@@ -229,7 +238,6 @@ fn run_with<S: Fold>(
     let failure = Arc::new(Mutex::new(None));
     let batches = Batches {
         correlator: Correlator::new(),
-        carry: Vec::new(),
         anonymizer: options.filter.anonymize.as_deref().map(Anonymizer::new),
         pending: paths.iter().cloned().collect(),
         current: None,
@@ -245,9 +253,10 @@ fn run_with<S: Fold>(
         batches
             .par_bridge()
             .fold(&new, |mut acc, batch| {
-                for record in &batch {
+                for record in &batch.records {
                     acc.add(record);
                 }
+                acc.add_blocks(&batch.blocks);
                 acc
             })
             .reduce(&new, |mut left, right| {
@@ -286,11 +295,16 @@ struct Current {
     translator: Option<(String, Translator)>,
 }
 
+/// Records for the workers, and the lock waits the correlator settled while reading them. The
+/// waits travel beside the records: the record that settles one may be filtered out.
+struct Batch {
+    records: Vec<LogRecord>,
+    blocks: Vec<BlockPair>,
+}
+
 /// Yields batches of records, file after file.
 struct Batches {
     correlator: Correlator,
-    /// Lock waits settled when a file ended with no record left to carry them.
-    carry: Vec<BlockPair>,
     anonymizer: Option<Anonymizer>,
     pending: VecDeque<PathBuf>,
     current: Option<Current>,
@@ -347,15 +361,16 @@ impl Batches {
 }
 
 impl Iterator for Batches {
-    type Item = Vec<LogRecord>;
+    type Item = Batch;
 
-    fn next(&mut self) -> Option<Vec<LogRecord>> {
+    fn next(&mut self) -> Option<Batch> {
         loop {
             if self.current.is_none() {
                 self.open_next()?;
                 continue;
             }
             let mut batch = Vec::new();
+            let mut blocks = Vec::new();
             let mut error = None;
             let mut finished = false;
             if let Some(current) = self.current.as_mut() {
@@ -368,6 +383,7 @@ impl Iterator for Batches {
                             // Before the filter: a cursor declared by a record the filter drops
                             // still has to be known when its fetches arrive.
                             self.correlator.apply(&mut record);
+                            blocks.append(&mut record.blocks);
                             if record.correlation.as_ref().is_some_and(|c| c.discard) {
                                 current.filtered += 1;
                                 continue;
@@ -400,22 +416,21 @@ impl Iterator for Batches {
                 }
             }
             if finished {
-                let mut left = self.correlator.finish();
-                if self.anonymizer.is_some() {
-                    left.iter_mut().for_each(anonymize::scrub_pair);
-                }
-                self.carry.extend(left);
+                blocks.extend(self.correlator.finish());
+            }
+            if self.anonymizer.is_some() {
+                blocks.iter_mut().for_each(anonymize::scrub_pair);
             }
             if let Some(error) = error {
                 self.fail(error);
             } else if finished {
                 self.finish_current();
             }
-            if !batch.is_empty() {
-                if let Some(first) = batch.first_mut() {
-                    first.blocks.append(&mut self.carry);
-                }
-                return Some(batch);
+            if !batch.is_empty() || !blocks.is_empty() {
+                return Some(Batch {
+                    records: batch,
+                    blocks,
+                });
             }
             if self.current.is_none() && self.pending.is_empty() {
                 return None;

@@ -1169,6 +1169,9 @@ fn ddl(acc: &Accumulators) -> DdlReport {
     DdlReport { tags, temp_tables }
 }
 
+/// The name the accumulator gives the hosts it stopped tracking.
+const OTHER_HOSTS: &str = "(other)";
+
 /// Hosts shown in the connection series; the rest are summed as `(other)`.
 const SERIES_HOSTS: usize = 8;
 
@@ -1179,14 +1182,16 @@ fn connection_hosts(acc: &Accumulators) -> HostSeries {
         .observed
         .hosts
         .iter()
+        .filter(|(host, _)| host.as_str() != OTHER_HOSTS)
         .map(|(host, buckets)| (host, buckets.values().sum()))
         .collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     let shown: Vec<&String> = ranked.iter().take(SERIES_HOSTS).map(|(h, _)| *h).collect();
     let mut hosts: Vec<String> = shown.iter().map(|h| (*h).clone()).collect();
-    let has_other = ranked.len() > shown.len();
+    let has_other =
+        ranked.len() > shown.len() || acc.totals.observed.hosts.contains_key(OTHER_HOSTS);
     if has_other {
-        hosts.push("(other)".to_owned());
+        hosts.push(OTHER_HOSTS.to_owned());
     }
     let mut by_bucket: BTreeMap<i64, Vec<u64>> = BTreeMap::new();
     for (host, buckets) in &acc.totals.observed.hosts {
@@ -1292,6 +1297,29 @@ mod tests {
         log::{DecodeStats, LogRecord, Severity},
         testutil::approx_eq,
     };
+
+    #[test]
+    fn the_host_series_has_one_other_column() {
+        let mut acc = Accumulators::new(100, 60);
+        let observed = &mut acc.totals.observed;
+        for i in 0..10 {
+            observed
+                .hosts
+                .insert(format!("host{i:02}"), BTreeMap::from([(0, 20 - i)]));
+        }
+        observed
+            .hosts
+            .insert("(other)".to_owned(), BTreeMap::from([(0, 100)]));
+        let series = connection_hosts(&acc);
+        assert_eq!(
+            series.hosts.iter().filter(|h| *h == "(other)").count(),
+            1,
+            "{:?}",
+            series.hosts
+        );
+        let total: u64 = series.buckets[0].counts.iter().sum();
+        assert_eq!(total, (11..=20).sum::<u64>() + 100);
+    }
 
     fn at(second: i64) -> Timestamp {
         Timestamp::from_second(1_760_000_000 + second).unwrap()

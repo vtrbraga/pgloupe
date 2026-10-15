@@ -186,6 +186,9 @@ clouds). pgloupe is narrower and does these differently:
 - It reads files you give it or fetch with the commands above; it is not a monitoring system.
 - pgBouncer logs and non-English servers are experimental: tested on generated and invented
   input, not on production ones.
+- Non-English servers: autovacuum lines are not translated (the server builds them from several
+  translated pieces), error texts stay in their language, and reading is a few times slower than
+  English because every message is matched against the translations.
 - Idle time per session is not in the log, so it cannot be reported.
 - The experimental cloud providers have not been confirmed against the real services.
 

@@ -1182,9 +1182,13 @@ fn baseline_window(
     until: Option<Timestamp>,
 ) -> anyhow::Result<Option<(Timestamp, Timestamp)>> {
     if let (Some(lo), Some(hi)) = (args.baseline_since, args.baseline_until) {
+        // Both windows are widened to whole hours when the store reports on them.
         if let (Some(since), Some(until)) = (since, until)
-            && lo < until
-            && since < hi
+            && {
+                let (base_lo, base_hi) = store_report::hour_bounds(lo, hi);
+                let (now_lo, now_hi) = store_report::hour_bounds(since, until);
+                base_lo < now_hi && now_lo < base_hi
+            }
         {
             anyhow::bail!("the baseline window overlaps the period it is compared with");
         }

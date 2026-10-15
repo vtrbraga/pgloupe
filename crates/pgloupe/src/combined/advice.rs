@@ -113,6 +113,13 @@ pub fn advise(input: &Input<'_>) -> Vec<Advice> {
             role: String::new(),
         };
         for check in checks(&facts, vendor) {
+            if !settings_known(check.code, settings, input.delta.is_some())
+                || input
+                    .logs
+                    .is_some_and(|logs| data_contradicts(check.code, logs))
+            {
+                continue;
+            }
             found.retain(|a| a.code != check.code);
             found.push(Advice {
                 code: check.code,
@@ -124,6 +131,49 @@ pub fn advise(input: &Input<'_>) -> Vec<Advice> {
     }
     found.sort_by_key(|a| (a.severity != "warn", a.code));
     found
+}
+
+/// Whether the settings say enough for the check `code`: a setting missing from the file is
+/// unknown, not off.
+fn settings_known(code: &str, settings: &BTreeMap<String, String>, has_delta: bool) -> bool {
+    let has = |names: &[&str]| names.iter().all(|n| settings.contains_key(*n));
+    match code {
+        "pgss_not_preloaded" => has(&["shared_preload_libraries"]),
+        // Without a statistics pair, only a file that lists the extension's own settings knows.
+        "pgss_not_created" | "no_query_text" => {
+            has_delta || has(&["pg_stat_statements.max"]) || code == "no_query_text"
+        }
+        "no_statement_timings" | "few_statement_timings" => has(&["log_min_duration_statement"]),
+        "no_lock_waits" => has(&["log_lock_waits"]),
+        "no_temp_files" => has(&["log_temp_files"]),
+        "no_checkpoints" => has(&["log_checkpoints"]),
+        "no_autovacuum" => has(&["log_autovacuum_min_duration"]),
+        "no_sessions" => has(&["log_connections", "log_disconnections"]),
+        "line_prefix" => has(&["log_line_prefix"]),
+        "no_query_id" => has(&["compute_query_id"]),
+        "no_io_timing" => has(&["track_io_timing"]),
+        _ => true,
+    }
+}
+
+/// Whether the log shows the thing a setting check says is missing. A per-role or per-database
+/// override can make the server-wide value differ from what the log recorded; the log wins.
+fn data_contradicts(code: &str, logs: &Report) -> bool {
+    let events = &logs.overview.events;
+    let seen = |kinds: &[&str]| {
+        kinds
+            .iter()
+            .any(|k| events.get(*k).copied().unwrap_or(0) > 0)
+    };
+    match code {
+        "no_statement_timings" => seen(&["statement", "execute"]),
+        "no_lock_waits" => seen(&["lock_wait"]),
+        "no_temp_files" => seen(&["temp_file"]),
+        "no_checkpoints" => seen(&["checkpoint_done"]),
+        "no_autovacuum" => seen(&["autovacuum"]),
+        "no_sessions" => seen(&["connection_received", "disconnection"]),
+        _ => false,
+    }
 }
 
 /// Where a setting lives, for the sentence that tells the reader to change it.
@@ -330,6 +380,35 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn a_setting_missing_from_the_file_is_unknown_and_the_log_outranks_a_setting() {
+        let mut report = empty_report();
+        report.overview.records = 5_000;
+        report.overview.events.insert("statement".to_owned(), 4_096);
+        report.overview.events.insert("lock_wait".to_owned(), 1);
+        let only = settings(&[("log_min_duration_statement", "-1")]);
+        let input = Input {
+            logs: Some(&report),
+            delta: None,
+            settings: Some(&only),
+            vendor: None,
+        };
+        let codes: Vec<&str> = advise(&input).iter().map(|a| a.code).collect();
+        assert!(codes.is_empty(), "{codes:?}");
+        // A full file that says lock waits are off still yields to a log that has some.
+        let full = settings(&[
+            ("log_lock_waits", "off"),
+            ("log_checkpoints", "off"),
+            ("log_min_duration_statement", "250"),
+        ]);
+        let input = Input {
+            settings: Some(&full),
+            ..input
+        };
+        let codes: Vec<&str> = advise(&input).iter().map(|a| a.code).collect();
+        assert_eq!(codes, ["no_checkpoints"]);
     }
 
     #[test]

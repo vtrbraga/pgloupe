@@ -1,11 +1,14 @@
 2026-10-14 10:00:00.000 UTC [10] app@shop/web LOG:  duração: 12.500 ms  comando: SELECT * FROM film WHERE film_id = 1
 2026-10-14 10:00:00.100 UTC [10] app@shop/web LOG:  duração: 40.000 ms  comando: SELECT * FROM film WHERE film_id = 2
 2026-10-14 10:00:00.200 UTC [10] app@shop/web LOG:  duração: 7.250 ms  comando: UPDATE film SET title = 'x' WHERE film_id = 3
+2026-10-14 10:00:00.300 UTC [10] app@shop/web LOG:  duração: 3.000 ms  comando: SELECT '{"a": 1}'::jsonb
+2026-10-14 10:00:00.400 UTC [10] app@shop/web LOG:  duração: 2.000 ms  executar S_1/C_2: SELECT * FROM film WHERE film_id = $1
+2026-10-14 10:00:00.500 UTC [10] app@shop/web LOG:  comando: SELECT 1
 2026-10-14 10:00:01.000 UTC [10] app@shop/web ERRO:  relação "nope" não existe
 2026-10-14 10:00:01.000 UTC [10] app@shop/web STATEMENT:  SELECT * FROM nope
 2026-10-14 10:00:02.000 UTC [10] app@shop/web AVISO:  alguma coisa inesperada
 2026-10-14 10:00:03.000 UTC [11] app@shop/web LOG:  processo 11 ainda espera por ShareLock em transação 500 após 200.100 ms
-2026-10-14 10:00:03.000 UTC [11] app@shop/web DETAIL:  Processo 10 mantém a trava.
+2026-10-14 10:00:03.000 UTC [11] app@shop/web DETAIL:  Process holding the lock: 10. Wait queue: 11.
 2026-10-14 10:00:04.000 UTC [11] app@shop/web LOG:  processo 11 obteve ShareLock em transação 500 após 1200.300 ms
 2026-10-14 10:00:05.000 UTC [10] app@shop/web LOG:  arquivo temporário: caminho "base/pgsql_tmp/pgsql_tmp10.0", tamanho 2800000
 2026-10-14 10:00:06.000 UTC [10] app@shop/web LOG:  desconexão: tempo de sessão: 0:00:06.000 usuário=app banco de dados=shop hospedeiro=10.0.0.1

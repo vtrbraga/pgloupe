@@ -43,7 +43,15 @@ const PREFIXES: &[&str] = &[
     "could not send data to client",
     "Process holding the lock",
     "Processes holding the lock",
+    "statement: ",
+    "checkpoint starting:",
+    "restartpoint starting:",
+    "connection to client lost",
+    "canceling authentication due to timeout",
 ];
+
+/// The untimed `log_statement = all` line for an extended-protocol execute.
+const EXECUTE_LINE: &str = "%s %s%s%s: %s";
 
 /// Words and labels kept whole.
 const WORDS: &[&str] = &[
@@ -99,13 +107,21 @@ pub fn read_mo(bytes: &[u8]) -> anyhow::Result<Vec<(String, String)>> {
             .context("truncated .mo string")?;
         Ok(String::from_utf8_lossy(slice).into_owned())
     };
-    (0..count)
-        .map(|i| Ok((string(originals, i)?, string(translations, i)?)))
-        .collect()
+    let mut pairs = Vec::new();
+    for i in 0..count {
+        let (english, translated) = (string(originals, i)?, string(translations, i)?);
+        // Plural entries hold `singular NUL plural` on both sides.
+        for (english, translated) in english.split('\0').zip(translated.split('\0')) {
+            pairs.push((english.to_owned(), translated.to_owned()));
+        }
+    }
+    Ok(pairs)
 }
 
 fn wanted(english: &str) -> bool {
-    WORDS.contains(&english) || PREFIXES.iter().any(|p| english.starts_with(p))
+    english == EXECUTE_LINE
+        || WORDS.contains(&english)
+        || PREFIXES.iter().any(|p| english.starts_with(p))
 }
 
 fn escape(text: &str) -> String {
@@ -139,7 +155,11 @@ pub fn extract(out: &Path) -> anyhow::Result<usize> {
                     continue;
                 }
                 for (english, translated) in read_mo(&fs::read(&target)?)? {
-                    if wanted(&english) && !translated.is_empty() && translated != english {
+                    // The execute line is the same in every language: its first word is what changes.
+                    if wanted(&english)
+                        && !translated.is_empty()
+                        && (translated != english || english == EXECUTE_LINE)
+                    {
                         rows.insert(((*language).to_owned(), english, translated));
                     }
                 }
@@ -202,6 +222,19 @@ mod tests {
         assert!(wanted("ERROR"));
         assert!(!wanted("relation \"%s\" does not exist"));
         read_mo(b"not a catalog at all, really").unwrap_err();
+    }
+
+    #[test]
+    fn plural_entries_give_both_forms() {
+        let pairs = read_mo(&catalog(
+            "Process holding the lock: %s.\0Processes holding the lock: %s.",
+            "Processo com a trava: %s.\0Processos com a trava: %s.",
+        ))
+        .unwrap();
+        assert_eq!(pairs.len(), 2);
+        assert_eq!(pairs[1].1, "Processos com a trava: %s.");
+        assert!(wanted("statement: %s"));
+        assert!(wanted("checkpoint starting:%s%s"));
     }
 
     #[test]

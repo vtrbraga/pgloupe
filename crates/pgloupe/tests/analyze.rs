@@ -1,6 +1,7 @@
 //! End-to-end tests of `pgloupe logs analyze`.
 
 use std::{
+    fmt::Write as _,
     fs, io,
     path::PathBuf,
     process::{Command, Output},
@@ -746,7 +747,13 @@ fn a_log_in_portuguese_is_read_as_if_it_were_english() -> io::Result<()> {
     for extra in [&[][..], &["--lc-messages", "pt_BR"][..]] {
         let report = events(extra)?;
         let overview = &report["overview"]["events"];
-        assert_eq!(overview["statement"], 3, "{extra:?}");
+        // Three plain ones, one with `": "` in its SQL, one logged without a duration.
+        assert_eq!(overview["statement"], 5, "{extra:?}");
+        assert_eq!(overview["execute"], 1, "{extra:?}");
+        assert_eq!(
+            report["locks"]["blockers"].as_array().map(Vec::len),
+            Some(1)
+        );
         assert_eq!(overview["lock_wait"], 1);
         assert_eq!(overview["lock_acquired"], 1);
         assert_eq!(overview["temp_file"], 1);
@@ -770,5 +777,55 @@ fn a_log_in_portuguese_is_read_as_if_it_were_english() -> io::Result<()> {
     )?;
     assert!(!out.status.success());
     assert!(stderr(&out).contains("pt_BR"), "{}", stderr(&out));
+    Ok(())
+}
+
+const BLOCKED: &str = "\
+2026-10-14 10:00:00.000 UTC [20] holder@db/app LOG:  duration: 4.000 ms  statement: UPDATE accounts SET balance = 0 WHERE id = 1
+2026-10-14 10:00:01.000 UTC [21] waiter@db/app LOG:  process 21 still waiting for ShareLock on transaction 500 after 200.100 ms
+2026-10-14 10:00:01.000 UTC [21] waiter@db/app DETAIL:  Process holding the lock: 20. Wait queue: 21.
+2026-10-14 10:00:01.000 UTC [21] waiter@db/app STATEMENT:  UPDATE accounts SET balance = 1 WHERE id = 1
+";
+
+fn blockers_of(args: &[&str], log: &[u8], name: &str) -> io::Result<usize> {
+    let file = scratch(name, log)?;
+    let mut all = vec!["--prefix", "%m [%p] %q%u@%d/%a ", "--output", "json"];
+    all.extend_from_slice(args);
+    let out = analyze(&all, &[file])?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    Ok(report["locks"]["blockers"].as_array().map_or(0, Vec::len))
+}
+
+#[test]
+fn a_lock_wait_is_blamed_even_when_the_holders_records_are_filtered_out() -> io::Result<()> {
+    assert_eq!(blockers_of(&[], BLOCKED.as_bytes(), "blk-all.log")?, 1);
+    assert_eq!(
+        blockers_of(
+            &["--user", "waiter"],
+            format!("{BLOCKED}2026-10-14 10:00:05.000 UTC [20] holder@db/app LOG:  duration: 0.5 ms  statement: COMMIT\n").as_bytes(),
+            "blk-user.log"
+        )?,
+        1
+    );
+    Ok(())
+}
+
+#[test]
+fn a_lock_wait_still_pending_at_a_batch_boundary_is_blamed() -> io::Result<()> {
+    // The file ends with the wait: no later record exists to carry the pair.
+    let mut log = String::new();
+    for i in 0..4094 {
+        writeln!(
+            log,
+            "2026-10-14 10:00:00.000 UTC [9{i}] u@db/app LOG:  duration: 1.000 ms  statement: SELECT {i}"
+        )
+        .unwrap();
+    }
+    log.push_str(&BLOCKED.replace(
+        "duration: 4.000 ms  statement: UPDATE accounts SET balance = 0 WHERE id = 1",
+        "connection received: host=1.2.3.4",
+    ));
+    assert_eq!(blockers_of(&[], log.as_bytes(), "blk-edge.log")?, 1);
     Ok(())
 }

@@ -425,7 +425,7 @@ fn a_store_keeps_the_filter_its_logs_were_ingested_with() -> io::Result<()> {
 #[test]
 fn a_store_report_lists_as_many_slowest_executions_as_asked_up_to_what_was_kept() -> io::Result<()>
 {
-    let d = dir("slowest")?;
+    let d = dir("slowest-baseline")?;
     let store = d.join("s.db");
     let log = fixtures().join("logs/sample.json");
     assert!(ingest(&store, &[&log], &[])?.status.success());
@@ -438,6 +438,32 @@ fn a_store_report_lists_as_many_slowest_executions_as_asked_up_to_what_was_kept(
     assert_eq!(rows(&["--slowest", "1"])?, 1);
     assert_eq!(rows(&["--slowest", "2"])?, 2.min(all));
     assert_eq!(rows(&["--slowest", "500"])?, all);
+    Ok(())
+}
+
+/// The store reports in whole hours: 10:00-11:15 reaches 12:00, so it overlaps 11:30-12:00.
+fn assert_hour_rounded_baselines_overlap(store: &Path) -> io::Result<()> {
+    let rounded = pgloupe(&[
+        "report",
+        "--store",
+        path_str(store),
+        "--since",
+        "2026-10-14T11:30:00Z",
+        "--until",
+        "2026-10-14T12:00:00Z",
+        "--baseline-since",
+        "2026-10-14T10:00:00Z",
+        "--baseline-until",
+        "2026-10-14T11:15:00Z",
+        "--output",
+        "json",
+    ])?;
+    assert!(!rounded.status.success(), "{}", stdout(&rounded));
+    assert!(
+        stderr(&rounded).contains("overlaps"),
+        "{}",
+        stderr(&rounded)
+    );
     Ok(())
 }
 
@@ -507,6 +533,7 @@ fn a_period_is_compared_with_the_one_before_it() -> io::Result<()> {
         "2026-10-14T11:30:00Z",
     ])?;
     assert!(!overlap.status.success());
+    assert_hour_rounded_baselines_overlap(&store)?;
     assert!(
         !compared(&["--baseline-since", "2026-10-14T10:00:00Z"])?
             .status
