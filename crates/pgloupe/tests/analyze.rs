@@ -929,3 +929,31 @@ fn statements_carry_cache_hit_io_share_and_blocks_per_row() -> io::Result<()> {
     assert!(delete["io_pct"].as_f64().unwrap() > 20.0);
     Ok(())
 }
+
+#[test]
+fn the_shares_of_the_kinds_add_up_when_statements_have_phases() -> io::Result<()> {
+    let out = analyze(
+        &["--prefix", "%m [%p] %q%u@%d ", "--output", "json"],
+        &[fixtures().join("logs/phases.log")],
+    )?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    let kinds: f64 = report["kinds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|k| k["share_pct"].as_f64())
+        .sum();
+    let statements: f64 = report["statements"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s["share_pct"].as_f64())
+        .sum();
+    assert!((kinds - 100.0).abs() < 0.5, "kinds add up to {kinds}");
+    assert!(
+        (statements - 100.0).abs() < 0.5,
+        "statements add up to {statements}"
+    );
+    Ok(())
+}

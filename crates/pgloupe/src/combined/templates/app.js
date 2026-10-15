@@ -158,7 +158,7 @@
       return h('button', {
         'class': 'nav-item', 'aria-current': s.id === state.s ? 'page' : null,
         onclick: function () { setState({ s: s.id, fp: '' }); window.scrollTo(0, 0); }
-      }, [s.label, s.id === 'findings' ? badge(String(findings.length), warn ? 'warn' : 'info') : null, s.id === 'overview' && actions.length ? badge(String(actions.length), actions.some(function (a) { return a.priority === 'high'; }) ? 'bad' : 'warn') : null]);
+      }, [s.label, s.id === 'findings' ? badge(String(findings.length), warn ? 'warn' : 'info') : null, s.id === 'overview' && actions.filter(function (a) { return a.priority !== 'low'; }).length ? badge(String(actions.filter(function (a) { return a.priority !== 'low'; }).length), actions.some(function (a) { return a.priority === 'high'; }) ? 'bad' : 'warn') : null]);
     }));
     var logo = h('span', { 'class': 'brand' }, [
       C.svgEl('svg', { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round' }, [
@@ -273,7 +273,7 @@
       return h('button', { title: 'Open the statement', onclick: function () { openStatement(fp); }, text: L.shortFp(fp) });
     });
     return h('details', { 'class': 'action-row ' + a.priority }, [
-      h('summary', null, [h('span', { 'class': 'num', text: String(index + 1) }), h('span', { 'class': 'title', text: a.title }), badge(a.priority, a.priority === 'high' ? 'bad' : 'warn')]),
+      h('summary', null, [h('span', { 'class': 'num', text: String(index + 1) }), h('span', { 'class': 'title', text: a.title }), badge(a.priority, a.priority === 'high' ? 'bad' : a.priority === 'low' ? 'info' : 'warn')]),
       h('div', { 'class': 'body' }, [
         h('div', { 'class': 'advice', text: a.advice }),
         a.evidence ? h('code', { 'class': 'evidence', text: (a.evidence_kind === 'statement' ? 'statement: ' : 'log: ') + a.evidence }) : null,
@@ -365,7 +365,7 @@
     return h('div', { 'class': 'action ' + a.priority }, [
       h('span', { 'class': 'num', text: String(index + 1) }),
       h('div', { 'class': 'body' }, [
-        h('div', { 'class': 'title' }, [a.title, ' ', badge(a.priority, a.priority === 'high' ? 'bad' : 'warn')]),
+        h('div', { 'class': 'title' }, [a.title, ' ', badge(a.priority, a.priority === 'high' ? 'bad' : a.priority === 'low' ? 'info' : 'warn')]),
         h('div', { 'class': 'advice', text: a.advice }),
         a.evidence ? h('code', { 'class': 'evidence', text: (a.evidence_kind === 'statement' ? 'statement: ' : 'log: ') + a.evidence }) : null,
         h('div', { 'class': 'links' }, [
