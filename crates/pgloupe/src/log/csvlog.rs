@@ -1,6 +1,12 @@
 //! csvlog decoder: headerless CSV whose layout depends on the Postgres version.
 
-use std::io::BufRead;
+use std::{
+    io::{self, BufRead, Read},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use jiff::tz::Offset;
 
@@ -10,10 +16,47 @@ use super::{
     time::parse_log_time,
 };
 
+/// The most bytes read for one record. The `csv` reader has no cap of its own, and an unterminated
+/// quote would otherwise swallow the rest of the file into one record.
+const MAX_RECORD_BYTES: usize = 16 * 1024 * 1024;
+
+/// Marks the I/O error a [`Capped`] reader raises, so the decoder can tell it from a real failure.
+#[derive(Debug)]
+struct RecordTooLong;
+
+impl std::fmt::Display for RecordTooLong {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "record over {MAX_RECORD_BYTES} bytes (unterminated quote?)"
+        )
+    }
+}
+
+impl std::error::Error for RecordTooLong {}
+
+/// Counts the bytes read since the decoder last reset `seen` and fails past the cap.
+#[derive(Debug)]
+struct Capped<R> {
+    inner: R,
+    seen: Arc<AtomicUsize>,
+}
+
+impl<R: Read> Read for Capped<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if self.seen.fetch_add(n, Ordering::Relaxed) + n > MAX_RECORD_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, RecordTooLong));
+        }
+        Ok(n)
+    }
+}
+
 /// Reads csvlog records.
 #[derive(Debug)]
 pub struct CsvDecoder<R: BufRead> {
-    reader: csv::Reader<R>,
+    reader: csv::Reader<Capped<R>>,
+    seen: Arc<AtomicUsize>,
     row: csv::StringRecord,
     fallback: Option<Offset>,
     stats: DecodeStats,
@@ -22,11 +65,17 @@ pub struct CsvDecoder<R: BufRead> {
 impl<R: BufRead> CsvDecoder<R> {
     /// `fallback` is the `--log-tz` offset for timezone abbreviations the log does not spell out.
     pub fn new(reader: R, fallback: Option<Offset>) -> Self {
+        let seen = Arc::new(AtomicUsize::new(0));
+        let capped = Capped {
+            inner: reader,
+            seen: Arc::clone(&seen),
+        };
         CsvDecoder {
             reader: csv::ReaderBuilder::new()
                 .has_headers(false)
                 .flexible(true)
-                .from_reader(reader),
+                .from_reader(capped),
+            seen,
             row: csv::StringRecord::new(),
             fallback,
             stats: DecodeStats::default(),
@@ -37,6 +86,7 @@ impl<R: BufRead> CsvDecoder<R> {
 impl<R: BufRead> Decoder for CsvDecoder<R> {
     fn next_record(&mut self) -> Result<Option<LogRecord>, DecodeError> {
         loop {
+            self.seen.store(0, Ordering::Relaxed);
             match self.reader.read_record(&mut self.row) {
                 Ok(false) => return Ok(None),
                 Ok(true) => {}
@@ -44,6 +94,15 @@ impl<R: BufRead> Decoder for CsvDecoder<R> {
                     let line = err.position().map_or(0, csv::Position::line);
                     let reason = err.to_string();
                     if let csv::ErrorKind::Io(io) = err.into_kind() {
+                        if io
+                            .get_ref()
+                            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<RecordTooLong>)
+                        {
+                            // The rest of the file is inside the open quote: count it and stop.
+                            self.stats.lines += 1;
+                            self.stats.skip(line, reason);
+                            return Ok(None);
+                        }
                         return Err(DecodeError::Io(io));
                     }
                     self.stats.lines += 1;
@@ -265,6 +324,25 @@ mod tests {
         let (records, stats) = decode(&row);
         assert_eq!(stats.skipped, 0, "{:?}", stats.first_skipped);
         assert_eq!(records[0].statement.as_deref().map(str::len), Some(1 << 20));
+    }
+
+    #[test]
+    fn an_unterminated_quote_is_capped_and_counted() {
+        let text = format!(
+            "{SESSION_ROW}\n\"{}",
+            "x".repeat(super::MAX_RECORD_BYTES + 64 * 1024)
+        );
+        let (records, stats) = decode(&text);
+        assert_eq!(records.len(), 1);
+        assert_eq!(stats.skipped, 1);
+        assert!(
+            stats
+                .first_skipped
+                .as_ref()
+                .is_some_and(|s| s.reason.contains("record")),
+            "{:?}",
+            stats.first_skipped
+        );
     }
 
     #[test]

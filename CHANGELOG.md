@@ -5,6 +5,10 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Robustness
+
+- A csvlog record over 16 MiB (usually an unterminated quote) is skipped and counted, and the file stops there, instead of being read whole into memory. Release builds check counters for overflow and stop with an error rather than print a wrapped number.
+
 ## [0.1.0-alpha.3] - 2026-10-15
 
 ### Report

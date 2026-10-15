@@ -1,7 +1,7 @@
 # Contributing to pgloupe
 
 Thanks for looking. Bug reports with a few log lines that show the problem are the most useful
-thing you can send; code is welcome too.
+thing you can send; code is welcome too. Everyone taking part follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## Before you start
 
