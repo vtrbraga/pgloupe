@@ -95,7 +95,7 @@ impl Cli {
                         ErrorKind::ArgumentConflict,
                         "use --baseline previous, or --baseline-since/--baseline-until, not both",
                     )
-                } else if args.files.is_empty() && !args.filters.filter().is_empty() {
+                } else if args.files.is_empty() && args.filters.filter().narrows() {
                     fail(
                         ErrorKind::ArgumentConflict,
                         "filters apply while reading logs: give them to `logs ingest` (the store then holds only what they keep), or to `report` with log FILES",
@@ -297,12 +297,7 @@ struct FilterArgs {
     #[arg(long)]
     anonymize: bool,
     /// Secret that decides the pseudonyms (default: none, so common names are guessable).
-    #[arg(
-        long,
-        requires = "anonymize",
-        env = "PGLOUPE_ANONYMIZE_KEY",
-        hide_env_values = true
-    )]
+    #[arg(long, env = "PGLOUPE_ANONYMIZE_KEY", hide_env_values = true)]
     anonymize_key: Option<String>,
 }
 
@@ -949,6 +944,11 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
             store: None,
         })
     };
+    let anonymize = args.filters.anonymize;
+    let (mut logs, mut delta) = (logs, delta);
+    if anonymize {
+        anonymize_inputs(&mut logs, delta.as_mut(), err)?;
+    }
     let mut combined = combined::build(logs, delta.as_ref(), &options);
     combined.display_tz = args.display_tz.as_ref().map(|(_, name)| name.clone());
     combined.comparison = baseline;
@@ -963,8 +963,12 @@ fn write_report(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> anyhow::Result<()> {
-    let mut formats = args.output.clone();
-    formats.dedup_by_key(|f| f.extension());
+    let mut formats: Vec<ReportFormat> = Vec::new();
+    for format in &args.output {
+        if !formats.iter().any(|f| f.extension() == format.extension()) {
+            formats.push(*format);
+        }
+    }
     let render = |format: ReportFormat| -> anyhow::Result<String> {
         Ok(match format {
             ReportFormat::Text => combined::text(combined),
@@ -979,12 +983,28 @@ fn write_report(
     };
     match (&args.out, formats.as_slice()) {
         (Some(prefix), [_, _, ..]) => {
-            for format in &formats {
-                let mut path = prefix.clone().into_os_string();
-                path.push(".");
-                path.push(format.extension());
-                let path = PathBuf::from(path);
-                std::fs::write(&path, render(*format)?)
+            // `--out report.html` with several formats means the files `report.*`.
+            let known = ["html", "json", "csv", "txt"];
+            let prefix = if prefix
+                .extension()
+                .is_some_and(|e| known.iter().any(|k| e == *k))
+            {
+                prefix.with_extension("")
+            } else {
+                prefix.clone()
+            };
+            // Render everything before writing anything: a failure leaves no half set.
+            let rendered: Vec<(PathBuf, String)> = formats
+                .iter()
+                .map(|format| {
+                    let mut path = prefix.clone().into_os_string();
+                    path.push(".");
+                    path.push(format.extension());
+                    render(*format).map(|text| (PathBuf::from(path), text))
+                })
+                .collect::<anyhow::Result<_>>()?;
+            for (path, text) in rendered {
+                std::fs::write(&path, text)
                     .with_context(|| format!("writing {}", path.display()))?;
                 writeln!(out, "wrote {}", path.display()).context("writing output")?;
             }
@@ -1008,6 +1028,46 @@ fn write_report(
             }
         }
         (_, []) => {}
+    }
+    Ok(())
+}
+
+/// Hides what names the machine or its data in the parts of a report that did not pass through
+/// the record anonymizer: the statistics' statement text and the paths of the inputs.
+fn anonymize_inputs(
+    logs: &mut Option<LogData>,
+    delta: Option<&mut delta::Delta>,
+    err: &mut dyn Write,
+) -> anyhow::Result<()> {
+    let base = |path: &str| -> String {
+        std::path::Path::new(path)
+            .file_name()
+            .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned())
+    };
+    if let Some(delta) = delta {
+        for row in &mut delta.rows {
+            row.query = row
+                .query
+                .take()
+                .map(|q| crate::analyze::anonymize::scrub(&q));
+            row.datname = row.datname.take().map(|_| "db".to_owned());
+            row.rolname = row.rolname.take().map(|_| "user".to_owned());
+        }
+    }
+    if let Some(data) = logs {
+        for file in &mut data.report.files {
+            file.path = base(&file.path);
+        }
+        if let Some(store) = &mut data.report.store {
+            store.path = base(&store.path);
+        }
+        data.store = data.store.take().map(|p| base(&p));
+        if data.source == "store" {
+            writeln!(
+                err,
+                "note: the logs in a store are anonymized only if they were ingested with --anonymize"
+            )?;
+        }
     }
     Ok(())
 }

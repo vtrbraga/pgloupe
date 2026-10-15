@@ -20,13 +20,30 @@ const MAX_ENTRIES: usize = 100_000;
 /// Remembers cursors, prepared statements and the last untimed statement of each backend.
 #[derive(Debug, Default)]
 pub struct Correlator {
-    cursors: HashMap<(u32, String), String>,
+    cursors: HashMap<(u32, String), Cursor>,
     prepared: HashMap<(u32, String), String>,
-    untimed: HashMap<u32, String>,
+    untimed: HashMap<u32, Untimed>,
     /// The statement each backend finished last.
     last: HashMap<u32, String>,
     /// Waits blamed on a backend that has not logged a statement since.
     holding: HashMap<u32, Vec<Hold>>,
+}
+
+/// A declared cursor.
+#[derive(Debug)]
+struct Cursor {
+    sql: String,
+    /// `WITH HOLD`: survives the commit of the transaction that declared it.
+    hold: bool,
+}
+
+/// The statement a backend logged without a duration, which a bare `duration:` line may follow.
+#[derive(Debug)]
+struct Untimed {
+    sql: String,
+    phase: Phase,
+    /// A filter dropped the statement.
+    filtered: bool,
 }
 
 /// A lock wait whose holder is still to be named.
@@ -56,6 +73,10 @@ impl Correlator {
         {
             *self = Self::default();
         }
+        if record.level.is_error() {
+            // A failed statement logs no duration, so a later bare one is not its own.
+            self.untimed.remove(&pid);
+        }
         match classify(record) {
             Event::Statement {
                 kind: kind @ (StatementKind::Statement | StatementKind::Execute),
@@ -72,17 +93,25 @@ impl Correlator {
                 self.settle(pid, record, duration_ms, &effective);
                 self.last.insert(pid, effective.clone());
                 if duration_ms.is_none() {
-                    self.untimed.insert(pid, effective);
+                    self.untimed.insert(
+                        pid,
+                        Untimed {
+                            sql: effective,
+                            phase: correlation.as_ref().map_or(Phase::Execute, |c| c.phase),
+                            filtered: false,
+                        },
+                    );
                 } else {
                     self.untimed.remove(&pid);
                 }
                 record.correlation = correlation;
             }
             Event::Duration { .. } => {
-                record.correlation = self.untimed.remove(&pid).map(|sql| Correlation {
-                    sql,
-                    phase: Phase::Execute,
+                record.correlation = self.untimed.remove(&pid).map(|u| Correlation {
+                    sql: u.sql,
+                    phase: u.phase,
                     timing_only: true,
+                    discard: u.filtered,
                 });
             }
             Event::LockWait { pid: waiter, .. } => {
@@ -108,6 +137,14 @@ impl Correlator {
                     .extend(gone.into_iter().map(|h| pair(pid, h.before.clone(), h)));
             }
             _ => {}
+        }
+    }
+
+    /// Tells the correlator a filter dropped `record`, so a bare duration that follows it is
+    /// dropped as well.
+    pub fn dropped(&mut self, record: &LogRecord) {
+        if let Some(untimed) = record.pid.and_then(|pid| self.untimed.get_mut(&pid)) {
+            untimed.filtered = true;
         }
     }
 
@@ -152,17 +189,24 @@ impl Correlator {
         let word = lower.split(|c: char| !c.is_ascii_alphabetic()).next()?;
         match word {
             "declare" => {
-                let (name, inner) = declared(trimmed)?;
-                self.cursors.insert((pid, name), inner.clone());
+                let (name, inner, hold) = declared(trimmed)?;
+                self.cursors.insert(
+                    (pid, name),
+                    Cursor {
+                        sql: inner.clone(),
+                        hold,
+                    },
+                );
                 Some(execute(inner))
             }
             "fetch" | "move" => {
                 let name = cursor_of(trimmed);
-                let sql = self.cursors.get(&(pid, name))?.clone();
+                let sql = self.cursors.get(&(pid, name))?.sql.clone();
                 Some(Correlation {
                     sql,
                     phase: Phase::Fetch,
                     timing_only: false,
+                    discard: false,
                 })
             }
             "close" => {
@@ -174,8 +218,20 @@ impl Correlator {
                 }
                 None
             }
-            "commit" | "rollback" | "end" | "abort" => {
-                self.cursors.retain(|(p, _), _| *p != pid);
+            "commit" | "end" | "abort" => {
+                // Only `WITH HOLD` cursors outlive the transaction.
+                self.cursors.retain(|(p, _), c| *p != pid || c.hold);
+                None
+            }
+            "rollback" => {
+                // `ROLLBACK TO SAVEPOINT` keeps the transaction, and with it its cursors.
+                if !lower
+                    .trim_start_matches("rollback")
+                    .trim_start()
+                    .starts_with("to")
+                {
+                    self.cursors.retain(|(p, _), c| *p != pid || c.hold);
+                }
                 None
             }
             "prepare" => {
@@ -190,12 +246,12 @@ impl Correlator {
                 Some(execute(sql))
             }
             "deallocate" => {
-                let name = statement_name(
-                    trimmed
-                        .get(10..)?
-                        .trim_start_matches(|c: char| c.is_whitespace()),
-                );
-                let name = name.strip_prefix("prepare ").unwrap_or(&name).to_owned();
+                let rest = trimmed.get(10..)?.trim_start();
+                let rest = rest
+                    .get(..7)
+                    .filter(|w| w.eq_ignore_ascii_case("prepare"))
+                    .map_or(rest, |_| rest[7..].trim_start());
+                let name = statement_name(rest);
                 if name.eq_ignore_ascii_case("all") {
                     self.prepared.retain(|(p, _), _| *p != pid);
                 } else {
@@ -245,6 +301,7 @@ fn execute(sql: String) -> Correlation {
         sql,
         phase: Phase::Execute,
         timing_only: false,
+        discard: false,
     }
 }
 
@@ -258,16 +315,30 @@ fn statement_name(text: &str) -> String {
     text[..end].trim_matches('"').to_ascii_lowercase()
 }
 
-/// `DECLARE name [options] CURSOR [WITH|WITHOUT HOLD] FOR query` -> `(name, query)`.
-fn declared(text: &str) -> Option<(String, String)> {
+/// Lowercase with every whitespace character a space, byte for byte, so keywords can be found
+/// whatever separates them.
+fn flat(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_whitespace() {
+                ' '
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .collect()
+}
+
+/// `DECLARE name [options] CURSOR [WITH|WITHOUT HOLD] FOR query` -> `(name, query, with_hold)`.
+fn declared(text: &str) -> Option<(String, String, bool)> {
     let rest = text.get(7..)?.trim_start();
     let name = statement_name(rest);
-    let lower = rest.to_ascii_lowercase();
+    let lower = flat(rest);
     let cursor = lower.find("cursor")?;
-    let after = &lower[cursor..];
-    let for_at = cursor + after.find(" for ")? + 5;
-    let query = rest[for_at..].trim().trim_end_matches(';').trim();
-    (!name.is_empty() && !query.is_empty()).then(|| (name, query.to_owned()))
+    let for_at = cursor + lower[cursor..].find(" for ")? + 5;
+    let query = rest.get(for_at..)?.trim().trim_end_matches(';').trim();
+    let hold = lower[cursor..for_at].contains(" with hold");
+    (!name.is_empty() && !query.is_empty()).then(|| (name, query.to_owned(), hold))
 }
 
 /// The cursor a `FETCH`, `MOVE` or `CLOSE` names: its last word.
@@ -285,7 +356,7 @@ fn cursor_of(text: &str) -> String {
 fn prepared(text: &str) -> Option<(String, String)> {
     let rest = text.get(7..)?.trim_start();
     let name = statement_name(rest);
-    let lower = rest.to_ascii_lowercase();
+    let lower = flat(rest);
     let as_at = lower.find(" as ")? + 4;
     let query = rest[as_at..].trim().trim_end_matches(';').trim();
     (!name.is_empty() && !query.is_empty()).then(|| (name, query.to_owned()))
@@ -448,6 +519,71 @@ mod tests {
         assert_eq!(left.len(), 1);
         assert_eq!((left[0].blocker.clone(), left[0].blocker_pid), (None, 42));
         assert_eq!(c.finish(), Vec::new());
+    }
+
+    #[test]
+    fn a_failed_statement_does_not_claim_the_next_bare_duration() {
+        let mut c = Correlator::new();
+        run(&mut c, 4, "statement: INSERT INTO t VALUES (1)");
+        let mut failure = record(4, "duplicate key value violates unique constraint");
+        failure.level = Severity::Error;
+        c.apply(&mut failure);
+        assert!(run(&mut c, 4, "duration: 4000.000 ms").is_none());
+    }
+
+    #[test]
+    fn untimed_fetches_keep_their_phase_for_the_bare_duration() {
+        let mut c = Correlator::new();
+        run(
+            &mut c,
+            7,
+            "statement: DECLARE c CURSOR FOR SELECT * FROM big",
+        );
+        run(&mut c, 7, "statement: FETCH 100 FROM c");
+        let got = run(&mut c, 7, "duration: 300.000 ms").unwrap();
+        assert_eq!(
+            (got.sql.as_str(), got.phase),
+            ("SELECT * FROM big", Phase::Fetch)
+        );
+    }
+
+    #[test]
+    fn with_hold_cursors_survive_commit_and_savepoint_rollbacks_keep_all() {
+        let mut c = Correlator::new();
+        run(
+            &mut c,
+            1,
+            "statement: DECLARE h CURSOR WITH HOLD FOR SELECT 1",
+        );
+        run(&mut c, 1, "statement: DECLARE p CURSOR FOR SELECT 2");
+        run(&mut c, 1, "statement: ROLLBACK TO SAVEPOINT s");
+        assert!(run(&mut c, 1, "statement: FETCH 1 FROM p").is_some());
+        run(&mut c, 1, "statement: COMMIT");
+        assert!(run(&mut c, 1, "statement: FETCH 1 FROM h").is_some());
+        assert!(run(&mut c, 1, "statement: FETCH 1 FROM p").is_none());
+    }
+
+    #[test]
+    fn deallocate_prepare_and_keywords_split_by_newlines_are_understood() {
+        let mut c = Correlator::new();
+        run(&mut c, 2, "statement: PREPARE q AS\nSELECT 1");
+        assert!(run(&mut c, 2, "statement: EXECUTE q").is_some());
+        run(&mut c, 2, "statement: DEALLOCATE PREPARE q");
+        assert!(run(&mut c, 2, "statement: EXECUTE q").is_none());
+        run(&mut c, 2, "statement: DECLARE k CURSOR\nFOR\nSELECT 3");
+        assert_eq!(
+            run(&mut c, 2, "statement: FETCH 1 FROM k").unwrap().sql,
+            "SELECT 3"
+        );
+    }
+
+    #[test]
+    fn a_duration_after_a_filtered_statement_is_marked_for_dropping() {
+        let mut c = Correlator::new();
+        let mut r = record(5, "statement: SELECT count(*) FROM rental");
+        c.apply(&mut r);
+        c.dropped(&r);
+        assert!(run(&mut c, 5, "duration: 50.000 ms").unwrap().discard);
     }
 
     #[test]

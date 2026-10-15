@@ -6,6 +6,7 @@ pub mod container;
 pub mod dataset;
 pub mod generate;
 pub mod manifest;
+pub mod rawclient;
 pub mod scenario;
 pub mod session;
 pub mod snapshot;

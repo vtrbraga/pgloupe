@@ -126,12 +126,15 @@ impl Prefix {
             Some(index) => (&self.tokens[..index], Some(&self.tokens[index + 1..])),
             None => (self.tokens.as_slice(), None),
         };
-        let mut pos = match_tokens(head, line, 0, record, fallback, tail.is_none())?;
+        let mut budget = LINE_BUDGET;
+        let mut pos = match_tokens(head, line, 0, record, fallback, tail.is_none(), &mut budget)?;
         // After `%q`, a process without session info prints nothing more of the prefix: the
         // label follows directly. If it does not, the rest of the prefix must match.
         let tail_end = tail
             .filter(|_| split_label(&line[pos..]).is_none())
-            .and_then(|tail| match_tokens(tail, line, pos, record, fallback, true).ok());
+            .and_then(|tail| {
+                match_tokens(tail, line, pos, record, fallback, true, &mut budget).ok()
+            });
         if let Some(end) = tail_end {
             pos = end;
         }
@@ -152,6 +155,7 @@ fn match_tokens(
     record: &mut LogRecord,
     fallback: Option<Offset>,
     label_follows: bool,
+    budget: &mut usize,
 ) -> Result<usize, String> {
     let mut pos = start;
     for (index, token) in tokens.iter().enumerate() {
@@ -182,6 +186,7 @@ fn match_tokens(
                         pos,
                         record,
                         (fallback, label_follows),
+                        budget,
                     );
                 }
                 let len = escape_len(*escape, rest, next_literal).ok_or_else(|| {
@@ -204,8 +209,11 @@ fn is_free_text(escape: char) -> bool {
     !matches!(escape, 't' | 's' | 'm' | 'n' | 'p' | 'l' | 'x' | 'P' | 'Q')
 }
 
-/// How many places a free-text value may end before the line is declared not to match.
+/// How many places one free-text value may end before the line is declared not to match.
 const FREE_TEXT_ATTEMPTS: usize = 8;
+
+/// Attempts allowed for all the free-text escapes of one line together.
+const LINE_BUDGET: usize = 24;
 
 /// Matches a free-text escape and what follows it. The value ends at the first `literal`; when the
 /// rest of the prefix does not match there, it is retried at the next one.
@@ -216,11 +224,17 @@ fn match_free_text(
     pos: usize,
     record: &mut LogRecord,
     (fallback, label_follows): (Option<Offset>, bool),
+    budget: &mut usize,
 ) -> Result<usize, String> {
     let rest = &line[pos..];
     let mut from = 0;
     let mut failure = None;
     for _ in 0..FREE_TEXT_ATTEMPTS {
+        // One budget for the whole line: nested free-text escapes cannot multiply the attempts.
+        if *budget == 0 {
+            break;
+        }
+        *budget -= 1;
         let Some(found) = rest[from..].find(literal) else {
             break;
         };
@@ -233,6 +247,7 @@ fn match_free_text(
             record,
             fallback,
             label_follows,
+            budget,
         ) {
             // When the prefix ends here a severity label must follow: `4` in `pgAdmin 4 - …` is
             // also a number, so only the label tells which space ended the name.

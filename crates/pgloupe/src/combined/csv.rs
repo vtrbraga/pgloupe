@@ -39,6 +39,16 @@ const HEADER: [&str; 33] = [
     "flags",
 ];
 
+/// Text a spreadsheet would read as a formula starts with one of these; a leading quote makes it
+/// plain text. A client controls statement text, so this matters.
+fn plain(text: &str) -> String {
+    if text.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{text}")
+    } else {
+        text.to_owned()
+    }
+}
+
 fn num(value: f64) -> String {
     format!("{value:.3}")
 }
@@ -69,7 +79,7 @@ pub fn csv(report: &CombinedReport) -> Result<String, csv::Error> {
             row.link.to_owned(),
             log.map(|l| l.kind.to_owned()).unwrap_or_default(),
             log.and_then(|l| l.query_id.clone()).unwrap_or_default(),
-            row.text.clone(),
+            plain(&row.text),
             log.map(|l| l.calls.to_string()).unwrap_or_default(),
             log.map(|l| num(l.total_ms)).unwrap_or_default(),
             log.map(|l| num(l.all_ms)).unwrap_or_default(),

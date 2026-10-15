@@ -292,7 +292,10 @@ impl Batches {
 
     fn finish_current(&mut self) {
         if let Some(current) = self.current.take() {
-            let stats = current.decoder.stats().clone();
+            let mut stats = current.decoder.stats().clone();
+            if self.options.filter.anonymize.is_some() {
+                stats.redact();
+            }
             lock(&self.summaries).push((
                 current.index,
                 FileSummary {
@@ -317,6 +320,8 @@ impl Batches {
 
     fn open_next(&mut self) -> Option<()> {
         let path = self.pending.pop_front()?;
+        // Backend process ids mean nothing across files: each starts with a clean slate.
+        self.correlator = Correlator::new();
         let index = self.opened();
         match open_file(&path, index, &self.options) {
             Ok(current) => self.current = Some(current),
@@ -345,7 +350,15 @@ impl Iterator for Batches {
                             // Before the filter: a cursor declared by a record the filter drops
                             // still has to be known when its fetches arrive.
                             self.correlator.apply(&mut record);
-                            if self.options.filter.keeps(&record) {
+                            if record.correlation.as_ref().is_some_and(|c| c.discard) {
+                                current.filtered += 1;
+                                continue;
+                            }
+                            let keep = self.options.filter.keeps(&record);
+                            if !keep {
+                                self.correlator.dropped(&record);
+                            }
+                            if keep {
                                 if let Some(anonymizer) = &mut self.anonymizer {
                                     anonymizer.apply(&mut record);
                                 }

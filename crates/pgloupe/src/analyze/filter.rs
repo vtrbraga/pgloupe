@@ -98,7 +98,8 @@ impl Facets {
             ("host", &self.hosts),
         ] {
             if !list.is_empty() {
-                let values: Vec<&str> = list.iter().map(|m| m.source.as_str()).collect();
+                let mut values: Vec<&str> = list.iter().map(|m| m.source.as_str()).collect();
+                values.sort_unstable();
                 out.push(format!("{prefix}{name}={}", values.join(",")));
             }
         }
@@ -132,7 +133,11 @@ impl Clock {
         let (from, to) = text
             .split_once('-')
             .ok_or_else(|| format!("{text}: use HH:MM-HH:MM"))?;
-        Ok((minutes(from)?, minutes(to)?))
+        let (from, to) = (minutes(from)?, minutes(to)?);
+        if from == to {
+            return Err(format!("{text}: the window is empty"));
+        }
+        Ok((from, to))
     }
 
     /// `5-7` or `5`: hours of the day.
@@ -158,12 +163,20 @@ impl Clock {
     ///
     /// Fails on a day name that is not `mon`..`sun`.
     pub fn parse_weekdays(text: &str) -> Result<[bool; 7], String> {
-        const NAMES: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+        const NAMES: [(&str, &str); 7] = [
+            ("mon", "monday"),
+            ("tue", "tuesday"),
+            ("wed", "wednesday"),
+            ("thu", "thursday"),
+            ("fri", "friday"),
+            ("sat", "saturday"),
+            ("sun", "sunday"),
+        ];
         let day = |t: &str| {
             let t = t.trim().to_ascii_lowercase();
             NAMES
                 .iter()
-                .position(|n| t.starts_with(n))
+                .position(|(short, long)| t == *short || t == *long)
                 .ok_or_else(|| format!("{text}: days are mon..sun"))
         };
         let mut days = [false; 7];
@@ -244,11 +257,14 @@ impl Clock {
             }
         }
         let hour = u8::try_from(local.hour()).unwrap_or(0);
-        if self
-            .exclude_hours
-            .iter()
-            .any(|(a, b)| (*a..=*b).contains(&hour))
-        {
+        let skipped = |(a, b): &(u8, u8)| {
+            if a <= b {
+                (*a..=*b).contains(&hour)
+            } else {
+                hour >= *a || hour <= *b
+            }
+        };
+        if self.exclude_hours.iter().any(skipped) {
             return false;
         }
         if let Some((from, to)) = self.between {
@@ -309,6 +325,16 @@ pub struct Filter {
 }
 
 impl Filter {
+    /// Whether the filter drops any record (anonymizing changes records, it drops none).
+    #[must_use]
+    pub fn narrows(&self) -> bool {
+        !Filter {
+            anonymize: None,
+            ..self.clone()
+        }
+        .is_empty()
+    }
+
     /// Whether the filter keeps everything.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -348,8 +374,10 @@ impl Filter {
         {
             parts.push(format!("tz={name}"));
         }
-        if self.anonymize.is_some() {
-            parts.push("anonymize".to_owned());
+        if let Some(key) = &self.anonymize {
+            // The key itself stays secret; its fingerprint tells two keys apart.
+            let id = xxhash_rust::xxh3::xxh3_64(key.as_bytes()) & 0xffff_ffff;
+            parts.push(format!("anonymize (key {id:08x})"));
         }
         parts.join("; ")
     }
@@ -585,6 +613,18 @@ mod tests {
         });
         assert!(sp.keeps(&at("2026-10-14T12:30:00Z")));
         assert!(!sp.keeps(&at("2026-10-14T09:30:00Z")));
+    }
+
+    #[test]
+    fn hour_ranges_wrap_past_midnight_and_empty_or_odd_windows_are_refused() {
+        let night = clock(|c| c.exclude_hours = vec![Clock::parse_hours("22-2").unwrap()]);
+        assert!(!night.keeps(&at("2026-10-14T23:10:00Z")));
+        assert!(!night.keeps(&at("2026-10-15T02:59:00Z")));
+        assert!(night.keeps(&at("2026-10-15T03:00:00Z")));
+        assert!(night.keeps(&at("2026-10-14T21:59:00Z")));
+        Clock::parse_between("10:00-10:00").unwrap_err();
+        Clock::parse_weekdays("monkey").unwrap_err();
+        Clock::parse_weekdays("Monday-Friday").unwrap();
     }
 
     #[test]

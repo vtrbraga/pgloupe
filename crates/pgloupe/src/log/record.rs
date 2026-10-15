@@ -86,6 +86,8 @@ pub struct Correlation {
     pub phase: Phase,
     /// The statement was already counted when it was logged without a duration; only add the time.
     pub timing_only: bool,
+    /// The statement this duration belongs to was dropped by a filter, so drop the duration too.
+    pub discard: bool,
 }
 
 /// One statement making another wait for a lock, as the correlation stage works it out.

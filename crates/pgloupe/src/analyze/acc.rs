@@ -912,10 +912,23 @@ impl Accumulators {
             }
             Event::Duration { duration_ms } => {
                 if let Some(c) = &record.correlation {
-                    self.query_for(&c.sql, ts, record.query_id)
-                        .time(*duration_ms);
+                    let query = self.query_for(&c.sql, ts, record.query_id);
+                    if c.phase == Phase::Fetch {
+                        query.phase(Phase::Fetch, *duration_ms, ts);
+                    } else {
+                        query.time(*duration_ms);
+                    }
                 }
             }
+            // A FETCH logged without its duration is not another run of the cursor's query.
+            Event::Statement {
+                kind: StatementKind::Statement,
+                duration_ms: None,
+                ..
+            } if record
+                .correlation
+                .as_ref()
+                .is_some_and(|c| c.phase == Phase::Fetch) => {}
             Event::Statement {
                 kind: kind @ (StatementKind::Statement | StatementKind::Execute),
                 duration_ms,
@@ -949,6 +962,24 @@ impl Accumulators {
             }
             _ => {}
         }
+        self.add_blocks(record);
+        if record.level.is_error()
+            && let Some(sql) = record.statement.as_deref()
+        {
+            let cancelled = cancel_reason(record).is_some();
+            let query = self.query_for(sql, ts, record.query_id);
+            query.seen(ts);
+            query.errors += 1;
+            query.cancelled += u64::from(cancelled);
+            let id = query.id;
+            self.totals.error_statement(record, id);
+            self.totals.cancelled_statement(record, id);
+        }
+    }
+
+    /// Counts the lock waits `record` settles, by the statement that held and the one that waited.
+    fn add_blocks(&mut self, record: &LogRecord) {
+        let ts = record.ts;
         for block in &record.blocks {
             let blocker = block
                 .blocker
@@ -963,18 +994,6 @@ impl Accumulators {
             stat.count += 1;
             stat.wait_us += us;
             stat.max_us = stat.max_us.max(us);
-        }
-        if record.level.is_error()
-            && let Some(sql) = record.statement.as_deref()
-        {
-            let cancelled = cancel_reason(record).is_some();
-            let query = self.query_for(sql, ts, record.query_id);
-            query.seen(ts);
-            query.errors += 1;
-            query.cancelled += u64::from(cancelled);
-            let id = query.id;
-            self.totals.error_statement(record, id);
-            self.totals.cancelled_statement(record, id);
         }
     }
 
@@ -1084,8 +1103,20 @@ impl Accumulators {
     /// The statistics of `sql`'s fingerprint, creating them (or using the overflow bucket). The
     /// statement is offered as the representative sample of its fingerprint.
     fn query_for(&mut self, sql: &str, ts: Timestamp, query_id: Option<i64>) -> &mut QueryStats {
+        self.lookup(sql, ts, query_id, true)
+    }
+
+    /// Like [`Accumulators::query_for`]; `count_unparsed` is false for the parse and bind lines
+    /// of a statement whose execution is counted on its own.
+    fn lookup(
+        &mut self,
+        sql: &str,
+        ts: Timestamp,
+        query_id: Option<i64>,
+        count_unparsed: bool,
+    ) -> &mut QueryStats {
         let found = fingerprint(sql);
-        if !found.parsed {
+        if !found.parsed && count_unparsed {
             self.totals.unparsed_statements += 1;
         }
         if !self.queries.contains_key(&found.id) && self.queries.len() >= self.limit {
@@ -1781,6 +1812,7 @@ mod tests {
             sql: sql.to_owned(),
             phase,
             timing_only,
+            discard: false,
         });
         record
     }

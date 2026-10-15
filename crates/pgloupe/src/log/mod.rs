@@ -101,6 +101,17 @@ impl DecodeStats {
         }
     }
 
+    /// Replaces the text of every shape and of the first skipped line with a placeholder, keeping
+    /// the counts and line numbers: the lines held names the report must not show.
+    pub fn redact(&mut self) {
+        for shape in self.shapes.values_mut() {
+            "<redacted>".clone_into(&mut shape.text);
+        }
+        if let Some(first) = &mut self.first_skipped {
+            "<redacted>".clone_into(&mut first.reason);
+        }
+    }
+
     /// The `n` most frequent skipped-line shapes (ties: earliest first line, then text).
     #[must_use]
     pub fn top_shapes(&self, n: usize) -> Vec<Shape> {

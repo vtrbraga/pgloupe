@@ -625,3 +625,47 @@ fn lock_waits_name_the_statement_that_held_the_lock() -> io::Result<()> {
     assert!(text.contains("who blocks whom"), "{text}");
     Ok(())
 }
+
+#[test]
+fn files_are_correlated_on_their_own_and_filters_take_their_durations_with_them() -> io::Result<()>
+{
+    let a = scratch(
+        "corr-a.log",
+        b"2026-10-14 10:00:00.000 UTC [12] u@db/app LOG:  statement: SELECT pg_sleep(1)\n",
+    )?;
+    let b = scratch(
+        "corr-b.log",
+        b"2026-10-14 10:00:01.000 UTC [12] u@db/app LOG:  duration: 50.000 ms\n",
+    )?;
+    let total = |files: &[PathBuf], extra: &[&str]| -> io::Result<f64> {
+        let mut args = vec!["--prefix", "%m [%p] %q%u@%d/%a ", "--output", "json"];
+        args.extend(extra);
+        let out = analyze(&args, files)?;
+        assert!(out.status.success(), "{}", stderr(&out));
+        let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+        Ok(report["statements"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|s| s["total_ms"].as_f64().unwrap_or(0.0))
+            .sum())
+    };
+    // The statement and the bare duration are in different files: they are not linked either way.
+    assert_eq!(total(&[a.clone(), b.clone()], &[])?, 0.0);
+    assert_eq!(total(&[b.clone(), a.clone()], &[])?, 0.0);
+    // In one file they are, and a filter on the statement removes both.
+    let both = scratch(
+        "corr-both.log",
+        b"2026-10-14 10:00:00.000 UTC [12] u@db/app LOG:  statement: SELECT count(*) FROM rental\n\
+          2026-10-14 10:00:01.000 UTC [12] u@db/app LOG:  duration: 50.000 ms\n",
+    )?;
+    assert_eq!(total(std::slice::from_ref(&both), &[])?, 50.0);
+    assert_eq!(
+        total(
+            std::slice::from_ref(&both),
+            &["--exclude-message", "rental"]
+        )?,
+        0.0
+    );
+    Ok(())
+}
