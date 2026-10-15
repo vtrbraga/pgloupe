@@ -311,7 +311,7 @@ fn autovacuum_runs(report: &Value) -> Option<u64> {
 /// Checks for the checkpoint, autovacuum, cancel, idle timeout, COPY and DDL entries.
 fn statement_kind_checks(truth: &Truth, log: &Value) -> Vec<Check> {
     let mut out = Vec::new();
-    let server = u64::try_from(truth.delta.checkpoints).unwrap_or(0);
+    let server = u64::try_from(truth.checkpoints_since_boot).unwrap_or(0);
     let started = checkpoints_started(log);
     out.push(check(
         "checkpoints match the server",
@@ -570,6 +570,7 @@ mod tests {
                 ..Counters::default()
             },
             dealloc_at_end: 4,
+            checkpoints_since_boot: 5,
             workers: vec![
                 WorkerStats {
                     name: "tpcb".to_owned(),
@@ -778,7 +779,7 @@ mod tests {
     #[test]
     fn checkpoints_beyond_the_shutdown_one_fail() {
         assert_eq!(
-            mutated(|t| t.delta.checkpoints = 1),
+            mutated(|t| t.checkpoints_since_boot = 1),
             ["checkpoints match the server"]
         );
     }

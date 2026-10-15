@@ -56,7 +56,15 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
         }
         fs::remove_dir_all(&dir).with_context(|| format!("removing {}", dir.display()))?;
     }
-    let (pg, target, log_dir, snap_dir) = start(args, &dir)?;
+    let started = start(args, &dir)?;
+    let Started {
+        pg,
+        target,
+        log_dir,
+        snap_dir,
+        boot_checkpoints,
+    } = &started;
+    let (target, boot_checkpoints) = (*target, *boot_checkpoints);
     let mut control = target.control("postgres")?;
     tune(&mut control)?;
     target
@@ -64,29 +72,83 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
         .batch_execute(oltp::SETUP_SQL)
         .context("creating the hot table")?;
     let scripts = script::write_scripts(&dir.join("scripts"))?;
-    pgbench::copy_scripts(&pg, &dir.join("scripts"))?;
+    pgbench::copy_scripts(pg, &dir.join("scripts"))?;
 
     let major = args.pg.number();
     let start = truth::read(&mut control, major)?;
-    snapshot::take(&mut control, &snap_dir, 0)?;
+    snapshot::take(&mut control, snap_dir, 0)?;
 
+    let began = Instant::now();
+    let (workers, ticker) = drive(args, &started, &scripts, target_bytes, began);
+    let workers = workers.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+    let ticker = ticker?;
+
+    let last = ticker
+        .last
+        .checked_add(1)
+        .context("more than 255 snapshots")?;
+    snapshot::take(&mut control, snap_dir, last)?;
+    let end = truth::read(&mut control, major)?;
+    drop(control);
+    pg.stop()?;
+
+    let formats = size::per_format(log_dir)?;
+    let gzipped = gzip_oldest(log_dir)?;
+    let reached_bytes = formats.values().map(|f| f.bytes).min().unwrap_or(0);
+    Truth {
+        pg_major: major,
+        seed: args.seed,
+        scale: args.scale,
+        target_bytes,
+        reached_bytes,
+        formats,
+        wall_secs: began.elapsed().as_secs(),
+        delta: end.minus(start),
+        dealloc_at_end: end.dealloc,
+        checkpoints_since_boot: end.checkpoints - boot_checkpoints,
+        workers,
+        snapshots: Snapshots {
+            first: 0,
+            after_reset: ticker.after_reset,
+            last,
+        },
+        gzipped,
+    }
+    .write(&dir)?;
+    Ok(dir)
+}
+
+/// Runs every worker and the ticker until the logs reach the target size.
+fn drive(
+    args: &BenchRunArgs,
+    started: &Started,
+    scripts: &[String],
+    target_bytes: u64,
+    began: Instant,
+) -> (Vec<anyhow::Result<WorkerStats>>, anyhow::Result<Ticked>) {
+    let Started {
+        pg,
+        target,
+        log_dir,
+        snap_dir,
+        ..
+    } = started;
+    let target = *target;
     let tpcb_clients = (args.clients / 2).max(1);
     let literal_clients = args.clients.saturating_sub(tpcb_clients).max(1);
     let tpcb_args = pgbench::tpcb_args(tpcb_clients, ROUND_SECS);
-    let literal_args = pgbench::literal_args(literal_clients, ROUND_SECS, args.scale, &scripts);
-
+    let literal_args = pgbench::literal_args(literal_clients, ROUND_SECS, args.scale, scripts);
     let stop = AtomicBool::new(false);
-    let began = Instant::now();
-    let (workers, ticker) = thread::scope(|scope| {
+    thread::scope(|scope| {
         let handles = vec![
             scope.spawn(|| {
                 worker("tpcb", &stop, || {
-                    pgbench::run_round(&pg, "bench:tpcb", &tpcb_args)
+                    pgbench::run_round(pg, "bench:tpcb", &tpcb_args)
                 })
             }),
             scope.spawn(|| {
                 worker("literal", &stop, || {
-                    pgbench::run_round(&pg, "bench:literal", &literal_args)
+                    pgbench::run_round(pg, "bench:literal", &literal_args)
                 })
             }),
             scope.spawn(|| oltp::locks(target, args.seed, &stop)),
@@ -99,8 +161,8 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
             ticker(
                 &Ticker {
                     target,
-                    snap_dir: &snap_dir,
-                    log_dir: &log_dir,
+                    snap_dir,
+                    log_dir,
                     target_bytes,
                     snapshot_every: Duration::from_secs(args.snapshot_secs),
                     checkpoint_every: Duration::from_secs(args.checkpoint_secs),
@@ -108,53 +170,24 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
                 &stop,
             )
         });
-        watch(&log_dir, target_bytes, &stop, began);
+        watch(log_dir, target_bytes, &stop, began);
         let workers: Vec<_> = handles.into_iter().map(join).collect();
         (workers, join(ticker))
-    });
-    let workers = workers.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
-    let ticker = ticker?;
+    })
+}
 
-    let last = ticker
-        .last
-        .checked_add(1)
-        .context("more than 255 snapshots")?;
-    snapshot::take(&mut control, &snap_dir, last)?;
-    let end = truth::read(&mut control, major)?;
-    drop(control);
-    pg.stop()?;
-
-    let formats = size::per_format(&log_dir)?;
-    let gzipped = gzip_oldest(&log_dir)?;
-    let reached_bytes = formats.values().map(|f| f.bytes).min().unwrap_or(0);
-    Truth {
-        pg_major: major,
-        seed: args.seed,
-        scale: args.scale,
-        target_bytes,
-        reached_bytes,
-        formats,
-        wall_secs: began.elapsed().as_secs(),
-        delta: end.minus(start),
-        dealloc_at_end: end.dealloc,
-        workers,
-        snapshots: Snapshots {
-            first: 0,
-            after_reset: ticker.after_reset,
-            last,
-        },
-        gzipped,
-    }
-    .write(&dir)?;
-    drop(pg);
-    Ok(dir)
+/// A running, loaded server and where its files are.
+struct Started {
+    pg: PgContainer,
+    target: Target,
+    log_dir: PathBuf,
+    snap_dir: PathBuf,
+    /// Checkpoints the server had run when it first accepted connections.
+    boot_checkpoints: i64,
 }
 
 /// Starts the container with the bench settings and loads the data.
-fn start(
-    args: &BenchRunArgs,
-    dir: &Path,
-) -> anyhow::Result<(PgContainer, Target, PathBuf, PathBuf)> {
+fn start(args: &BenchRunArgs, dir: &Path) -> anyhow::Result<Started> {
     let dataset_dir = fs::canonicalize(dataset::ensure_pagila(&args.cache)?)
         .context("resolving dataset directory")?;
     let log_dir = dir.join("log");
@@ -180,6 +213,8 @@ fn start(
         overrides: SETTINGS,
     })?;
     let target = Target { port: pg.port() };
+    let boot_checkpoints =
+        truth::read(&mut target.control("postgres")?, args.pg.number())?.checkpoints;
     bootstrap::load(&pg, target)?;
     say("loading pgbench data");
     let scale = args.scale.to_string();
@@ -188,7 +223,13 @@ fn start(
     ])
     .context("initializing pgbench")?;
 
-    Ok((pg, target, log_dir, snap_dir))
+    Ok(Started {
+        pg,
+        target,
+        log_dir,
+        snap_dir,
+        boot_checkpoints,
+    })
 }
 
 /// Compresses the oldest file of every format that rotated, so a run reads both plain and gzip

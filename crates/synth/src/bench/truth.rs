@@ -135,6 +135,10 @@ pub struct Truth {
     pub wall_secs: u64,
     /// End counters minus start counters.
     pub delta: Counters,
+    /// Checkpoints the server ran from when it accepted connections to the end of the run; the
+    /// load before the counters start (`CREATE DATABASE` forces two) is in the log too.
+    #[serde(default)]
+    pub checkpoints_since_boot: i64,
     /// `dealloc` at the end (it restarts at 0 on a reset, so a delta would mislead).
     pub dealloc_at_end: i64,
     /// Per worker.
@@ -221,6 +225,7 @@ mod tests {
                 ..Counters::default()
             },
             dealloc_at_end: 3,
+            checkpoints_since_boot: 9,
             workers: vec![
                 WorkerStats {
                     name: "tpcb".to_owned(),
