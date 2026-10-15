@@ -19,3 +19,7 @@ pgloupe = { path = "../pgloupe" }
 
 [lints]
 workspace = true
+
+[package.metadata.dist]
+# Test and build helpers; not part of any release.
+dist = false
