@@ -62,6 +62,15 @@ fn scalar(client: &mut Client, sql: &str) -> anyhow::Result<i64> {
         .with_context(|| format!("not an integer: {sql}"))
 }
 
+/// Timed plus requested checkpoints so far.
+///
+/// # Errors
+///
+/// Fails if the query fails.
+pub fn checkpoints(client: &mut Client, pg_major: u32) -> anyhow::Result<i64> {
+    scalar(client, checkpoint_sql(pg_major))
+}
+
 /// Reads all counters.
 ///
 /// # Errors
@@ -76,7 +85,7 @@ pub fn read(client: &mut Client, pg_major: u32) -> anyhow::Result<Counters> {
         deadlocks: scalar(client, &sum("deadlocks"))?,
         temp_files: scalar(client, &sum("temp_files"))?,
         temp_bytes: scalar(client, &sum("temp_bytes"))?,
-        checkpoints: scalar(client, checkpoint_sql(pg_major))?,
+        checkpoints: checkpoints(client, pg_major)?,
         dealloc: scalar(client, "SELECT dealloc FROM pg_stat_statements_info")?,
     })
 }

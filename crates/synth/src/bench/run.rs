@@ -213,8 +213,7 @@ fn start(args: &BenchRunArgs, dir: &Path) -> anyhow::Result<Started> {
         overrides: SETTINGS,
     })?;
     let target = Target { port: pg.port() };
-    let boot_checkpoints =
-        truth::read(&mut target.control("postgres")?, args.pg.number())?.checkpoints;
+    let boot_checkpoints = truth::checkpoints(&mut target.control("postgres")?, args.pg.number())?;
     bootstrap::load(&pg, target)?;
     say("loading pgbench data");
     let scale = args.scale.to_string();
