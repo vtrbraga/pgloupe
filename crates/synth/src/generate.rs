@@ -34,6 +34,7 @@ pub fn run(args: &GenerateArgs) -> anyhow::Result<PathBuf> {
     run_with(args, &scenarios)
 }
 
+#[expect(clippy::print_stderr, reason = "progress is reported on the terminal")]
 /// Generates a corpus for exactly `scenarios`, without touching other containers.
 ///
 /// Returns the run directory. Reuses a complete existing corpus unless `args.force`.

@@ -13,6 +13,10 @@ All notable changes are listed here. The format follows
 
 - A *Sources* view holds what was read (files, statistics window, `pg_stat_database`); the overview keeps the header to one line. Breakdowns fall back to the statistics when the log carries no databases or users, and skip columns the log never had. Sessions, Locks and Maintenance use the shared activity chart and say "not logged" instead of showing empty panels. Checkpoint tables put sync time first and explain a flat write time. The settings view says how to replace inferred advice with real settings.
 
+### Robustness
+
+- A log line, or one entry assembled from continuation lines, over 16 MiB is skipped and counted instead of being read whole, in the stderr, jsonlog and pgBouncer decoders.
+
 ## [0.1.0-alpha.2] - 2026-10-15
 
 Report content from a review of two reports, one over a managed-Postgres capture where the logs caught little.

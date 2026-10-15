@@ -70,3 +70,7 @@ source -> decoder -> assembler -> classifier -> accumulators -> store -> outputs
 
 By contributing you agree that your work is licensed under the terms of the project
 ([MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option).
+
+## Changelog
+
+`CHANGELOG.md` follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Every pull request that changes what a user sees (a report, a flag, a message, an install channel) adds a line under **Unreleased**, in the words a user would use: what changed and why they care, not which function moved. Changes that are not user-visible (tests, refactors, CI) need no entry; tick "no changelog needed" in the pull request template. At release time the *Unreleased* heading becomes the version and date.

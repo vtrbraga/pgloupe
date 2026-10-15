@@ -335,7 +335,7 @@ impl Merge for QueryStats {
 }
 
 /// One kind of error: `(level, sqlstate)`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorStat {
     pub count: u64,
     pub first_message: String,
@@ -428,7 +428,7 @@ pub struct BlockStat {
     pub max_us: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LockStats {
     pub waits: u64,
     pub acquired: u64,
@@ -448,7 +448,7 @@ impl Merge for LockStats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TempStats {
     pub files: u64,
     pub bytes: u64,
@@ -523,7 +523,7 @@ impl Merge for CheckpointStats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableStats {
     pub vacuums: u64,
     pub analyzes: u64,
@@ -803,7 +803,7 @@ fn cut_message(message: &str) -> String {
         .collect()
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bucket {
     pub statements: u64,
     pub errors: u64,

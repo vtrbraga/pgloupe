@@ -130,6 +130,7 @@ fn escape(text: &str) -> String {
         .replace('\t', "\\t")
 }
 
+#[expect(clippy::print_stderr, reason = "progress is reported on the terminal")]
 /// Reads the catalogs out of the `postgres:<major>` images and writes the table to `out`.
 ///
 /// # Errors

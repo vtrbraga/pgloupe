@@ -336,6 +336,7 @@ impl PgContainer {
 }
 
 impl Drop for PgContainer {
+    #[expect(clippy::print_stderr, reason = "progress is reported on the terminal")]
     fn drop(&mut self) {
         if let Err(e) = docker(&["rm", "-f", self.name.as_str()]) {
             eprintln!("warning: could not remove container {}: {e:#}", self.name);

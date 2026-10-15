@@ -13,7 +13,7 @@ use super::{Store, StoreError, sql_error};
 use crate::analyze::{acc::Accumulators, diagnostics::ShapeRow, report::FileReport};
 
 /// What the store keeps of a file's diagnostics, so a report can show them without the log.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredDiag {
     pub lines: u64,
     pub warnings: Vec<String>,

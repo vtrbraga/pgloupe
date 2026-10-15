@@ -1,0 +1,28 @@
+# Fixtures and translation tables hold other languages and deliberately broken input.
+[files]
+extend-exclude = [
+  "fixtures/",
+  "crates/pgloupe/src/log/locales.tsv",
+  "crates/pgloupe/src/combined/templates/*.min.*",
+  "docs/book/",
+  "assets/",
+  "dist-assets/",
+  "CHANGELOG.md",
+]
+
+[default.extend-words]
+# `SELEC` is a deliberate typo in a test of a statement that fails to parse.
+SELEC = "SELEC"
+# Words of other languages in the locale tests (German "titel", Portuguese "comando", ...).
+titel = "titel"
+comando = "comando"
+ERRO = "ERRO"
+Prozess = "Prozess"
+Processos = "Processos"
+# Cut-off strings in tests of truncated messages and of names that are cut short.
+EXECUT = "EXECUT"
+CHECKPOIN = "CHECKPOIN"
+testca = "testca"
+abd = "abd"
+ba = "ba"
+caf = "caf"
