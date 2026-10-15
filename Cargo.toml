@@ -97,3 +97,9 @@ unwrap_used = "warn"
 literal_string_with_formatting_args = "allow"
 # Transitive duplicates (base64, getrandom, syn, ...) are not actionable here.
 multiple_crate_versions = "allow"
+
+# Used by cargo-dist for release archives.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = true
