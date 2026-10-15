@@ -12,7 +12,7 @@ use super::{
     fingerprint::{display_text, fingerprint, sql_hash, statement_kind},
     kind::QueryKind,
     sketch::Sketch,
-    slowest::{self, Execution, Slowest},
+    slowest::{self, Example, Examples, Execution, Slowest, Who, who_key},
 };
 use crate::log::LogRecord;
 
@@ -41,8 +41,12 @@ fn execution(
     }
 }
 
-/// Slowest executions kept per statement, for "who ran this".
-const EXAMPLES_PER_STATEMENT: usize = 3;
+/// Slowest executions kept per statement, for "who ran this". One keeps the per-hour, per-worker
+/// footprint of a fingerprint small; the global slowest list has more.
+const EXAMPLES_PER_STATEMENT: usize = 1;
+/// Runs faster than this are not worth an example (and would cost memory for every fast
+/// statement of a wide log).
+const EXAMPLE_MIN_US: u64 = 10_000;
 
 /// Milliseconds to whole microseconds (sums of integers are exact and order independent).
 #[must_use]
@@ -142,7 +146,7 @@ pub struct QueryStats {
     pub cancelled: u64,
     /// The few slowest executions, without the statement text (it is `text`): who ran them and
     /// when.
-    pub examples: Slowest,
+    pub examples: Examples,
     pub lock_waits: u64,
     pub lock_wait_us: u64,
     pub temp_files: u64,
@@ -170,7 +174,7 @@ impl QueryStats {
             last_seen: None,
             errors: 0,
             cancelled: 0,
-            examples: Slowest::new(EXAMPLES_PER_STATEMENT),
+            examples: Examples::new(EXAMPLES_PER_STATEMENT),
             lock_waits: 0,
             lock_wait_us: 0,
             temp_files: 0,
@@ -690,6 +694,8 @@ pub struct Accumulators {
     pub dims: Dimensions,
     /// The slowest single executions.
     pub slowest: Slowest,
+    /// Who the per-statement examples point at, by [`who_key`].
+    pub who: BTreeMap<u64, Who>,
     /// Whether to keep bind parameters with the slowest executions.
     #[serde(skip)]
     capture_params: bool,
@@ -706,6 +712,7 @@ impl Accumulators {
             overflow: QueryStats::new(0, true, "<overflow>".to_owned(), QueryKind::Other),
             dims: Dimensions::default(),
             slowest: Slowest::new(slowest::DEFAULT_KEPT),
+            who: BTreeMap::new(),
             capture_params: false,
             limit: limit.max(1),
         }
@@ -748,10 +755,27 @@ impl Accumulators {
                 let (fingerprint, parsed) = (query.id, query.parsed);
                 if let Some(ms) = duration_ms {
                     let us = to_micros(*ms);
-                    if fingerprint != 0 && query.examples.wants(us) {
-                        let example =
-                            execution(record, fingerprint, String::new(), capture_params, us);
-                        query.examples.offer(example);
+                    let wanted =
+                        fingerprint != 0 && us >= EXAMPLE_MIN_US && query.examples.wants(us);
+                    if wanted {
+                        let who = who_key(
+                            record.database.as_deref(),
+                            record.user.as_deref(),
+                            record.application.as_deref(),
+                            record.host.as_deref(),
+                        );
+                        let params = if capture_params {
+                            parameters(record).map(slowest::cut)
+                        } else {
+                            None
+                        };
+                        query.examples.offer(Example {
+                            ts: record.ts,
+                            duration_us: us,
+                            who,
+                            params,
+                        });
+                        self.remember_who(who, record);
                     }
                     self.offer_slow(record, (fingerprint, parsed), text, us);
                 }
@@ -818,6 +842,16 @@ impl Accumulators {
             capture_params,
             duration_us,
         ));
+    }
+
+    /// Keeps who `record` came from under `key`, for the examples that point at it.
+    fn remember_who(&mut self, key: u64, record: &LogRecord) {
+        self.who.entry(key).or_insert_with(|| Who {
+            database: record.database.clone(),
+            user: record.user.clone(),
+            application: record.application.clone(),
+            host: record.host.clone(),
+        });
     }
 
     /// Counts the record under its database, user, application and host.
@@ -901,6 +935,9 @@ impl Merge for Accumulators {
         self.overflow.merge(other.overflow);
         self.dims.merge(other.dims);
         self.slowest.merge(other.slowest);
+        for (key, who) in other.who {
+            self.who.entry(key).or_insert(who);
+        }
         let limit = self.limit.max(other.limit);
         self.cap_queries(limit);
     }
@@ -1502,40 +1539,27 @@ mod tests {
     }
 
     #[test]
-    fn each_statement_keeps_its_slowest_runs_and_who_ran_them() {
+    fn each_statement_keeps_its_slowest_run_and_who_ran_it() {
         let mut a = acc();
-        for (second, ms, user) in [
-            (1, 5.0, "ann"),
-            (2, 90.0, "bob"),
-            (3, 40.0, "cy"),
-            (4, 60.0, "dee"),
-            (5, 1.0, "eve"),
-        ] {
+        for (second, ms, user) in [(1, 15.0, "ann"), (2, 90.0, "bob"), (3, 40.0, "cy")] {
             a.add_record(&LogRecord {
                 user: Some(user.to_owned()),
                 ..statement(second, ms, "SELECT * FROM t WHERE id = 1")
             });
         }
         let query = a.queries.values().next().unwrap();
-        let who: Vec<_> = query
-            .examples
-            .rows()
-            .iter()
-            .map(|e| {
-                (
-                    e.duration_us / 1_000,
-                    e.user.clone().unwrap_or_default(),
-                    e.text.is_empty(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            who,
-            [
-                (90, "bob".to_owned(), true),
-                (60, "dee".to_owned(), true),
-                (40, "cy".to_owned(), true)
-            ]
-        );
+        let runs = query.examples.rows();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].duration_us, 90_000);
+        assert_eq!(a.who[&runs[0].who].user.as_deref(), Some("bob"));
+    }
+
+    #[test]
+    fn fast_statements_keep_no_example() {
+        let mut a = acc();
+        a.add_record(&statement(1, 2.0, "SELECT 1 FROM t"));
+        let query = a.queries.values().next().unwrap();
+        assert!(query.examples.rows().is_empty());
+        assert!(a.who.is_empty());
     }
 }

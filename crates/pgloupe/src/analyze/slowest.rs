@@ -105,6 +105,110 @@ impl Merge for Slowest {
     }
 }
 
+/// Who ran a statement: the attributes of the record that logged it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Who {
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub application: Option<String>,
+    pub host: Option<String>,
+}
+
+/// A stable 64-bit key of `who`, so examples carry eight bytes instead of four strings.
+#[must_use]
+pub fn who_key(
+    database: Option<&str>,
+    user: Option<&str>,
+    application: Option<&str>,
+    host: Option<&str>,
+) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in [database, user, application, host] {
+        for byte in part.unwrap_or_default().bytes().chain([0xff]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    hash
+}
+
+/// One slow run of a statement, kept small: the people are looked up by `who`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Example {
+    pub ts: Timestamp,
+    pub duration_us: u64,
+    /// Key into the accumulators' table of [`Who`].
+    pub who: u64,
+    pub params: Option<String>,
+}
+
+impl Example {
+    fn order(&self, other: &Self) -> Ordering {
+        other
+            .duration_us
+            .cmp(&self.duration_us)
+            .then_with(|| self.ts.cmp(&other.ts))
+            .then_with(|| self.who.cmp(&other.who))
+            .then_with(|| self.params.cmp(&other.params))
+    }
+}
+
+/// The slowest runs of one statement, slowest first.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Examples {
+    limit: usize,
+    rows: Vec<Example>,
+}
+
+impl Examples {
+    /// A list that keeps at most `limit` runs.
+    #[must_use]
+    pub fn new(limit: usize) -> Self {
+        Examples {
+            limit,
+            rows: Vec::new(),
+        }
+    }
+
+    /// Whether a run of `duration_us` could still make the list.
+    #[must_use]
+    pub fn wants(&self, duration_us: u64) -> bool {
+        self.limit > 0
+            && (self.rows.len() < self.limit
+                || self
+                    .rows
+                    .last()
+                    .is_some_and(|last| duration_us >= last.duration_us))
+    }
+
+    /// Offers a run; it stays if it is among the slowest.
+    pub fn offer(&mut self, example: Example) {
+        let at = self
+            .rows
+            .partition_point(|kept| kept.order(&example) != Ordering::Greater);
+        if at >= self.limit {
+            return;
+        }
+        self.rows.insert(at, example);
+        self.rows.truncate(self.limit);
+    }
+
+    /// The kept runs, slowest first.
+    #[must_use]
+    pub fn rows(&self) -> &[Example] {
+        &self.rows
+    }
+}
+
+impl Merge for Examples {
+    fn merge(&mut self, other: Self) {
+        self.limit = self.limit.max(other.limit);
+        for example in other.rows {
+            self.offer(example);
+        }
+    }
+}
+
 /// `text` cut at [`MAX_TEXT_BYTES`] on a character boundary.
 #[must_use]
 pub fn cut(text: &str) -> String {

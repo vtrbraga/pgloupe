@@ -511,15 +511,6 @@
             "params": null,
             "timestamp": "2026-10-14T10:06:00.1Z",
             "user": "postgres"
-          },
-          {
-            "application": "synth:demo",
-            "database": "pagila",
-            "duration_ms": 100.0,
-            "host": null,
-            "params": null,
-            "timestamp": "2026-10-14T10:05:00.1Z",
-            "user": "postgres"
           }
         ],
         "execute_calls": 0,
@@ -604,35 +595,7 @@
       "log": {
         "calls": 4,
         "errors": 0,
-        "examples": [
-          {
-            "application": "synth:demo",
-            "database": "pagila",
-            "duration_ms": 0.6,
-            "host": null,
-            "params": null,
-            "timestamp": "2026-10-14T10:02:00.2Z",
-            "user": "postgres"
-          },
-          {
-            "application": "synth:demo",
-            "database": "pagila",
-            "duration_ms": 0.5,
-            "host": null,
-            "params": null,
-            "timestamp": "2026-10-14T10:01:00.1Z",
-            "user": "postgres"
-          },
-          {
-            "application": "synth:demo",
-            "database": "pagila",
-            "duration_ms": 0.5,
-            "host": null,
-            "params": null,
-            "timestamp": "2026-10-14T10:04:00.4Z",
-            "user": "postgres"
-          }
-        ],
+        "examples": [],
         "execute_calls": 0,
         "fingerprint": "9703bd645db62a78",
         "first_seen": "2026-10-14T10:01:00.1Z",
@@ -685,26 +648,7 @@
       "log": {
         "calls": 2,
         "errors": 0,
-        "examples": [
-          {
-            "application": "synth:demo",
-            "database": "pagila",
-            "duration_ms": 4.1,
-            "host": null,
-            "params": null,
-            "timestamp": "2026-10-14T10:08:00.1Z",
-            "user": "postgres"
-          },
-          {
-            "application": "synth:demo",
-            "database": "pagila",
-            "duration_ms": 3.2,
-            "host": null,
-            "params": null,
-            "timestamp": "2026-10-14T10:07:00.1Z",
-            "user": "postgres"
-          }
-        ],
+        "examples": [],
         "execute_calls": 0,
         "fingerprint": "a8fbe6a1633776f6",
         "first_seen": "2026-10-14T10:07:00.1Z",

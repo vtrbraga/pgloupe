@@ -488,7 +488,7 @@
       }))));
     }
     if (row.log && row.log.examples && row.log.examples.length) {
-      body.appendChild(panel('Slowest runs', simpleTable([{ label: 'Duration', num: true }, { label: 'When' }, { label: 'Who' }, { label: 'Parameters' }], row.log.examples.map(function (x) {
+      body.appendChild(panel('Slowest run', simpleTable([{ label: 'Duration', num: true }, { label: 'When' }, { label: 'Who' }, { label: 'Parameters' }], row.log.examples.map(function (x) {
         return h('tr', null, [h('td', { 'class': 'num', text: L.fmtMs(x.duration_ms) }), h('td', { 'class': 'nowrap', text: L.fmtTime(x.timestamp, true) }),
           h('td', { text: [x.database, x.user, x.application, x.host].filter(Boolean).join(' / ') || '\u2014' }), h('td', { 'class': 'mono', text: x.params || '\u2014' })]);
       }))));

@@ -270,7 +270,7 @@ pub struct StatementRow {
     pub temp_bytes: u64,
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
-    /// The slowest runs of this statement and who ran them.
+    /// The slowest run of this statement and who ran it.
     pub examples: Vec<ExampleRow>,
 }
 
@@ -543,7 +543,7 @@ fn statements(acc: &Accumulators, options: &ReportOptions) -> Vec<StatementRow> 
     });
     rows.truncate(options.top);
     rows.into_iter()
-        .map(|query| statement_row(query, total_us))
+        .map(|query| statement_row(query, total_us, &acc.who))
         .collect()
 }
 
@@ -563,11 +563,15 @@ pub fn all_statements(acc: &Accumulators) -> Vec<StatementRow> {
     let total_us = total_us(acc);
     acc.queries
         .values()
-        .map(|query| statement_row(query, total_us))
+        .map(|query| statement_row(query, total_us, &acc.who))
         .collect()
 }
 
-fn statement_row(query: &QueryStats, total_us: u64) -> StatementRow {
+fn statement_row(
+    query: &QueryStats,
+    total_us: u64,
+    who: &std::collections::BTreeMap<u64, crate::analyze::slowest::Who>,
+) -> StatementRow {
     StatementRow {
         fingerprint: format!("{:016x}", query.id),
         query_id: query.query_id.map(|id| id.to_string()),
@@ -596,14 +600,17 @@ fn statement_row(query: &QueryStats, total_us: u64) -> StatementRow {
             .examples
             .rows()
             .iter()
-            .map(|run| ExampleRow {
-                timestamp: run.ts.to_string(),
-                duration_ms: ms(run.duration_us),
-                database: run.database.clone(),
-                user: run.user.clone(),
-                application: run.application.clone(),
-                host: run.host.clone(),
-                params: run.params.clone(),
+            .map(|run| {
+                let who = who.get(&run.who);
+                ExampleRow {
+                    timestamp: run.ts.to_string(),
+                    duration_ms: ms(run.duration_us),
+                    database: who.and_then(|w| w.database.clone()),
+                    user: who.and_then(|w| w.user.clone()),
+                    application: who.and_then(|w| w.application.clone()),
+                    host: who.and_then(|w| w.host.clone()),
+                    params: run.params.clone(),
+                }
             })
             .collect(),
     }
