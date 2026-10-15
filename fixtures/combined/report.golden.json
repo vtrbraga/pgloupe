@@ -63,6 +63,7 @@
         "skipped_no_queryid": 0,
         "unchanged": 1
       },
+      "evicted_estimate": null,
       "evictions": null,
       "reset": "none",
       "reset_at": null,

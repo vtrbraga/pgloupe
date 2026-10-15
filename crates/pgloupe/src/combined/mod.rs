@@ -167,8 +167,11 @@ pub struct StatsInput {
     pub reset: Reset,
     /// When the counters were last reset, when known.
     pub reset_at: Option<String>,
-    /// Entries evicted during the window, when the info files say.
+    /// Eviction rounds during the window, when the info files say. Each round removes about 5% of
+    /// `pg_stat_statements.max` entries.
     pub evictions: Option<u64>,
+    /// About how many entries those rounds removed.
+    pub evicted_estimate: Option<u64>,
     /// No info files were given, so a reset would go unnoticed.
     pub blind_spot: bool,
     /// How many entries were new, restarted, gone and so on.
@@ -336,6 +339,7 @@ fn stats_input(delta: &Delta) -> StatsInput {
         reset: delta.reset,
         reset_at: delta.reset_at.map(|at| at.to_string()),
         evictions: delta.evictions,
+        evicted_estimate: delta.evicted_estimate,
         blind_spot: delta.blind_spot,
         counts: delta.counts,
     }
