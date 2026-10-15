@@ -226,6 +226,12 @@ fn is_nested_only(row: &JoinedRow) -> bool {
 }
 
 fn heavy_stats_only(ctx: &Context<'_>, found: &mut Vec<Finding>) {
+    // A log that recorded no statement at all (no durations, or none that were slow) has said
+    // nothing about which ones are missing from it; `no_log_records` and the settings advice
+    // cover that case.
+    if !ctx.joined.rows.iter().any(|row| row.link != "stats") {
+        return;
+    }
     let exec = |row: &JoinedRow| row.stats.as_ref().map_or(0.0, |stats| stats.total_exec_ms);
     // Statements that only run inside functions are already part of their callers' time.
     let total: f64 = ctx
@@ -461,6 +467,13 @@ mod tests {
         let found = run(Some(&d), Vec::new(), None);
         let f = found.iter().find(|f| f.code == "no_query_text").unwrap();
         assert!(f.message.contains("pg_read_all_stats"));
+    }
+
+    #[test]
+    fn a_log_with_no_statements_does_not_blame_the_threshold() {
+        let d = delta_with_info(&[(key(1), Some(FILM), 10, 900.0)], Some(quiet_infos()));
+        let found = run(Some(&d), Vec::new(), Some(100.0));
+        assert!(!codes(&found).contains(&"stats_only_heavy"), "{found:?}");
     }
 
     #[test]
