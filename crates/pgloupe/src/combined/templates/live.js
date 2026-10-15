@@ -7,7 +7,9 @@
   try { config = JSON.parse(node.textContent); } catch (e) { return; }
   var L = PgLib;
   var pollMs = Math.max(5, Number(config.poll_secs) || 15) * 1000;
-  var loaded = null, status = null, paused = false, unreachable = false, busy = false;
+  // The page is a report the server already built: do not fetch it again on the first poll.
+  var loaded = isFinite(Number(config.generation)) ? { generation: Number(config.generation), run_id: config.run_id } : null;
+  var status = null, paused = false, unreachable = false, busy = false, display = '';
 
   var text = document.createElement('span');
   var problem = document.createElement('span');
@@ -30,11 +32,13 @@
     var updated = status && status.updated_at ? L.fmtAgo(seconds(status.updated_at)) : 'waiting for the first report';
     var next = status && status.next_at ? L.fmtIn(-seconds(status.next_at)) : null;
     pill.classList.toggle('paused', paused);
-    pill.classList.toggle('failing', unreachable || !!(status && status.last_error));
+    pill.classList.toggle('failing', !!display || unreachable || !!(status && status.last_error));
     text.textContent = (paused ? '❚❚ paused' : '● live') + ' · updated ' + updated + (next && !paused ? ' · next ' + next : '');
     var msg = '';
-    if (unreachable) { msg = 'server unreachable, showing data from ' + updated; }
+    if (display) { msg = display + ', showing data from ' + updated; }
+    else if (unreachable) { msg = 'server unreachable, showing data from ' + updated; }
     else if (status && status.last_error) { msg = 'last update failed (' + status.last_error + '), showing data from ' + updated; }
+    else if (status && status.notes && status.notes.length) { msg = 'note: ' + status.notes.join('; '); }
     problem.textContent = msg;
     problem.hidden = !msg;
   }
@@ -54,7 +58,13 @@
       unreachable = false;
       if (!L.shouldFetch(s, loaded)) { return null; }
       return load('/report.json', function (r) { return r.text(); }).then(function (raw) {
-        if (window.PgApp.update(raw)) { loaded = s.generation; }
+        // A report the page cannot show is not a server that went away.
+        try {
+          display = window.PgApp.update(raw) ? '' : 'could not display the update';
+        } catch (e) {
+          display = 'could not display the update';
+        }
+        if (!display) { loaded = { generation: s.generation, run_id: s.run_id }; }
       });
     }).catch(function () {
       unreachable = true;

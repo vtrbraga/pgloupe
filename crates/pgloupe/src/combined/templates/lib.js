@@ -336,10 +336,17 @@ var PgLib = (function () {
     return 'in ' + Math.round(seconds / 3600) + ' h';
   }
 
-  /** Whether the server has built a report this page has not loaded. */
-  function shouldFetch(status, loaded) {
+  /**
+   * Whether the server has built a report this page has not loaded. `held` is what the page has:
+   * `{ generation, run_id }`, or a bare generation number. A new run id (the server restarted)
+   * counts as new even when the generation number is the same.
+   */
+  function shouldFetch(status, held) {
     if (!status || !isNum(status.generation) || status.generation < 1) { return false; }
-    return status.generation !== loaded;
+    var heldGeneration = held && typeof held === 'object' ? held.generation : held;
+    var heldRun = held && typeof held === 'object' ? held.run_id : undefined;
+    if (heldRun !== undefined && status.run_id !== undefined && status.run_id !== heldRun) { return true; }
+    return status.generation !== heldGeneration;
   }
 
   var api = {

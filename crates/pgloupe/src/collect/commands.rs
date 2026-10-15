@@ -720,6 +720,10 @@ pub fn watch(args: &WatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
         out: args.out.as_ref(),
     };
     let shared: serve::Shared = std::sync::Arc::default();
+    if let Ok(mut state) = shared.write() {
+        // Tells a page apart from the reports of an earlier run, whose numbers start again.
+        state.run_id = format!("{:x}", jiff::Timestamp::now().as_nanosecond());
+    }
     let mut log = |line: &str| drop(writeln!(std::io::stderr(), "{line}"));
     if args.once {
         let settings = Settings {
@@ -759,7 +763,7 @@ pub fn watch(args: &WatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
         server.addr, args.interval
     )?;
     out.flush()?;
-    server.spawn(std::sync::Arc::clone(&shared));
+    server.spawn(&shared);
     watch::run(
         Settings {
             interval,

@@ -91,7 +91,7 @@ fn render(report: &CombinedReport, poll_secs: Option<u32>) -> Result<String, Htm
             None => JS.to_owned(),
         }),
         data_json => Value::from_safe_string(embedded_json(report)?),
-        live_json => poll_secs.map(|secs| format!("{{\"poll_secs\":{secs}}}")),
+        live_json => poll_secs.map(|secs| format!("{{\"poll_secs\":{secs},\"generation\":__GENERATION__,\"run_id\":\"__RUN__\"}}")),
         timeline_svg => Value::from_safe_string(svg),
         bucket_label => bucket,
     })?;
@@ -379,7 +379,9 @@ mod tests {
         let report = fixture_report(SortBy::Total, 20, true, true);
         assert!(!html(&report).unwrap().contains("id=\"pgloupe-live\""));
         let live = html_live(&report, 15).unwrap();
-        assert!(live.contains("id=\"pgloupe-live\">{\"poll_secs\":15}</script>"));
+        assert!(live.contains("id=\"pgloupe-live\">{\"poll_secs\":15,"));
+        // The server fills the page's generation and run id in when it serves it.
+        assert!(live.contains("__GENERATION__") && live.contains("__RUN__"));
         // Still one self-contained document: the poller only talks to its own origin.
         for forbidden in ["http://", "https://", "//cdn"] {
             assert!(!live.contains(forbidden), "found {forbidden:?}");

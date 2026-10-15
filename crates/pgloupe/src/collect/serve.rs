@@ -9,6 +9,9 @@ use std::{
 use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
+/// Threads answering requests.
+const WORKERS: usize = 4;
+
 /// What the server hands out; replaced whole each time a report is built.
 #[derive(Debug, Clone, Default)]
 pub struct Published {
@@ -22,8 +25,12 @@ pub struct Published {
     pub html: Arc<String>,
     /// The report as JSON.
     pub json: Arc<String>,
-    /// What went wrong in the last cycle, if anything.
+    /// Why the last cycle produced no report, if it did not.
     pub last_error: Option<String>,
+    /// Steps of the last good cycle that failed without stopping the report.
+    pub notes: Vec<String>,
+    /// Identifies this run of `watch`: generation numbers start again after a restart.
+    pub run_id: String,
     /// Seconds between updates.
     pub interval_secs: u64,
 }
@@ -35,6 +42,8 @@ struct Status<'a> {
     updated_at: Option<&'a str>,
     next_at: Option<&'a str>,
     last_error: Option<&'a str>,
+    notes: &'a [String],
+    run_id: &'a str,
     interval_secs: u64,
 }
 
@@ -123,16 +132,20 @@ pub fn bind(addr: SocketAddr) -> Result<Bound, ListenError> {
 
 impl Bound {
     /// Serves requests from `shared` on a background thread until the process ends.
-    pub fn spawn(&self, shared: Shared) {
-        let server = Arc::clone(&self.server);
+    pub fn spawn(&self, shared: &Shared) {
         // A loopback server answers only names that mean this machine, so a web page cannot
         // reach it by pointing its own domain at 127.0.0.1 (DNS rebinding).
         let local_only = self.addr.ip().is_loopback();
-        thread::spawn(move || {
-            for request in server.incoming_requests() {
-                handle(request, &shared, local_only);
-            }
-        });
+        // Several workers, so one client that stops reading cannot hold up the dashboard.
+        for _ in 0..WORKERS {
+            let server = Arc::clone(&self.server);
+            let shared = Arc::clone(shared);
+            thread::spawn(move || {
+                for request in server.incoming_requests() {
+                    handle(request, &shared, local_only);
+                }
+            });
+        }
     }
 
     /// Stops accepting requests.
@@ -175,12 +188,19 @@ fn handle(request: Request, shared: &Shared, local_only: bool) {
         Ok(guard) => guard.clone(),
         Err(poisoned) => poisoned.into_inner().clone(),
     };
-    let etag = format!("\"{}\"", published.generation);
+    let etag = format!("\"{}-{}\"", published.run_id, published.generation);
     let ready = published.generation > 0;
     let response: Reply = match path.as_str() {
         "/" | "/index.html" if ready => with(
             with(
-                Response::from_string(published.html.as_str()).boxed(),
+                // The page learns which report it holds, so its first poll does not fetch it again.
+                Response::from_string(
+                    published
+                        .html
+                        .replace("__GENERATION__", &published.generation.to_string())
+                        .replace("__RUN__", &published.run_id),
+                )
+                .boxed(),
                 "Content-Type",
                 "text/html; charset=utf-8",
             ),
@@ -216,6 +236,8 @@ fn handle(request: Request, shared: &Shared, local_only: bool) {
                 updated_at: published.updated_at.as_deref(),
                 next_at: published.next_at.as_deref(),
                 last_error: published.last_error.as_deref(),
+                notes: &published.notes,
+                run_id: &published.run_id,
                 interval_secs: published.interval_secs,
             };
             let body = serde_json::to_string(&status).unwrap_or_else(|_| "{}".to_owned());

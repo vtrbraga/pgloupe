@@ -183,3 +183,12 @@ test('times are read in the zone the report asks for', () => {
   }
   assert.equal(L.fmtTime(ts, false), '12:30:15');
 });
+
+test('a new run id means a new report even with the same generation number', () => {
+  assert.equal(L.shouldFetch({ generation: 1, run_id: 'b' }, { generation: 1, run_id: 'a' }), true);
+  assert.equal(L.shouldFetch({ generation: 1, run_id: 'a' }, { generation: 1, run_id: 'a' }), false);
+  assert.equal(L.shouldFetch({ generation: 2, run_id: 'a' }, { generation: 1, run_id: 'a' }), true);
+  // Older pages and servers without run ids behave as before.
+  assert.equal(L.shouldFetch({ generation: 2 }, 1), true);
+  assert.equal(L.shouldFetch({ generation: 2 }, 2), false);
+});

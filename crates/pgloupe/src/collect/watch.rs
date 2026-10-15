@@ -150,8 +150,8 @@ pub fn run(
                     published.updated_at = Some(stamp(now));
                     published.html = Arc::new(built.html);
                     published.json = Arc::new(built.json);
-                    published.last_error =
-                        (!built.notes.is_empty()).then(|| built.notes.join("; "));
+                    published.last_error = None;
+                    published.notes = built.notes;
                     log(&format!("updated (report {})", published.generation));
                 }
                 Err(error) => {
@@ -693,7 +693,8 @@ mod tests {
         run(settings(1), &mut cycle, &clock(), &shared, &mut |_| {});
         let p = shared.read().unwrap().clone();
         assert_eq!(p.generation, 1);
-        assert_eq!(p.last_error.as_deref(), Some("snapshot: refused"));
+        assert_eq!(p.notes, ["snapshot: refused"]);
+        assert!(p.last_error.is_none());
     }
 
     #[test]

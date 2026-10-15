@@ -47,6 +47,7 @@
       { id: 'findings', label: 'Data caveats', show: findings.length > 0 }
     ].filter(function (s) { return s.show; });
     if (!sections.some(function (s) { return s.id === state.s; })) { state.s = 'overview'; }
+    if (state.fp && !byFp[state.fp]) { state.fp = ''; }
     return true;
   }
   if (!load(dataNode.textContent)) { return; }
@@ -207,6 +208,7 @@
       parts.push(h('div', { 'class': 'grid kpis' }, [
         kpi('Statements', L.fmtCompact(sum('statements')), scope, C.sparkline(series('statements'), 'var(--c-statements)')),
         kpi('Errors', L.fmtCompact(sum('errors')), scope, C.sparkline(series('errors'), 'var(--c-errors)'), sum('errors') > 0 ? 'bad' : ''),
+        kpi('Statement p95', L.fmtMs(logs.latency && logs.latency.p95), logs.latency && logs.latency.count ? 'median ' + L.fmtMs(logs.latency.p50) + ', slowest ' + L.fmtMs(logs.latency.max) : 'no statement durations logged'),
         kpi('Cancelled', L.fmtInt(cancelled), cancelled ? reasonsText(logs.cancelled) : 'none', null, cancelled ? 'warn' : ''),
         kpi('Lock waits', L.fmtCompact(sum('lock_waits')), 'total wait ' + L.fmtMs(logs.locks.total_wait_ms) + ', ' + logs.locks.deadlocks + ' deadlocks', C.sparkline(series('lock_waits'), 'var(--c-locks)'), logs.locks.deadlocks ? 'warn' : ''),
         kpi('Temp files', L.fmtBytes(logs.temp_files.bytes), L.fmtInt(logs.temp_files.files) + ' files, largest ' + L.fmtBytes(logs.temp_files.max_bytes)),
@@ -330,7 +332,7 @@
   /* ---------- statements ---------- */
   var COLUMNS = [
     { key: 'link', label: 'Source', cell: function (r) { return badge(r.link, r.link); } },
-    { key: 'statement', label: 'Statement', cell: function (r) { return h('div', { 'class': 'stmt' }, [h('span', { 'class': 'sql', text: r.text.replace(/\s+/g, ' ') }), h('span', { 'class': 'fp', text: L.shortFp(r.fingerprint) + (visibleFlags(r).length ? ' · ' + visibleFlags(r).join(', ') : '') })]); } },
+    { key: 'statement', label: 'Statement', cell: function (r) { return h('div', { 'class': 'stmt' }, [r.log && r.log.kind && r.log.kind !== 'other' ? h('span', { 'class': 'badge kind ' + r.log.kind, title: 'What the statement does', text: r.log.kind }) : null, h('span', { 'class': 'sql', text: r.text.replace(/\s+/g, ' ') }), h('span', { 'class': 'fp', text: L.shortFp(r.fingerprint) + (visibleFlags(r).length ? ' · ' + visibleFlags(r).join(', ') : '') })]); } },
     { key: 'log_calls', label: 'Log calls', num: true, cell: function (r) { return r.log ? L.fmtInt(r.log.calls) : '—'; } },
     { key: 'stats_calls', label: 'Stat calls', num: true, cell: function (r) { return r.stats ? L.fmtInt(r.stats.calls) : '—'; } },
     { key: 'coverage', label: 'Log / pgss calls', title: 'Calls the log recorded divided by calls pg_stat_statements counted', num: true, cell: function (r) {
@@ -353,18 +355,20 @@
     } catch (e) { return fallback; }
   })();
   var PAGE = 100;
+  /** What the statements table keeps between redraws, so a live update does not reset it. */
+  var ui = { shown: PAGE, cursor: -1 };
 
   function viewStatements() {
-    var shown = PAGE;
-    var cursor = -1;
+    var shown = ui.shown;
+    var cursor = ui.cursor;
     var tbody = h('tbody');
     var count = h('span', { 'class': 'count' });
-    var more = h('button', { 'class': 'btn more', onclick: function () { shown += PAGE; refresh(); }, text: 'Show more' });
+    var more = h('button', { 'class': 'btn more', onclick: function () { shown += PAGE; ui.shown = shown; refresh(); }, text: 'Show more' });
     var head = h('tr');
-    var table = h('table', null, [h('thead', null, head), tbody]);
+    var table = h('table', { 'class': 'cards' }, [h('thead', null, head), tbody]);
     var search = h('input', { 'class': 'search', type: 'search', placeholder: 'Search statements (press /)', 'aria-label': 'Search statements', value: state.q, id: 'stmt-search' });
     search.value = state.q;
-    search.addEventListener('input', function () { state.q = search.value; shown = PAGE; cursor = -1; sync(); refresh(); });
+    search.addEventListener('input', function () { state.q = search.value; shown = PAGE; ui.shown = shown; cursor = -1; ui.cursor = cursor; sync(); refresh(); });
     var chips = h('div', { 'class': 'toolbar' });
     var linkChips = ['all', 'both', 'log', 'stats'].filter(function (l) { return l === 'all' || rows.some(function (r) { return r.link === l; }); });
     var flagSet = {};
@@ -379,10 +383,10 @@
     function drawChips() {
       C.clear(chips);
       linkChips.forEach(function (l) {
-        chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(state.link === l), onclick: function () { state.link = l; shown = PAGE; sync(); drawChips(); refresh(); }, text: l === 'all' ? 'All' : l }));
+        chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(state.link === l), onclick: function () { state.link = l; shown = PAGE; ui.shown = shown; sync(); drawChips(); refresh(); }, text: l === 'all' ? 'All' : l }));
       });
       flagChips.forEach(function (f) {
-        chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(state.flag === f), onclick: function () { state.flag = state.flag === f ? '' : f; shown = PAGE; sync(); drawChips(); refresh(); }, text: f }));
+        chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(state.flag === f), onclick: function () { state.flag = state.flag === f ? '' : f; shown = PAGE; ui.shown = shown; sync(); drawChips(); refresh(); }, text: f }));
       });
     }
     function drawHead() {
@@ -406,16 +410,16 @@
       var maxTotal = Math.max.apply(null, page.map(function (r) { return L.column(r, 'total') || 0; }).concat([1]));
       C.clear(tbody);
       page.forEach(function (r, index) {
-        var tr = h('tr', { 'class': 'clickable' + (r.fingerprint === state.fp ? ' selected' : ''), 'data-fp': r.fingerprint, tabindex: '-1', onclick: function () { cursor = index; openStatement(r.fingerprint); } });
+        var tr = h('tr', { 'class': 'clickable' + (r.fingerprint === state.fp ? ' selected' : ''), 'data-fp': r.fingerprint, tabindex: '-1', onclick: function () { cursor = index; ui.cursor = cursor; openStatement(r.fingerprint); } });
         COLUMNS.forEach(function (c) {
           if (hiddenCols.indexOf(c.key) !== -1) { return; }
           var content = c.cell(r);
           if (c.bar) {
             var value = L.column(r, 'total') || 0;
             content = h('span', null, [h('span', { 'class': 'bar', style: { width: (value / maxTotal * 100).toFixed(1) + '%' } }), h('span', { text: content })]);
-            tr.appendChild(h('td', { 'class': 'num bar-cell' }, content));
+            tr.appendChild(h('td', { 'class': 'num bar-cell', 'data-label': c.label }, content));
           } else {
-            tr.appendChild(h('td', { 'class': c.num ? 'num' : '' }, content));
+            tr.appendChild(h('td', { 'class': (c.num ? 'num' : '') + (c.key === 'statement' ? ' stmt-cell' : ''), 'data-label': c.label }, content));
           }
         });
         tbody.appendChild(tr);
@@ -448,7 +452,7 @@
       move: function (delta) {
         var trs = tbody.querySelectorAll('tr');
         if (!trs.length) { return; }
-        cursor = Math.max(0, Math.min(trs.length - 1, cursor + delta));
+        cursor = Math.max(0, Math.min(trs.length - 1, cursor + delta)); ui.cursor = cursor;
         trs.forEach(function (t) { t.classList.remove('cursor'); });
         trs[cursor].scrollIntoView({ block: 'nearest' });
         trs[cursor].style.outline = '2px solid var(--accent)';
@@ -903,6 +907,8 @@
     update: function (raw) {
       var y = window.scrollY;
       var oldDisplay = display, held = rangeNow();
+      var typing = document.activeElement && document.activeElement.id === 'stmt-search' ? { from: document.activeElement.selectionStart, to: document.activeElement.selectionEnd } : null;
+      var drawerTop = drawerNode.scrollTop;
       if (!load(raw)) { return false; }
       // Selections are bar indices, and the bars slide as the window moves: keep the same time.
       var moved = L.remapRange(oldDisplay, held, display);
@@ -911,6 +917,11 @@
       try { history.replaceState(null, '', L.buildHash(state) || location.pathname + location.search); } catch (e) { /* the hash is a convenience */ }
       render();
       window.scrollTo(0, y);
+      drawerNode.scrollTop = drawerTop;
+      if (typing) {
+        var box = document.getElementById('stmt-search');
+        if (box) { box.focus(); try { box.setSelectionRange(typing.from, typing.to); } catch (e) { /* not every input type has a selection */ } }
+      }
       return true;
     }
   };

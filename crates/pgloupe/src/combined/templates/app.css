@@ -205,3 +205,18 @@ html.app #app{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:
 .live-pill.failing{border-color:var(--warn)}
 .live-problem{color:var(--warn)}
 @media print{.live-pill{display:none}}
+
+.badge.kind{margin-right:6px;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em}
+.badge.kind.select{background:#e6edff;color:#2f4fb5}.badge.kind.insert{background:#dcf5ef;color:#0b6b5c}.badge.kind.update{background:#fdf0d5;color:#8a5a00}.badge.kind.delete{background:#fde3e4;color:#a32128}.badge.kind.ddl{background:#f6e3fa;color:#8a1f9e}
+@media (max-width:640px){
+ /* Each statement becomes a card: its cells stack, each labelled by its column. */
+ #app .table-wrap{overflow:visible;border:0}
+ #app table.cards thead{display:none}
+ #app table.cards tbody tr{display:block;margin:0 0 10px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface)}
+ #app table.cards td{display:flex;justify-content:space-between;gap:12px;padding:3px 0;border:0;text-align:right}
+ #app table.cards td::before{content:attr(data-label);color:var(--muted);font-size:12px;text-align:left;flex:none}
+ #app table.cards td.stmt-cell{display:block;text-align:left}
+ #app table.cards td.stmt-cell::before{display:none}
+ .topbar .actions{flex-wrap:wrap}
+ .live-pill{left:12px;right:12px;border-radius:12px}
+}

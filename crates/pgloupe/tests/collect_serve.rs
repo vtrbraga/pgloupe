@@ -32,6 +32,7 @@ fn get(url: &str) -> (u16, String, Option<String>) {
 fn publish(shared: &Shared) {
     let mut p = shared.write().unwrap();
     p.generation = 3;
+    "r".clone_into(&mut p.run_id);
     p.updated_at = Some("2026-10-14T12:00:00Z".to_owned());
     p.html = Arc::new("<html>report</html>".to_owned());
     p.json = Arc::new("{\"kind\":\"pgloupe.report\"}".to_owned());
@@ -42,7 +43,7 @@ fn publish(shared: &Shared) {
 fn the_server_answers_its_routes_and_refuses_the_rest() {
     let shared: Shared = Arc::new(RwLock::new(Published::default()));
     let bound = bind(parse_listen("127.0.0.1:0", false).unwrap()).unwrap();
-    bound.spawn(Arc::clone(&shared));
+    bound.spawn(&shared);
     let base = format!("http://{}", bound.addr);
 
     // Nothing built yet: the page is not ready, the status already answers.
@@ -59,7 +60,7 @@ fn the_server_answers_its_routes_and_refuses_the_rest() {
     let (status, body, etag) = get(&format!("{base}/report.json"));
     assert_eq!(status, 200);
     assert!(body.contains("pgloupe.report"));
-    assert_eq!(etag.as_deref(), Some("\"3\""));
+    assert_eq!(etag.as_deref(), Some("\"r-3\""));
     let (status, status_body, _) = get(&format!("{base}/status"));
     assert_eq!(status, 200);
     assert!(
@@ -69,7 +70,7 @@ fn the_server_answers_its_routes_and_refuses_the_rest() {
 
     // A matching ETag is not sent again.
     let response = ureq::get(&format!("{base}/report.json"))
-        .header("If-None-Match", "\"3\"")
+        .header("If-None-Match", "\"r-3\"")
         .config()
         .http_status_as_error(false)
         .build()

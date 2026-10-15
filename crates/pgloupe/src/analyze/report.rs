@@ -50,6 +50,8 @@ pub struct Report {
     /// What ranks `statements`: `total`, `calls`, `p95` or `max`.
     pub statements_by: &'static str,
     pub statements: Vec<StatementRow>,
+    /// Duration of every statement that had one, across all of them.
+    pub latency: Quantiles,
     pub errors: Vec<ErrorRow>,
     pub locks: LocksReport,
     pub temp_files: TempReport,
@@ -647,6 +649,7 @@ impl Report {
                 SortBy::Max => "max",
             },
             statements: statements(acc, options),
+            latency: quantiles(&acc.statement_durations()),
             errors: errors(acc),
             locks: LocksReport {
                 waits: totals.locks.waits,
