@@ -31,7 +31,7 @@
     if (hideNew && state.flag === 'new') { state.flag = ''; }
     byFp = Object.create(null);
     rows.forEach(function (r) { byFp[r.fingerprint] = r; });
-    display = logs ? L.downsample(logs.timeline.buckets, 240) : [];
+    display = logs ? L.downsample(logs.timeline.buckets, 120) : [];
     sections = [
       { id: 'overview', label: 'Overview', show: true },
       { id: 'statements', label: 'Statements', show: rows.length > 0 },
@@ -53,11 +53,16 @@
   if (!load(dataNode.textContent)) { return; }
   function visibleFlags(r) { return r.stats ? r.stats.flags.filter(function (f) { return !(hideNew && f === 'new'); }) : []; }
 
+  /** Rows of the activity chart. Rates draw as areas, events as ticks; rows with nothing in them are left out. */
   var SERIES = [
-    { key: 'statements', label: 'Statements', color: 'var(--c-statements)', visible: true },
-    { key: 'errors', label: 'Errors', color: 'var(--c-errors)', visible: true },
-    { key: 'lock_waits', label: 'Lock waits', color: 'var(--c-locks)', visible: true },
-    { key: 'connections', label: 'Connections', color: 'var(--c-connections)', visible: true }
+    { key: 'statements', label: 'Statements', color: 'var(--c-statements)', kind: 'rate', visible: true },
+    { key: 'connections', label: 'Connections', color: 'var(--c-connections)', kind: 'rate', visible: true },
+    { key: 'lock_waits', label: 'Lock waits', color: 'var(--c-locks)', kind: 'rate', visible: true },
+    { key: 'wal_kb', label: 'WAL written', color: '#8b5cf6', kind: 'rate', visible: true, fmt: function (kb) { return L.fmtBytes(kb * 1024); } },
+    { key: 'errors', label: 'Errors', color: 'var(--c-errors)', kind: 'event', visible: true },
+    { key: 'aborts', label: 'Abrupt endings', color: '#d97706', kind: 'event', visible: true },
+    { key: 'checkpoints', label: 'Checkpoints', color: '#64748b', kind: 'event', visible: true },
+    { key: 'ddl', label: 'Schema changes', color: '#d946ef', kind: 'event', visible: true }
   ];
   var KIND_COLORS = { select: '#4f7cff', insert: '#12a594', update: '#f0a020', delete: '#e5484d', copy: '#8b5cf6', ddl: '#d946ef', tcl: '#64748b', utility: '#94a3b8', other: '#cbd5e1' };
 
@@ -197,35 +202,157 @@
 
   /* ---------- overview ---------- */
   function rangeNow() { return L.clampRange(state.from, state.to, display.length); }
-  function viewOverview() {
-    var parts = [];
-    if (actions.length) { parts.push(actionsPanel()); }
-    var range = rangeNow();
+  /** True when the log's own diagnostics say this kind of line never appeared. */
+  function notLogged(word) {
+    var warnings = (logs && logs.diagnostics && logs.diagnostics.warnings) || [];
+    return warnings.some(function (w) { return w.indexOf('not seen:') === 0 && w.indexOf(word) !== -1; });
+  }
+  /** A KPI whose source is absent says so, instead of showing a zero that looks like good news. */
+  function offKpi(label, why) { return kpi(label, 'not logged', why, null, 'off'); }
+  var DASH = '—';
+  function pctText(v) { return v === null || v === undefined ? DASH : L.fmtPct(v, 1); }
+
+  function healthKpis(sum, scope) {
+    var db = D.database && D.database.total;
+    var out = [];
     if (logs) {
-      var sum = function (key) { return L.sumRange(display, key, range); };
-      var scope = range ? 'in selection' : 'whole period';
+      var errors = sum('errors');
+      out.push(kpi('Errors', L.fmtCompact(errors), scope, C.sparkline(series('errors'), 'var(--c-errors)'), errors > 0 ? 'bad' : ''));
       var cancelled = logs.cancelled ? logs.cancelled.total : 0;
-      parts.push(h('div', { 'class': 'grid kpis' }, [
-        kpi('Statements', L.fmtCompact(sum('statements')), scope, C.sparkline(series('statements'), 'var(--c-statements)')),
-        kpi('Errors', L.fmtCompact(sum('errors')), scope, C.sparkline(series('errors'), 'var(--c-errors)'), sum('errors') > 0 ? 'bad' : ''),
-        kpi('Statement p95', L.fmtMs(logs.latency && logs.latency.p95), logs.latency && logs.latency.count ? 'median ' + L.fmtMs(logs.latency.p50) + ', slowest ' + L.fmtMs(logs.latency.max) : 'no statement durations logged'),
-        kpi('Cancelled', L.fmtInt(cancelled), cancelled ? reasonsText(logs.cancelled) : 'none', null, cancelled ? 'warn' : ''),
-        kpi('Lock waits', L.fmtCompact(sum('lock_waits')), 'total wait ' + L.fmtMs(logs.locks.total_wait_ms) + ', ' + logs.locks.deadlocks + ' deadlocks', C.sparkline(series('lock_waits'), 'var(--c-locks)'), logs.locks.deadlocks ? 'warn' : ''),
-        kpi('Temp files', L.fmtBytes(logs.temp_files.bytes), L.fmtInt(logs.temp_files.files) + ' files, largest ' + L.fmtBytes(logs.temp_files.max_bytes)),
-        kpi('Connections', L.fmtCompact(sum('connections')), scope, C.sparkline(series('connections'), 'var(--c-connections)'))
+      out.push(kpi('Cancelled', L.fmtInt(cancelled), cancelled ? reasonsText(logs.cancelled) : 'none', null, cancelled ? 'warn' : ''));
+    } else {
+      out.push(offKpi('Errors', 'no log was given'));
+      out.push(offKpi('Cancelled', 'no log was given'));
+    }
+    if (logs && !(notLogged('lock waits') && !logs.locks.waits)) {
+      out.push(kpi('Lock waits', L.fmtCompact(sum('lock_waits')), 'total wait ' + L.fmtMs(logs.locks.total_wait_ms) + ', ' + logs.locks.deadlocks + ' deadlocks', C.sparkline(series('lock_waits'), 'var(--c-locks)'), logs.locks.deadlocks ? 'warn' : ''));
+    } else if (db) {
+      out.push(kpi('Deadlocks', L.fmtInt(db.deadlocks), 'from pg_stat_database; lock waits are not logged', null, db.deadlocks ? 'warn' : ''));
+    } else {
+      out.push(offKpi('Lock waits', 'log_lock_waits is off, or none happened'));
+    }
+    if (logs && !(notLogged('temp files') && !logs.temp_files.files)) {
+      out.push(kpi('Temp files', L.fmtBytes(logs.temp_files.bytes), L.fmtInt(logs.temp_files.files) + ' files, largest ' + L.fmtBytes(logs.temp_files.max_bytes)));
+    } else if (db) {
+      out.push(kpi('Temp files', L.fmtBytes(db.temp_bytes), L.fmtInt(db.temp_files) + ' files, from pg_stat_database'));
+    } else {
+      out.push(offKpi('Temp files', 'log_temp_files is off, or none happened'));
+    }
+    if (db) {
+      out.push(kpi('Rollbacks', pctText(db.rollback_pct), L.fmtInt(db.rollbacks) + ' of ' + L.fmtInt(db.commits + db.rollbacks) + ' transactions', null, db.rollback_pct >= 5 && db.rollbacks >= 100 ? 'warn' : ''));
+      out.push(kpi('Abandoned sessions', pctText(db.abandoned_pct), L.fmtInt(db.sessions_abandoned) + ' of ' + L.fmtInt(db.sessions) + ' ended without a clean goodbye', null, db.abandoned_pct >= 20 && db.sessions_abandoned >= 50 ? 'warn' : ''));
+    } else {
+      out.push(offKpi('Rollbacks', 'needs pg_stat_database (snap writes it)'));
+      var abrupt = logs && logs.disconnects ? (logs.disconnects.reasons || []).reduce(function (n, r) { return n + r.count; }, 0) : 0;
+      out.push(logs && abrupt ? kpi('Abrupt endings', L.fmtCompact(abrupt), 'sessions that ended without a clean goodbye', null, 'warn') : offKpi('Abandoned sessions', 'needs pg_stat_database or connection logging'));
+    }
+    return out;
+  }
+  function loadKpis() {
+    var db = D.database;
+    if (!db) { return null; }
+    var t = db.total;
+    var out = [
+      kpi('Running statements', t.avg_active.toFixed(1), 'average sessions over ' + L.fmtInt(db.window_secs) + ' s'),
+      kpi('Idle in transaction', t.avg_idle_in_transaction.toFixed(1), 'average sessions', null, t.avg_idle_in_transaction >= 1 ? 'warn' : ''),
+      kpi('Connected', t.avg_sessions.toFixed(1), 'average sessions, ' + L.fmtInt(t.backends_now) + ' at the end'),
+      kpi('Cache hit', pctText(t.hit_pct), L.fmtInt(t.blocks_read) + ' blocks read')
+    ];
+    if (logs && logs.latency && logs.latency.count) {
+      out.push(kpi('Statement p95', L.fmtMs(logs.latency.p95), 'median ' + L.fmtMs(logs.latency.p50) + ', slowest ' + L.fmtMs(logs.latency.max)));
+    }
+    if (db.statements_coverage_pct !== null && db.statements_coverage_pct !== undefined) {
+      var c = db.statements_coverage_pct;
+      out.push(kpi('pg_stat_statements covers', c < 1 ? 'under 1%' : Math.round(c) + '%', 'of the time the server spent running statements', null, c < 50 ? 'warn' : ''));
+    }
+    return out;
+  }
+  function actionRow(a, index) {
+    var links = (a.statements || []).map(function (fp) {
+      if (!byFp[fp]) { return h('span', { 'class': 'chip-off', title: 'Not among the statements shown (raise --top)', text: L.shortFp(fp) }); }
+      return h('button', { title: 'Open the statement', onclick: function () { openStatement(fp); }, text: L.shortFp(fp) });
+    });
+    return h('details', { 'class': 'action-row ' + a.priority }, [
+      h('summary', null, [h('span', { 'class': 'num', text: String(index + 1) }), h('span', { 'class': 'title', text: a.title }), badge(a.priority, a.priority === 'high' ? 'bad' : 'warn')]),
+      h('div', { 'class': 'body' }, [
+        h('div', { 'class': 'advice', text: a.advice }),
+        a.evidence ? h('code', { 'class': 'evidence', text: (a.evidence_kind === 'statement' ? 'statement: ' : 'log: ') + a.evidence }) : null,
+        h('div', { 'class': 'links' }, [
+          links.length ? h('span', { 'class': 'muted', text: 'statements' }) : null, links,
+          h('button', { 'class': 'btn small', onclick: function () { setState({ s: SECTION_FOR[a.section] || 'overview', fp: '' }); window.scrollTo(0, 0); }, text: 'Details' })
+        ])
+      ])
+    ]);
+  }
+  function attentionPanel() {
+    var body = [];
+    if (actions.length) { body.push(h('div', { 'class': 'todo' }, actions.map(actionRow))); }
+    if (findings.length) {
+      var warns = findings.filter(function (f) { return f.severity === 'warn'; }).length;
+      body.push(h('div', { 'class': 'caveat-line' }, [
+        badge(String(findings.length), warns ? 'warn' : 'info'),
+        h('span', { text: ' data caveats' + (warns ? ' (' + warns + ' warnings)' : '') + ': ' + findings[0].code.replace(/_/g, ' ') + (findings.length > 1 ? ' and ' + (findings.length - 1) + ' more' : '') + ' ' }),
+        h('button', { 'class': 'btn small', onclick: function () { setState({ s: 'findings' }); window.scrollTo(0, 0); }, text: 'Read them' })
       ]));
     }
-    if (findings.length) {
-      var top = findings.slice(0, 3);
-      parts.push(panel('Data caveats', h('div', { 'class': 'findings' }, top.map(findingNode)), findings.length > 3 ? h('button', { 'class': 'btn small', onclick: function () { setState({ s: 'findings' }); }, text: 'All ' + findings.length }) : null));
+    if (!body.length) { return null; }
+    return panel(actions.length ? 'What to fix first' : 'Data caveats', h('div', null, body));
+  }
+  function topStatementsPanel() {
+    if (!rows.length) { return null; }
+    var top = L.sortRows(rows, function (r) { return L.column(r, 'total'); }, 'desc').slice(0, 5);
+    var heads = [{ label: 'Statement' }, { label: 'Calls', num: true }, { label: 'Total', num: true }, { label: 'Mean', num: true }, { label: 'Share', num: true }]
+      .concat(stats ? [{ label: 'Cache hit', num: true }] : []);
+    var body = top.map(function (r) {
+      var cells = [
+        h('td', { 'class': 'stmt-cell' }, h('code', { text: r.text.replace(/\s+/g, ' ').slice(0, 110) })),
+        h('td', { 'class': 'num', text: L.fmtInt(L.column(r, 'calls')) }),
+        h('td', { 'class': 'num', text: L.fmtMs(L.column(r, 'total')) }),
+        h('td', { 'class': 'num', text: L.fmtMs(L.column(r, 'mean')) }),
+        h('td', { 'class': 'num', text: L.fmtPct(L.column(r, 'share')) })
+      ];
+      if (stats) { cells.push(h('td', { 'class': 'num', text: pctText(L.column(r, 'hit')) })); }
+      return h('tr', { 'class': 'clickable', tabindex: '0', onclick: function () { openStatement(r.fingerprint); } }, cells);
+    });
+    return panel('Where the time went', h('div', null, [simpleTable(heads, body)]),
+      h('button', { 'class': 'btn small', onclick: function () { setState({ s: 'statements', sort: 'total', dir: 'desc' }); window.scrollTo(0, 0); }, text: 'All statements' }));
+  }
+  function kindsTable() {
+    var kinds = logs && logs.kinds || [];
+    if (!kinds.length) { return null; }
+    var heads = [{ label: 'Kind' }, { label: 'Calls', num: true }, { label: 'Time', num: true }, { label: 'Mean', num: true }];
+    var body = kinds.map(function (k) {
+      return h('tr', { 'class': 'clickable', tabindex: '0', title: 'Show only these statements', onclick: function () { setState({ s: 'statements', kind: k.kind, fp: '' }); window.scrollTo(0, 0); } }, [
+        h('td', null, h('span', { 'class': 'badge kind ' + k.kind, text: k.kind })),
+        h('td', { 'class': 'num', text: L.fmtInt(k.calls) }),
+        h('td', { 'class': 'num', text: L.fmtPct(k.share_pct, 0) }),
+        h('td', { 'class': 'num', text: L.fmtMs(k.mean_ms) })
+      ]);
+    });
+    return panel('What the statements do', simpleTable(heads, body));
+  }
+  function viewOverview() {
+    var parts = [];
+    var range = rangeNow();
+    var sum = function (key) { return L.sumRange(display, key, range); };
+    var scope = range ? 'in selection' : 'whole period';
+    parts.push(h('div', { 'class': 'grid kpis' }, healthKpis(sum, scope)));
+    var load = loadKpis();
+    if (load) { parts.push(h('div', { 'class': 'grid kpis' }, load)); }
+    var attention = attentionPanel();
+    if (attention) { parts.push(attention); }
+    if (logs) { parts.push(timelinePanel()); }
+    var top = topStatementsPanel();
+    var kinds = kindsTable();
+    if (top && kinds) { parts.push(h('div', { 'class': 'grid cols-2-1' }, [top, kinds])); } else if (top || kinds) { parts.push(top || kinds); }
+    if (logs && logs.histograms && logs.histograms.statements.some(function (b) { return b.count; })) {
+      parts.push(histogramPanel('Statement durations', logs.histograms.statements, 'var(--c-statements)', logs.overview.records));
+    } else if (logs) {
+      parts.push(panel('Statement durations', emptyNote('No statement durations in this log: log_min_duration_statement is off, or nothing was slow enough.')));
     }
     if (D.database) { parts.push(databasePanel(D.database)); }
     if (stats) { parts.push(statsPanel()); }
-    if (logs) {
-      parts.push(timelinePanel());
-      parts.push(h('div', { 'class': 'grid cols-2' }, [kindsPanel(), histogramPanel('Statement durations', logs.histograms.statements, 'var(--c-statements)', logs.overview.records)]));
-    }
-    if (logs) { parts.push(diagnosticsPanel()); }
+    if (logs) { parts.push(h('details', { 'class': 'panel fold' }, [h('summary', { text: 'About the log that was read' }), diagnosticsPanel()])); }
     if (!logs && !stats) { parts.push(emptyNote('Nothing to show.')); }
     return parts;
   }
@@ -275,32 +402,24 @@
     return panel('pg_stat_statements window', h('dl', { 'class': 'facts' }, facts.map(function (f) { return h('div', null, [h('dt', { text: f[0] }), h('dd', { text: String(f[1]) })]); })));
   }
   function databasePanel(db) {
-    var t = db.total;
     var pct = function (v) { return v === null || v === undefined ? '-' : L.fmtPct(v, 1); };
-    var tone = function (bad) { return bad ? 'warn' : ''; };
-    var kpis = h('div', { 'class': 'grid kpis' }, [
-      kpi('Running statements', t.avg_active.toFixed(1), 'average sessions, ' + L.fmtInt(db.window_secs) + ' s window'),
-      kpi('Idle in transaction', t.avg_idle_in_transaction.toFixed(1), 'average sessions', null, tone(t.avg_idle_in_transaction >= 1)),
-      kpi('Connected', t.avg_sessions.toFixed(1), 'average sessions, ' + L.fmtInt(t.backends_now) + ' at the end'),
-      kpi('Rollbacks', pct(t.rollback_pct), L.fmtInt(t.rollbacks) + ' of ' + L.fmtInt(t.commits + t.rollbacks) + ' transactions', null, tone(t.rollback_pct >= 5 && t.rollbacks >= 100)),
-      kpi('Cache hit', pct(t.hit_pct), L.fmtInt(t.blocks_read) + ' blocks read'),
-      kpi('Abandoned sessions', pct(t.abandoned_pct), L.fmtInt(t.sessions_abandoned) + ' of ' + L.fmtInt(t.sessions), null, tone(t.abandoned_pct >= 20 && t.sessions_abandoned >= 50))
-    ]);
-    var note = db.statements_coverage_pct === null || db.statements_coverage_pct === undefined ? null :
-      h('p', { 'class': 'muted', text: 'pg_stat_statements accounts for ' + (db.statements_coverage_pct < 1 ? 'under 1' : Math.round(db.statements_coverage_pct)) + '% of the time the server spent running statements.' });
     var heads = ['Database', 'Running', 'Idle in txn', 'Rollbacks', 'Cache hit', 'Abandoned', 'Temp files', 'Deadlocks'].map(function (label, i) { return { label: label, num: i > 0 }; });
     var table = simpleTable(heads, db.databases.map(function (d) {
       var cells = [d.name, d.avg_active.toFixed(2), d.avg_idle_in_transaction.toFixed(2), pct(d.rollback_pct), pct(d.hit_pct), pct(d.abandoned_pct), L.fmtInt(d.temp_files), L.fmtInt(d.deadlocks)];
       return h('tr', null, cells.map(function (c, i) { return h('td', { 'class': i > 0 ? 'num' : '', text: String(c) }); }));
     }));
-    return panel('Server load (pg_stat_database)', h('div', null, [kpis, note, table].filter(Boolean)));
+    var more = db.more_databases ? h('p', { 'class': 'muted', text: db.more_databases + ' more databases are not listed.' }) : null;
+    return panel('Databases (pg_stat_database)', h('div', null, [table, more].filter(Boolean)));
   }
+  /** Seconds one bar of the activity chart covers: the report's bucket times how many were merged. */
+  function barSeconds() { return ((logs && logs.timeline.bucket_secs) || 60) * (display.length ? display[0].span : 1); }
   function timelinePanel() {
     var host = h('div', { 'class': 'chart-host' });
-    var legend = h('div', { 'class': 'legend' }, SERIES.map(function (s) {
+    var live = SERIES.filter(function (s) { return display.some(function (b) { return b[s.key] > 0; }); });
+    var legend = h('div', { 'class': 'legend' }, live.map(function (s) {
       return h('button', {
         'aria-pressed': String(s.visible), title: 'Show or hide ' + s.label,
-        onclick: function () { s.visible = !s.visible; draw(); legend.querySelectorAll('button').forEach(function (b, i) { b.setAttribute('aria-pressed', String(SERIES[i].visible)); }); }
+        onclick: function () { s.visible = !s.visible; draw(); legend.querySelectorAll('button').forEach(function (b, i) { b.setAttribute('aria-pressed', String(live[i].visible)); }); }
       }, [h('i', { style: { background: s.color } }), s.label]);
     }));
     var note = h('div', { 'class': 'range-note' });
@@ -315,7 +434,7 @@
         note.appendChild(document.createTextNode('Selection ' + L.fmtTime(display[r.from].start, true) + ' → ' + L.fmtTime(display[r.to].start, true) + '. Cards follow the selection; statement rows cover the whole period.'));
         note.appendChild(h('button', { 'class': 'btn small', onclick: function () { setState({ from: null, to: null }); }, text: 'Clear' }));
       } else {
-        note.appendChild(document.createTextNode('Drag across the chart to select a period.'));
+        note.appendChild(document.createTextNode('Drag across the chart to select a period. Each bar covers ' + L.fmtDuration(barSeconds()) + '.'));
       }
     }
     var wrap = panel('Activity', h('div', null, [legend, host, note]));
@@ -367,12 +486,28 @@
     { key: 'p95', label: 'p95', num: true, cell: function (r) { return L.fmtMs(L.column(r, 'p95')); } },
     { key: 'max', label: 'Max', num: true, cell: function (r) { return L.fmtMs(L.column(r, 'max')); } },
     { key: 'share', label: 'Share', num: true, cell: function (r) { return L.fmtPct(L.column(r, 'share')); } },
-    { key: 'errors', label: 'Errors', num: true, cell: function (r) { var e = L.column(r, 'errors'); return e === null ? '—' : L.fmtInt(e); } }
+    { key: 'errors', label: 'Errors', num: true, cell: function (r) { var e = L.column(r, 'errors'); return e === null ? '—' : L.fmtInt(e); } },
+    { key: 'hit', label: 'Cache hit', title: 'Blocks found in shared buffers as a share of all blocks asked for', num: true, cell: function (r) { var v = L.column(r, 'hit'); return v === null || v === undefined ? '—' : L.fmtPct(v, 1); } },
+    { key: 'io', label: 'I/O share', title: 'Time spent reading and writing files as a share of execution time (needs track_io_timing)', num: true, cell: function (r) { var v = L.column(r, 'io'); return v === null || v === undefined ? '—' : L.fmtPct(v, 0); } },
+    { key: 'reads', label: 'Blocks read', title: 'Shared blocks read from disk or the OS cache', num: true, cell: function (r) { var v = L.column(r, 'reads'); return v === null ? '—' : L.fmtCompact(v); } },
+    { key: 'rows_call', label: 'Rows/call', num: true, cell: function (r) { return fmtRatio(L.column(r, 'rows_call')); } },
+    { key: 'blocks_row', label: 'Blocks read/row', title: 'High means scanning a lot to return little', num: true, cell: function (r) { return fmtRatio(L.column(r, 'blocks_row')); } },
+    { key: 'wal_call', label: 'WAL/call', num: true, cell: function (r) { var v = L.column(r, 'wal_call'); return v === null || v === undefined ? '—' : L.fmtBytes(v); } }
+  ];
+  function fmtRatio(v) { return v === null || v === undefined ? '—' : (v >= 100 ? L.fmtCompact(Math.round(v)) : v.toFixed(v >= 10 ? 1 : 2)); }
+  /** What the "Top by" selector offers, and the column each choice sorts by. */
+  var TOP_BY = [
+    ['total', 'Total time'], ['calls', 'Calls'], ['mean', 'Mean time'], ['p95', 'p95 (log)'], ['max', 'Slowest (log)'],
+    ['rows_call', 'Rows per call'], ['reads', 'Blocks read'], ['blocks_row', 'Blocks read per row'], ['wal_call', 'WAL per call'], ['io_ms', 'I/O time']
   ];
   var hiddenCols = (function () {
-    var fallback = ['max', 'errors', 'mean', 'stats_calls'];
+    // What a reader of this report has no use for: log columns without a log, statistics
+    // columns without statistics, and the detail columns until asked for.
+    var fallback = ['max', 'errors', 'mean', 'stats_calls', 'reads', 'rows_call', 'blocks_row', 'wal_call'];
+    if (!logs) { fallback = ['log_calls', 'coverage', 'p95', 'max', 'errors', 'reads', 'rows_call', 'blocks_row', 'wal_call']; }
+    if (!stats) { fallback = fallback.concat(['hit', 'io', 'stats_calls']); }
     try {
-      var saved = JSON.parse(store('pgloupe.cols') || 'null');
+      var saved = JSON.parse(store('pgloupe.cols.v2') || 'null');
       return Array.isArray(saved) ? saved.filter(function (k) { return typeof k === 'string'; }) : fallback;
     } catch (e) { return fallback; }
   })();
@@ -407,6 +542,9 @@
       linkChips.forEach(function (l) {
         chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(state.link === l), onclick: function () { state.link = l; shown = PAGE; ui.shown = shown; sync(); drawChips(); refresh(); }, text: l === 'all' ? 'All' : l }));
       });
+      if (state.kind) {
+        chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': 'true', title: 'Clear the kind filter', onclick: function () { state.kind = ''; shown = PAGE; ui.shown = shown; sync(); drawChips(); refresh(); }, text: 'kind: ' + state.kind + ' \u00d7' }));
+      }
       flagChips.forEach(function (f) {
         chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(state.flag === f), onclick: function () { state.flag = state.flag === f ? '' : f; shown = PAGE; ui.shown = shown; sync(); drawChips(); refresh(); }, text: f }));
       });
@@ -423,7 +561,7 @@
       });
     }
     function visible() {
-      var filtered = L.filterStatements(rows, { q: state.q, link: state.link, flag: state.flag });
+      var filtered = L.filterStatements(rows, { q: state.q, link: state.link, flag: state.flag, kind: state.kind });
       return L.sortRows(filtered, function (r) { return L.column(r, state.sort); }, state.dir);
     }
     function refresh() {
@@ -460,13 +598,24 @@
         box.addEventListener('change', function () {
           hiddenCols = hiddenCols.filter(function (k) { return k !== c.key; });
           if (!box.checked) { hiddenCols.push(c.key); }
-          store('pgloupe.cols', JSON.stringify(hiddenCols)); drawHead(); refresh();
+          store('pgloupe.cols.v2', JSON.stringify(hiddenCols)); drawHead(); refresh();
         });
         return h('label', null, [box, c.label]);
       }));
       picker.appendChild(pop);
     }, text: 'Columns' });
     picker.appendChild(chooser);
+    var topBy = h('select', { 'aria-label': 'Top statements by', title: 'Rank the statements by' }, TOP_BY.map(function (o) {
+      return h('option', { value: o[0], text: 'Top by: ' + o[1] });
+    }));
+    topBy.value = TOP_BY.some(function (o) { return o[0] === state.sort; }) ? state.sort : 'total';
+    topBy.addEventListener('change', function () {
+      state.sort = topBy.value; state.dir = 'desc';
+      var column = { io_ms: 'io' }[topBy.value] || topBy.value;
+      hiddenCols = hiddenCols.filter(function (k) { return k !== column; });
+      store('pgloupe.cols.v2', JSON.stringify(hiddenCols));
+      sync(); drawHead(); refresh();
+    });
     drawChips(); drawHead();
     var wrap = h('div', { 'class': 'table-wrap' }, table);
     setTimeout(refresh, 0);
@@ -484,7 +633,7 @@
       focusSearch: function () { search.focus(); search.select(); }
     };
     return [
-      h('div', { 'class': 'toolbar' }, [search, picker, count]),
+      h('div', { 'class': 'toolbar' }, [search, rows.some(function (r) { return r.stats; }) ? topBy : null, picker, count]),
       chips, wrap, empty,
       h('div', { 'class': 'toolbar', style: { 'justify-content': 'center' } }, more)
     ];

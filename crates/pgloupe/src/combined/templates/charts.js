@@ -36,58 +36,90 @@ var PgCharts = (function (L) {
     return svg;
   }
 
-  /** Small multiples over time with a crosshair, a tooltip and drag-to-select. */
+  /**
+   * Activity over time on one shared axis: a row of area for each rate (statements, sessions,
+   * lock waits, WAL), a thin row of ticks for each kind of event (errors, aborted sessions,
+   * checkpoints, schema changes). Only series that have something to show get a row; the label
+   * and the largest value sit in the gutter, never over the data. Drag to select a period.
+   */
   function timeline(host, opts) {
     clear(host);
     var buckets = opts.buckets;
-    var series = opts.series.filter(function (s) { return s.visible !== false; });
+    var total = function (s) { return buckets.reduce(function (n, b) { return n + (b[s.key] || 0); }, 0); };
+    var series = opts.series.filter(function (s) { return s.visible !== false && total(s) > 0; });
     if (!buckets.length || !series.length) {
       var empty = document.createElement('p');
       empty.className = 'muted';
-      empty.textContent = buckets.length ? 'All series are hidden.' : 'No events in this period.';
+      var hidden = opts.series.filter(function (s) { return s.visible === false; }).length;
+      empty.textContent = !buckets.length ? 'No events in this period.' : hidden ? 'All series with data are hidden.' : 'Nothing happened that this chart tracks.';
       host.appendChild(empty);
       return;
     }
     var W = Math.max(320, host.clientWidth || 800);
-    var left = 46, right = 10, panel = 58, gap = 14, axis = 20;
-    var H = series.length * (panel + gap) - gap + axis + 4;
+    var narrow = W < 560;
+    var left = narrow ? 84 : 128, right = 10, axis = 22;
+    var areaH = 52, eventH = 20, gap = 8;
+    var rowsH = series.map(function (s) { return s.kind === 'event' ? eventH : areaH; });
+    var H = rowsH.reduce(function (n, v) { return n + v + gap; }, 0) + axis;
     var plotW = W - left - right;
     var n = buckets.length;
     var bw = plotW / n;
     var svg = svgEl('svg', { viewBox: '0 0 ' + W + ' ' + H, width: W, height: H, 'class': 'tl-chart', role: 'img', 'aria-label': 'Activity over time' });
     var range = opts.range;
-    var inRange = function (i) { return !range || (i >= Math.min(range.from, range.to) && i <= Math.max(range.from, range.to)); };
+    var plotH = H - axis;
 
-    series.forEach(function (s, row) {
-      var top = row * (panel + gap);
-      var values = buckets.map(function (b) { return b[s.key] || 0; });
-      var max = L.niceMax(Math.max.apply(null, values));
-      svg.appendChild(svgEl('line', { x1: left, x2: W - right, y1: top + panel + 0.5, y2: top + panel + 0.5, 'class': 'grid' }));
-      svg.appendChild(svgEl('line', { x1: left, x2: W - right, y1: top + 0.5, y2: top + 0.5, 'class': 'grid faint' }));
-      svg.appendChild(text('text', { x: left - 6, y: top + 9, 'text-anchor': 'end', 'class': 'axis' }, L.fmtCompact(max)));
-      svg.appendChild(text('text', { x: left - 6, y: top + panel, 'text-anchor': 'end', 'class': 'axis' }, '0'));
-      svg.appendChild(text('text', { x: left + 4, y: top + 12, 'class': 'panel-label', fill: s.color }, s.label));
-      values.forEach(function (v, i) {
-        if (v <= 0) { return; }
-        var hgt = Math.max(1, (v / max) * panel);
-        svg.appendChild(svgEl('rect', {
-          x: (left + i * bw + 0.5).toFixed(2), y: (top + panel - hgt).toFixed(2),
-          width: Math.max(1, bw - 1).toFixed(2), height: hgt.toFixed(2), rx: bw > 6 ? 1.5 : 0,
-          fill: s.color, opacity: inRange(i) ? '0.9' : '0.22'
-        }));
-      });
-    });
-
-    var ticks = Math.min(6, n);
+    // The shared time axis first: a faint vertical line per tick, behind every row.
+    var ticks = Math.min(narrow ? 4 : 7, n);
     var multiDay = buckets[0].start.slice(0, 10) !== buckets[n - 1].start.slice(0, 10);
+    var tickX = [];
     for (var t = 0; t < ticks; t++) {
       var idx = ticks === 1 ? 0 : Math.round(t * (n - 1) / (ticks - 1));
-      var anchor = t === 0 ? 'start' : t === ticks - 1 ? 'end' : 'middle';
       var tx = left + (idx + 0.5) * bw;
-      svg.appendChild(text('text', { x: tx.toFixed(1), y: H - 4, 'text-anchor': anchor, 'class': 'axis' }, L.fmtTime(buckets[idx].start, multiDay).replace(/^\d{4}-/, '')));
+      tickX.push([idx, tx, t === 0 ? 'start' : t === ticks - 1 ? 'end' : 'middle']);
+      svg.appendChild(svgEl('line', { x1: tx.toFixed(1), x2: tx.toFixed(1), y1: 0, y2: plotH, 'class': 'grid faint v' }));
     }
+    tickX.forEach(function (tk) {
+      svg.appendChild(text('text', { x: tk[1].toFixed(1), y: H - 6, 'text-anchor': tk[2], 'class': 'axis' }, L.fmtTime(buckets[tk[0]].start, multiDay).replace(/^\d{4}-/, '')));
+    });
 
-    var plotH = H - axis - 4;
+    var top = 0;
+    series.forEach(function (s, row) {
+      var hgt = rowsH[row];
+      var base = top + hgt;
+      var values = buckets.map(function (b) { return b[s.key] || 0; });
+      var sum = values.reduce(function (a, v) { return a + v; }, 0);
+      var max = Math.max.apply(null, values);
+      var shown = s.fmt || L.fmtCompact;
+      svg.appendChild(svgEl('line', { x1: left, x2: W - right, y1: base + 0.5, y2: base + 0.5, 'class': 'grid' }));
+      if (s.kind === 'event') {
+        svg.appendChild(text('text', { x: 4, y: top + 14, 'class': 'panel-label', fill: s.color }, s.label + ' \u00b7 ' + shown(sum)));
+      } else {
+        svg.appendChild(text('text', { x: 4, y: top + 13, 'class': 'panel-label', fill: s.color }, s.label));
+        svg.appendChild(text('text', { x: 4, y: top + 27, 'class': 'axis' }, 'max ' + shown(max)));
+      }
+      if (s.kind === 'event') {
+        values.forEach(function (v, i) {
+          if (v <= 0) { return; }
+          var w = Math.max(2, Math.min(bw - 1, 8));
+          svg.appendChild(svgEl('rect', { x: (left + (i + 0.5) * bw - w / 2).toFixed(2), y: top + 3, width: w.toFixed(2), height: hgt - 6, rx: 1, fill: s.color }));
+        });
+      } else if (n <= 12) {
+        var scale = L.niceMax(max);
+        values.forEach(function (v, i) {
+          if (v <= 0) { return; }
+          var bar = Math.max(1, (v / scale) * (hgt - 4));
+          svg.appendChild(svgEl('rect', { x: (left + i * bw + 1).toFixed(2), y: (base - bar).toFixed(2), width: Math.max(1, bw - 2).toFixed(2), height: bar.toFixed(2), rx: 2, fill: s.color, opacity: '0.85' }));
+        });
+      } else {
+        var peak = L.niceMax(max);
+        var pts = values.map(function (v, i) { return [left + (i + 0.5) * bw, base - (v / peak) * (hgt - 4)]; });
+        var line = 'M' + pts.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' L');
+        svg.appendChild(svgEl('path', { d: line + ' L' + pts[n - 1][0].toFixed(1) + ',' + base + ' L' + pts[0][0].toFixed(1) + ',' + base + ' Z', fill: s.color, opacity: '0.22' }));
+        svg.appendChild(svgEl('path', { d: line, fill: 'none', stroke: s.color, 'stroke-width': '1.5', 'stroke-linejoin': 'round' }));
+      }
+      top = base + gap;
+    });
+
     var cross = svgEl('line', { y1: 0, y2: plotH, 'class': 'cross', visibility: 'hidden' });
     var brush = svgEl('rect', { y: 0, height: plotH, 'class': 'brush', visibility: 'hidden' });
     var hit = svgEl('rect', { x: left, y: 0, width: plotW, height: plotH, fill: 'transparent', 'class': 'hit' });
@@ -127,7 +159,7 @@ var PgCharts = (function (L) {
         var dot = document.createElement('i');
         dot.style.background = s.color;
         line.appendChild(dot);
-        line.appendChild(document.createTextNode(s.label + ': ' + L.fmtInt(b[s.key] || 0)));
+        line.appendChild(document.createTextNode(s.label + ': ' + (s.fmt || L.fmtInt)(b[s.key] || 0)));
         tip.appendChild(line);
       });
     }

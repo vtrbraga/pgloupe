@@ -192,3 +192,29 @@ test('a new run id means a new report even with the same generation number', () 
   assert.equal(L.shouldFetch({ generation: 2 }, 1), true);
   assert.equal(L.shouldFetch({ generation: 2 }, 2), false);
 });
+
+test('statements can be filtered by what they do and sorted by the statistics columns', () => {
+  const rows = [
+    { fingerprint: 'a', text: 'SELECT 1', link: 'both', log: { kind: 'select' }, stats: { rows: 10, shared_blks_read: 5, wal_bytes: 0, io_read_ms: 1, io_write_ms: 2, temp_io_ms: 3, hit_pct: 90, io_pct: 12, rows_per_call: 2, blocks_read_per_row: 0.5, wal_per_call: 0 } },
+    { fingerprint: 'b', text: 'DELETE 1', link: 'stats', stats: { rows: 0, shared_blks_read: 900, wal_bytes: 5000, io_read_ms: 0, io_write_ms: 0, temp_io_ms: 0, hit_pct: 40, io_pct: 0, rows_per_call: 0, blocks_read_per_row: null, wal_per_call: 500 } },
+  ];
+  assert.deepEqual(L.filterStatements(rows, { kind: 'select' }).map((r) => r.fingerprint), ['a']);
+  assert.deepEqual(L.filterStatements(rows, { kind: '' }).map((r) => r.fingerprint), ['a', 'b']);
+  assert.equal(L.column(rows[0], 'io_ms'), 6);
+  assert.equal(L.column(rows[1], 'reads'), 900);
+  assert.equal(L.column(rows[1], 'wal_call'), 500);
+  assert.equal(L.column(rows[1], 'blocks_row'), null);
+  const byReads = L.sortRows(rows, (r) => L.column(r, 'reads'), 'desc');
+  assert.deepEqual(byReads.map((r) => r.fingerprint), ['b', 'a']);
+  assert.equal(L.parseHash('#s=statements&kind=select').kind, 'select');
+  assert.equal(L.buildHash({ ...L.parseHash(''), s: 'statements', kind: 'select' }), '#s=statements&kind=select');
+});
+
+test('durations read in the unit that fits', () => {
+  assert.equal(L.fmtDuration(15), '15 s');
+  assert.equal(L.fmtDuration(60), '60 s');
+  assert.equal(L.fmtDuration(120), '2 min');
+  assert.equal(L.fmtDuration(3600), '60 min');
+  assert.equal(L.fmtDuration(7200), '2 h');
+  assert.equal(L.fmtDuration(null), '—');
+});

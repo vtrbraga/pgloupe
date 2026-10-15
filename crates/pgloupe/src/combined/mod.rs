@@ -255,6 +255,46 @@ fn log_filter(report: Option<&Report>) -> Option<String> {
         })
 }
 
+/// Statements kept beyond the top for each other axis the Statements view can sort by.
+const AXIS_LEADERS: usize = 10;
+
+/// Keeps the first `shown` rows (already ranked), and any row below them that is among the
+/// `per_axis` leaders on calls, rows, blocks read, WAL, I/O time or mean time, so sorting by one
+/// of those finds them in the report.
+fn keep_axis_leaders(rows: &mut Vec<JoinedRow>, shown: usize, per_axis: usize) {
+    type Axis = fn(&StatsSide) -> f64;
+    #[expect(clippy::cast_precision_loss, reason = "counters stay far below 2^53")]
+    let axes: [Axis; 6] = [
+        |s| s.calls as f64,
+        |s| s.rows as f64,
+        |s| s.shared_blks_read as f64,
+        |s| s.wal_bytes as f64,
+        |s| s.io_read_ms + s.io_write_ms + s.temp_io_ms,
+        |s| s.mean_ms.unwrap_or(0.0),
+    ];
+    let mut keep = vec![false; rows.len()];
+    keep.iter_mut().take(shown).for_each(|k| *k = true);
+    for axis in axes {
+        let mut order: Vec<usize> = (0..rows.len())
+            .filter(|&i| rows[i].stats.as_ref().is_some_and(|s| axis(s) > 0.0))
+            .collect();
+        order.sort_by(|&a, &b| {
+            let value = |i: usize| rows[i].stats.as_ref().map_or(0.0, axis);
+            value(b)
+                .total_cmp(&value(a))
+                .then_with(|| rows[a].fingerprint.cmp(&rows[b].fingerprint))
+        });
+        for &i in order.iter().take(per_axis) {
+            keep[i] = true;
+        }
+    }
+    let mut index = 0;
+    rows.retain(|_| {
+        index += 1;
+        keep[index - 1]
+    });
+}
+
 impl CombinedReport {
     /// Adds the `pg_stat_database` section and the findings it supports.
     #[must_use]
@@ -337,7 +377,7 @@ pub fn build(
         log_filter,
     });
     let to_do = actions(log_report.as_ref(), &joined);
-    joined.rows.truncate(shown);
+    keep_axis_leaders(&mut joined.rows, shown, options.top.min(AXIS_LEADERS));
     CombinedReport {
         schema_version: SCHEMA_VERSION,
         kind: "pgloupe.report",
@@ -475,6 +515,25 @@ mod tests {
     }
 
     #[test]
+    fn statements_that_lead_on_another_axis_stay_in_a_short_report() {
+        use crate::{combined::testkit::delta, testutil::key};
+        // The slow one wins on total time; the other makes by far the most calls.
+        let d = delta(&[
+            (key(1), Some("SELECT slow FROM t"), 2, 9_000.0),
+            (key(2), Some("SELECT chatty FROM t"), 50_000, 500.0),
+            (key(3), Some("SELECT quiet FROM t"), 1, 1.0),
+        ]);
+        let report = build(None, Some(&d), &options(SortBy::Total, 1));
+        let texts: Vec<&str> = report.statements.iter().map(|s| s.text.as_str()).collect();
+        assert!(texts.contains(&"SELECT slow FROM t"), "{texts:?}");
+        assert!(texts.contains(&"SELECT chatty FROM t"), "{texts:?}");
+        assert_eq!(
+            texts[0], "SELECT slow FROM t",
+            "ranked by the chosen axis first"
+        );
+    }
+
+    #[test]
     fn a_logs_only_report_has_no_statistics_side() {
         let report = build(Some(log_data()), None, &options(SortBy::Total, 20));
         assert!(links(&report).iter().all(|link| *link == "log"));
@@ -517,11 +576,14 @@ mod tests {
         let by_total = rank_of(SortBy::Total, 20);
         assert_eq!(by_total[0], "UPDATE film SET rental_rate = $1");
         assert_eq!(by_total[1], "DELETE FROM rental WHERE rental_id = $1");
-        assert_eq!(rank_of(SortBy::Total, 2).len(), 2);
+        // The cut keeps the top two by the chosen metric, then any leader on another axis.
+        let two = rank_of(SortBy::Total, 2);
+        assert_eq!(two[..2], by_total[..2]);
+        assert!(two.len() < by_total.len(), "{two:?}");
         // Δcalls: the film SELECT ran 60 times.
         assert_eq!(
-            rank_of(SortBy::Calls, 1),
-            ["SELECT * FROM film WHERE film_id = $1"]
+            rank_of(SortBy::Calls, 1)[0],
+            "SELECT * FROM film WHERE film_id = $1"
         );
         // Max logged duration: the DELETE has no log side and goes last among the stats rows.
         let by_max = rank_of(SortBy::Max, 20);

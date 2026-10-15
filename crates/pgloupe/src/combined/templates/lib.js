@@ -39,6 +39,14 @@ var PgLib = (function () {
     return (u === 0 ? String(Math.round(v)) : v.toFixed(1)) + NBSP + units[u];
   }
 
+  /** A length of time in whole seconds, minutes or hours: 60 -> '1 min'. */
+  function fmtDuration(seconds) {
+    if (!isNum(seconds)) { return '\u2014'; }
+    if (seconds < 90) { return Math.round(seconds) + ' s'; }
+    if (seconds < 5400) { return Math.round(seconds / 60) + ' min'; }
+    return (Math.round(seconds / 360) / 10) + ' h';
+  }
+
   function fmtPct(p, digits) {
     if (!isNum(p)) { return '—'; }
     return p.toFixed(digits === undefined ? 1 : digits) + '%';
@@ -117,6 +125,7 @@ var PgLib = (function () {
     var words = String(query.q || '').toLowerCase().split(/\s+/).filter(Boolean);
     return rows.filter(function (row) {
       if (query.link && query.link !== 'all' && row.link !== query.link) { return false; }
+      if (query.kind && !(row.log && row.log.kind === query.kind)) { return false; }
       if (query.flag) {
         var flags = (row.stats && row.stats.flags) || [];
         if (flags.indexOf(query.flag) === -1) { return false; }
@@ -139,11 +148,21 @@ var PgLib = (function () {
       case 'log_calls': return log ? log.calls : null;
       case 'stats_calls': return stats ? stats.calls : null;
       case 'coverage': return row.coverage;
+      case 'calls': return stats ? stats.calls : (log ? log.calls : null);
       case 'total': return stats ? stats.total_exec_ms : (log ? log.total_ms : null);
       case 'mean': return stats ? stats.mean_ms : (log ? log.mean_ms : null);
       case 'p95': return log ? log.p95_ms : null;
       case 'max': return log ? log.max_ms : null;
       case 'share': return stats ? stats.share_pct : (log ? log.share_pct : null);
+      case 'rows': return stats ? stats.rows : null;
+      case 'reads': return stats ? stats.shared_blks_read : null;
+      case 'wal': return stats ? stats.wal_bytes : null;
+      case 'io_ms': return stats ? stats.io_read_ms + stats.io_write_ms + stats.temp_io_ms : null;
+      case 'hit': return stats ? stats.hit_pct : null;
+      case 'io': return stats ? stats.io_pct : null;
+      case 'rows_call': return stats ? stats.rows_per_call : null;
+      case 'blocks_row': return stats ? stats.blocks_read_per_row : null;
+      case 'wal_call': return stats ? stats.wal_per_call : null;
       case 'errors': return log ? log.errors : null;
       case 'statement': return row.text;
       default: return null;
@@ -249,7 +268,7 @@ var PgLib = (function () {
     return out;
   }
 
-  var DEFAULT_STATE = { s: 'overview', q: '', sort: 'total', dir: 'desc', link: 'all', flag: '', fp: '', from: null, to: null, th: '' };
+  var DEFAULT_STATE = { s: 'overview', q: '', sort: 'total', dir: 'desc', link: 'all', flag: '', kind: '', fp: '', from: null, to: null, th: '' };
 
   /** `#s=statements&q=film` -> state object (unknown keys ignored, bad numbers dropped). */
   function parseHash(hash) {
@@ -352,7 +371,7 @@ var PgLib = (function () {
   var api = {
     remapRange: remapRange, setZone: setZone, fmtAgo: fmtAgo, fmtIn: fmtIn, shouldFetch: shouldFetch,
     clampRange: clampRange,
-    fmtInt: fmtInt, fmtMs: fmtMs, fmtBytes: fmtBytes, fmtPct: fmtPct, fmtCoverage: fmtCoverage, fmtCompact: fmtCompact,
+    fmtInt: fmtInt, fmtMs: fmtMs, fmtBytes: fmtBytes, fmtPct: fmtPct, fmtDuration: fmtDuration, fmtCoverage: fmtCoverage, fmtCompact: fmtCompact,
     shortFp: shortFp, fmtTime: fmtTime, compareValues: compareValues, sortRows: sortRows,
     filterStatements: filterStatements, column: column, downsample: downsample, sumRange: sumRange,
     niceMax: niceMax, tokenizeSql: tokenizeSql, parseHash: parseHash, buildHash: buildHash,
