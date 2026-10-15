@@ -44,10 +44,22 @@ fn io_error(path: &Path) -> impl FnOnce(std::io::Error) -> FetchError + '_ {
     }
 }
 
-/// Whether process `pid` is running (Linux; elsewhere the lock is trusted).
+/// Whether process `pid` is running (`/proc` on Linux, `kill -0` on other Unix systems; on
+/// Windows the lock is trusted).
 fn alive(pid: u32) -> bool {
     if cfg!(target_os = "linux") {
         Path::new(&format!("/proc/{pid}")).exists()
+    } else if cfg!(unix) {
+        // A failure to run `kill` at all leaves the lock trusted.
+        match std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(status) => status.success(),
+            Err(_) => true,
+        }
     } else {
         true
     }
