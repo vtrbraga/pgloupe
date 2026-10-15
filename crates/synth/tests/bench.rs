@@ -34,7 +34,9 @@ fn a_small_run_reaches_its_target_and_writes_the_truth() {
     for format in ["log", "csv", "json"] {
         assert!(truth.formats[format].bytes > 0, "{format}");
     }
-    for worker in ["tpcb", "literal", "locks", "analytic", "errors", "churn"] {
+    for worker in [
+        "tpcb", "literal", "locks", "analytic", "errors", "churn", "mixed",
+    ] {
         assert!(truth.workers.iter().any(|w| w.name == worker), "{worker}");
     }
     assert_eq!(

@@ -93,6 +93,7 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
             scope.spawn(|| oltp::analytic(target, &stop)),
             scope.spawn(|| oltp::errors(target, &stop)),
             scope.spawn(|| oltp::churn(target, &stop)),
+            scope.spawn(|| oltp::mixed(target, &stop)),
         ];
         let ticker = scope.spawn(|| {
             ticker(

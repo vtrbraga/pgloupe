@@ -20,6 +20,9 @@ const STATEMENT_TOLERANCE: f64 = 0.01;
 /// Errors the log may differ from the workers' count by (a statement cut off at the end).
 const ERROR_SLACK: u64 = 2;
 
+/// Checkpoints the log may show beyond the server counter: the one at shutdown.
+const CHECKPOINT_SLACK: u64 = 2;
+
 /// Rollbacks the server counter may differ from the workers' count by, besides 1%.
 const ROLLBACK_SLACK: u64 = 5;
 
@@ -224,7 +227,7 @@ fn worker_checks(truth: &Truth, reports: &Reports) -> Vec<Check> {
         ),
     ));
 
-    let injected = truth.event("errors", "errors") + seen;
+    let injected = truth.event("errors", "errors") + truth.event("mixed", "locale_errors") + seen;
     let logged_errors = error_count(log);
     out.push(check(
         "errors match the workers",
@@ -233,13 +236,17 @@ fn worker_checks(truth: &Truth, reports: &Reports) -> Vec<Check> {
     ));
 
     let rollbacks = u64::try_from(truth.delta.rollbacks).unwrap_or(0);
-    let expected =
-        truth.event("locks", "explicit_rollbacks") + injected + truth.event("churn", "abrupt");
+    let expected = truth.event("locks", "explicit_rollbacks")
+        + injected
+        + truth.event("churn", "abrupt")
+        + truth.event("mixed", "idle_in_transaction_timeouts");
     out.push(check(
         "server rollbacks match the workers",
         rollbacks.abs_diff(expected) <= ROLLBACK_SLACK.max(expected / 100),
         format!("xact_rollback {rollbacks}, workers {expected}"),
     ));
+
+    out.extend(statement_kind_checks(truth, log));
 
     let connects = truth.event("churn", "connects") + truth.event("churn", "abrupt");
     let authorized = number(log, "/logs/connections/authorized");
@@ -256,6 +263,102 @@ fn worker_checks(truth: &Truth, reports: &Reports) -> Vec<Check> {
         "abrupt hang-ups are reported",
         truth.event("churn", "abrupt") == 0 || reasons > 0,
         format!("{reasons} disconnect reasons"),
+    ));
+    out
+}
+
+fn kind_calls(report: &Value, kind: &str) -> Option<u64> {
+    report
+        .pointer("/logs/kinds")?
+        .as_array()?
+        .iter()
+        .find(|row| row.get("kind").and_then(Value::as_str) == Some(kind))?
+        .get("calls")?
+        .as_u64()
+}
+
+fn disconnect_reason(report: &Value, reason: &str) -> u64 {
+    report
+        .pointer("/logs/disconnects/reasons")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|row| row.get("reason").and_then(Value::as_str) == Some(reason))
+        .filter_map(|row| row.get("count")?.as_u64())
+        .sum()
+}
+
+/// Checkpoints started according to the log.
+fn checkpoints_started(report: &Value) -> Option<u64> {
+    report
+        .pointer("/logs/checkpoints")?
+        .as_array()?
+        .iter()
+        .map(|row| row.get("started")?.as_u64())
+        .sum()
+}
+
+/// Vacuums and analyzes autovacuum logged, over all tables.
+fn autovacuum_runs(report: &Value) -> Option<u64> {
+    report
+        .pointer("/logs/autovacuum")?
+        .as_array()?
+        .iter()
+        .map(|row| Some(row.get("vacuums")?.as_u64()? + row.get("analyzes")?.as_u64()?))
+        .sum()
+}
+
+/// Checks for the checkpoint, autovacuum, cancel, idle timeout, COPY and DDL entries.
+fn statement_kind_checks(truth: &Truth, log: &Value) -> Vec<Check> {
+    let mut out = Vec::new();
+    let server = u64::try_from(truth.delta.checkpoints).unwrap_or(0);
+    let started = checkpoints_started(log);
+    out.push(check(
+        "checkpoints match the server",
+        started.is_some_and(|n| n >= server && n <= server + CHECKPOINT_SLACK),
+        format!("log {started:?}, server {server}"),
+    ));
+    let vacuums = autovacuum_runs(log);
+    out.push(check(
+        "autovacuum is logged",
+        vacuums.is_some_and(|n| n > 0),
+        format!("{vacuums:?} runs"),
+    ));
+    let cancelled = number(log, "/logs/cancelled/total");
+    let timeouts = truth.event("errors", "error_57014");
+    out.push(check(
+        "cancelled queries match the workers",
+        cancelled == Some(timeouts),
+        format!("log {cancelled:?}, workers {timeouts}"),
+    ));
+    for (reason, event) in [
+        (
+            "idle_in_transaction_timeout",
+            "idle_in_transaction_timeouts",
+        ),
+        ("idle_session_timeout", "idle_session_timeouts"),
+    ] {
+        let logged = disconnect_reason(log, reason);
+        let made = truth.event("mixed", event);
+        out.push(check(
+            &format!("{reason} disconnects match the workers"),
+            logged == made,
+            format!("log {logged}, workers {made}"),
+        ));
+    }
+    let copies = kind_calls(log, "copy");
+    let made = truth.event("mixed", "copies");
+    out.push(check(
+        "COPY statements match the workers",
+        copies == Some(made),
+        format!("log {copies:?}, workers {made}"),
+    ));
+    let ddl = kind_calls(log, "ddl");
+    let made = truth.event("mixed", "ddl_statements");
+    out.push(check(
+        "DDL statements are logged",
+        ddl.is_some_and(|n| n >= made),
+        format!("log {ddl:?}, workers {made}"),
     ));
     out
 }
@@ -459,10 +562,11 @@ mod tests {
             wall_secs: 60,
             delta: Counters {
                 commits: 1_045,
-                rollbacks: 17,
+                rollbacks: 20,
                 deadlocks: 3,
                 temp_files: 4,
                 temp_bytes: 4_096,
+                checkpoints: 5,
                 ..Counters::default()
             },
             dealloc_at_end: 4,
@@ -489,6 +593,16 @@ mod tests {
                 ),
                 worker("errors", &[("errors", 10)]),
                 worker("churn", &[("connects", 8), ("abrupt", 2)]),
+                worker(
+                    "mixed",
+                    &[
+                        ("copies", 4),
+                        ("ddl_statements", 14),
+                        ("idle_in_transaction_timeouts", 1),
+                        ("idle_session_timeouts", 1),
+                        ("locale_errors", 2),
+                    ],
+                ),
             ],
             snapshots: Snapshots {
                 first: 0,
@@ -516,10 +630,22 @@ mod tests {
                 "diagnostics": {"skipped": skipped},
                 "locks": {"deadlocks": 3, "waits": 7},
                 "temp_files": {"files": 4, "bytes": 4096},
-                "errors": [{"level": "ERROR", "count": 13}, {"level": "FATAL", "count": 5}],
+                "errors": [{"level": "ERROR", "count": 15}, {"level": "FATAL", "count": 5}],
+                "checkpoints": [{"started": 5}, {"started": 1}],
+                "autovacuum": [{"vacuums": 2, "analyzes": 1}],
+                "cancelled": {"total": 0},
                 "connections": {"authorized": 20},
-                "disconnects": {"reasons": [{"reason": "client_gone", "count": 2}]},
-                "kinds": [{"calls": calls / 2}, {"calls": calls - calls / 2}],
+                "disconnects": {"reasons": [
+                    {"reason": "client_gone", "count": 2},
+                    {"reason": "idle_in_transaction_timeout", "count": 1},
+                    {"reason": "idle_session_timeout", "count": 1},
+                ]},
+                "kinds": [
+                    {"kind": "select", "calls": calls / 2},
+                    {"kind": "update", "calls": calls.saturating_sub(calls / 2 + 20)},
+                    {"kind": "copy", "calls": 4},
+                    {"kind": "ddl", "calls": 16},
+                ],
             }
         })
     }
@@ -647,6 +773,43 @@ mod tests {
             }),
             ["connections are logged"]
         );
+    }
+
+    #[test]
+    fn checkpoints_beyond_the_shutdown_one_fail() {
+        assert_eq!(
+            mutated(|t| t.delta.checkpoints = 1),
+            ["checkpoints match the server"]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_query_the_workers_did_not_make_fails() {
+        let failures = mutated(|t| {
+            t.workers[3].events.insert("error_57014".to_owned(), 1);
+        });
+        assert!(failures.contains(&"cancelled queries match the workers".to_owned()));
+    }
+
+    #[test]
+    fn idle_timeouts_the_log_does_not_show_fail() {
+        let failures = mutated(|t| {
+            t.workers[5]
+                .events
+                .insert("idle_session_timeouts".to_owned(), 3);
+        });
+        assert_eq!(
+            failures,
+            ["idle_session_timeout disconnects match the workers"]
+        );
+    }
+
+    #[test]
+    fn copy_statements_the_log_does_not_show_fail() {
+        let failures = mutated(|t| {
+            t.workers[5].events.insert("copies".to_owned(), 6);
+        });
+        assert_eq!(failures, ["COPY statements match the workers"]);
     }
 
     #[test]
