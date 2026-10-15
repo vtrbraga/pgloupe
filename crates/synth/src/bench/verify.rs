@@ -17,6 +17,12 @@ use crate::cli::BenchVerifyArgs;
 /// Allowed relative gap between statements in the log and statements pgbench says it sent.
 const STATEMENT_TOLERANCE: f64 = 0.01;
 
+/// Errors the log may differ from the workers' count by (a statement cut off at the end).
+const ERROR_SLACK: u64 = 2;
+
+/// Rollbacks the server counter may differ from the workers' count by, besides 1%.
+const ROLLBACK_SLACK: u64 = 5;
+
 /// Allowed relative gap between pgbench's transactions and the server's commit counter.
 const COMMIT_TOLERANCE: f64 = 0.005;
 
@@ -40,6 +46,8 @@ pub struct Reports {
     pub window_reset: Option<Value>,
     /// Snapshots `after_reset` to `last`: the window where evictions are visible.
     pub window_evictions: Option<Value>,
+    /// The stderr log restricted to the two pgbench applications.
+    pub pgbench_only: Option<Value>,
 }
 
 fn skipped(report: &Value) -> Option<u64> {
@@ -49,6 +57,29 @@ fn skipped(report: &Value) -> Option<u64> {
 fn calls(report: &Value) -> Option<u64> {
     let kinds = report.pointer("/logs/kinds")?.as_array()?;
     kinds.iter().map(|k| k.get("calls")?.as_u64()).sum()
+}
+
+fn number(report: &Value, pointer: &str) -> Option<u64> {
+    report.pointer(pointer)?.as_u64()
+}
+
+/// Errors (level `ERROR`) in the report, summed over message kinds.
+fn error_count(report: &Value) -> Option<u64> {
+    report
+        .pointer("/logs/errors")?
+        .as_array()?
+        .iter()
+        .filter(|row| row.get("level").and_then(Value::as_str) == Some("ERROR"))
+        .map(|row| row.get("count")?.as_u64())
+        .sum()
+}
+
+/// The report the single-valued checks read: stderr if present, else the first format.
+fn reference(reports: &Reports) -> Option<&Value> {
+    reports
+        .per_format
+        .get("stderr")
+        .or_else(|| reports.per_format.values().next())
 }
 
 fn finding_codes(report: &Value) -> Vec<&str> {
@@ -113,19 +144,28 @@ pub fn evaluate(truth: &Truth, reports: &Reports) -> Vec<Check> {
 
     let expected =
         truth.transactions_of("tpcb") * TPCB_STATEMENTS + truth.transactions_of("literal");
-    let actual = counts.values().flatten().next().copied();
+    let actual = reports
+        .pgbench_only
+        .as_ref()
+        .or_else(|| reference(reports))
+        .and_then(calls);
     out.push(check(
         "statement calls match pgbench",
         actual.is_some_and(|a| within(a, expected, STATEMENT_TOLERANCE)),
         format!("log {actual:?}, pgbench {expected}"),
     ));
 
+    let locks_committed = truth.event("locks", "transactions").saturating_sub(
+        truth.event("locks", "explicit_rollbacks") + truth.event("locks", "deadlocks"),
+    );
+    let committed = truth.transactions() + locks_committed;
     let commits = u64::try_from(truth.delta.commits).unwrap_or(0);
     out.push(check(
-        "server commits match pgbench",
-        within(commits, truth.transactions(), COMMIT_TOLERANCE),
-        format!("xact_commit {commits}, pgbench {}", truth.transactions()),
+        "server commits match the workers",
+        within(commits, committed, COMMIT_TOLERANCE),
+        format!("xact_commit {commits}, workers {committed}"),
     ));
+    out.extend(worker_checks(truth, reports));
 
     let reset_seen = reports
         .window_reset
@@ -149,6 +189,76 @@ pub fn evaluate(truth: &Truth, reports: &Reports) -> Vec<Check> {
     out
 }
 
+/// Checks that tie the lock, temp file, error and connection workers to the server's counters.
+fn worker_checks(truth: &Truth, reports: &Reports) -> Vec<Check> {
+    let mut out = Vec::new();
+    let Some(log) = reference(reports) else {
+        return out;
+    };
+    let server_deadlocks = u64::try_from(truth.delta.deadlocks).unwrap_or(0);
+    let seen = truth.event("locks", "deadlocks");
+    let logged = number(log, "/logs/locks/deadlocks");
+    out.push(check(
+        "deadlocks: log, server and sessions agree",
+        logged == Some(server_deadlocks) && seen == server_deadlocks,
+        format!("log {logged:?}, server {server_deadlocks}, sessions {seen}"),
+    ));
+    let waits = number(log, "/logs/locks/waits");
+    out.push(check(
+        "lock waits are logged",
+        server_deadlocks == 0 || waits.is_some_and(|w| w > 0),
+        format!("waits {waits:?}"),
+    ));
+
+    let temp_files = u64::try_from(truth.delta.temp_files).unwrap_or(0);
+    let temp_bytes = u64::try_from(truth.delta.temp_bytes).unwrap_or(0);
+    let (files, bytes) = (
+        number(log, "/logs/temp_files/files"),
+        number(log, "/logs/temp_files/bytes"),
+    );
+    out.push(check(
+        "temp files match the server",
+        files == Some(temp_files) && bytes == Some(temp_bytes),
+        format!(
+            "log {files:?} files {bytes:?} bytes, server {temp_files} files {temp_bytes} bytes"
+        ),
+    ));
+
+    let injected = truth.event("errors", "errors") + seen;
+    let logged_errors = error_count(log);
+    out.push(check(
+        "errors match the workers",
+        logged_errors.is_some_and(|n| n.abs_diff(injected) <= ERROR_SLACK),
+        format!("log {logged_errors:?}, workers {injected}"),
+    ));
+
+    let rollbacks = u64::try_from(truth.delta.rollbacks).unwrap_or(0);
+    let expected = truth.event("locks", "explicit_rollbacks") + injected;
+    out.push(check(
+        "server rollbacks match the workers",
+        rollbacks.abs_diff(expected) <= ROLLBACK_SLACK.max(expected / 100),
+        format!("xact_rollback {rollbacks}, workers {expected}"),
+    ));
+
+    let connects = truth.event("churn", "connects") + truth.event("churn", "abrupt");
+    let authorized = number(log, "/logs/connections/authorized");
+    out.push(check(
+        "connections are logged",
+        authorized.is_some_and(|n| n >= connects),
+        format!("authorized {authorized:?}, churn {connects}"),
+    ));
+    let reasons = log
+        .pointer("/logs/disconnects/reasons")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    out.push(check(
+        "abrupt hang-ups are reported",
+        truth.event("churn", "abrupt") == 0 || reasons > 0,
+        format!("{reasons} disconnect reasons"),
+    ));
+    out
+}
+
 /// Runs `pgloupe report … --output json` and parses its output.
 fn report(pgloupe: &Path, files: &[PathBuf], extra: &[String]) -> anyhow::Result<Value> {
     let output = Command::new(pgloupe)
@@ -168,13 +278,23 @@ fn report(pgloupe: &Path, files: &[PathBuf], extra: &[String]) -> anyhow::Result
     serde_json::from_slice(&output.stdout).context("pgloupe printed invalid JSON")
 }
 
+/// `log`, `csv` or `json` for `postgresql-….log`, `….csv.gz` and so on.
+fn format_of(path: &Path) -> Option<&str> {
+    let plain = if path.extension().and_then(|e| e.to_str()) == Some("gz") {
+        Path::new(path.file_stem()?)
+    } else {
+        path
+    };
+    plain.extension()?.to_str()
+}
+
 /// Log files with `ext`, in name (= time) order.
 fn files_with(dir: &Path, ext: &str) -> anyhow::Result<Vec<PathBuf>> {
     let mut files: Vec<PathBuf> = fs::read_dir(dir)
         .with_context(|| format!("reading {}", dir.display()))?
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(ext))
+        .filter(|p| format_of(p) == Some(ext))
         .collect();
     files.sort();
     Ok(files)
@@ -276,6 +396,14 @@ pub fn run(args: &BenchVerifyArgs) -> anyhow::Result<bool> {
             .insert(format.to_owned(), report(&args.pgloupe, &files, &[])?);
     }
     let stderr_files = files_with(&log_dir, "log")?;
+    let only = [
+        "--application",
+        "bench:tpcb",
+        "--application",
+        "bench:literal",
+    ]
+    .map(str::to_owned);
+    reports.pgbench_only = Some(report(&args.pgloupe, &stderr_files, &only)?);
     if let Some(after_reset) = truth.snapshots.after_reset {
         let a = window_args(&snaps, truth.snapshots.first, after_reset);
         reports.window_reset = Some(report(&args.pgloupe, &stderr_files, &a)?);
@@ -329,7 +457,11 @@ mod tests {
             formats: BTreeMap::new(),
             wall_secs: 60,
             delta: Counters {
-                commits: 1_000,
+                commits: 1_045,
+                rollbacks: 15,
+                deadlocks: 3,
+                temp_files: 4,
+                temp_bytes: 4_096,
                 ..Counters::default()
             },
             dealloc_at_end: 4,
@@ -338,18 +470,40 @@ mod tests {
                     name: "tpcb".to_owned(),
                     rounds: 1,
                     transactions: 100,
+                    events: BTreeMap::new(),
                 },
                 WorkerStats {
                     name: "literal".to_owned(),
                     rounds: 1,
                     transactions: 900,
+                    events: BTreeMap::new(),
                 },
+                worker(
+                    "locks",
+                    &[
+                        ("transactions", 50),
+                        ("explicit_rollbacks", 2),
+                        ("deadlocks", 3),
+                    ],
+                ),
+                worker("errors", &[("errors", 10)]),
+                worker("churn", &[("connects", 8), ("abrupt", 2)]),
             ],
             snapshots: Snapshots {
                 first: 0,
                 after_reset: Some(2),
                 last: 3,
             },
+            gzipped: Vec::new(),
+        }
+    }
+
+    fn worker(name: &str, events: &[(&str, u64)]) -> WorkerStats {
+        WorkerStats {
+            name: name.to_owned(),
+            rounds: 0,
+            transactions: 0,
+            events: events.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect(),
         }
     }
 
@@ -359,6 +513,11 @@ mod tests {
             "findings": advice.iter().map(|c| json!({"code": c})).collect::<Vec<_>>(),
             "logs": {
                 "diagnostics": {"skipped": skipped},
+                "locks": {"deadlocks": 3, "waits": 7},
+                "temp_files": {"files": 4, "bytes": 4096},
+                "errors": [{"level": "ERROR", "count": 13}, {"level": "FATAL", "count": 5}],
+                "connections": {"authorized": 20},
+                "disconnects": {"reasons": [{"reason": "client_gone", "count": 2}]},
                 "kinds": [{"calls": calls / 2}, {"calls": calls - calls / 2}],
             }
         })
@@ -373,6 +532,7 @@ mod tests {
             ]),
             window_reset: Some(report_with(1, 0, &["stats_reset"])),
             window_evictions: Some(report_with(1, 0, &["stats_evictions"])),
+            pgbench_only: Some(report_with(1_600, 0, &[])),
         }
     }
 
@@ -416,7 +576,7 @@ mod tests {
             failed(&t, &good()),
             [
                 "statement calls match pgbench",
-                "server commits match pgbench"
+                "server commits match the workers"
             ]
         );
     }
@@ -424,8 +584,8 @@ mod tests {
     #[test]
     fn commits_far_from_pgbench_fail() {
         let mut t = truth();
-        t.delta.commits = 1_100;
-        assert_eq!(failed(&t, &good()), ["server commits match pgbench"]);
+        t.delta.commits = 1_200;
+        assert_eq!(failed(&t, &good()), ["server commits match the workers"]);
     }
 
     #[test]
@@ -440,6 +600,60 @@ mod tests {
         let mut r = good();
         r.window_evictions = Some(report_with(1, 0, &[]));
         assert_eq!(failed(&truth(), &r), ["evictions are reported"]);
+    }
+
+    fn mutated(f: impl FnOnce(&mut Truth)) -> Vec<String> {
+        let mut t = truth();
+        f(&mut t);
+        failed(&t, &good())
+    }
+
+    #[test]
+    fn a_deadlock_the_log_does_not_show_fails() {
+        let failures = mutated(|t| t.delta.deadlocks = 4);
+        assert!(failures.contains(&"deadlocks: log, server and sessions agree".to_owned()));
+    }
+
+    #[test]
+    fn temp_files_the_log_does_not_show_fail() {
+        assert_eq!(
+            mutated(|t| t.delta.temp_files = 5),
+            ["temp files match the server"]
+        );
+    }
+
+    #[test]
+    fn errors_the_log_does_not_show_fail() {
+        let failures = mutated(|t| {
+            t.workers[3].events.insert("errors".to_owned(), 20);
+        });
+        assert!(failures.contains(&"errors match the workers".to_owned()));
+    }
+
+    #[test]
+    fn rollbacks_far_from_the_workers_fail() {
+        assert_eq!(
+            mutated(|t| t.delta.rollbacks = 40),
+            ["server rollbacks match the workers"]
+        );
+    }
+
+    #[test]
+    fn fewer_logged_connections_than_made_fail() {
+        assert_eq!(
+            mutated(|t| {
+                t.workers[4].events.insert("connects".to_owned(), 30);
+            }),
+            ["connections are logged"]
+        );
+    }
+
+    #[test]
+    fn gzip_files_count_as_their_format() {
+        assert_eq!(format_of(Path::new("postgresql-1.log")), Some("log"));
+        assert_eq!(format_of(Path::new("postgresql-1.csv.gz")), Some("csv"));
+        assert_eq!(format_of(Path::new("postgresql-1.json.gz")), Some("json"));
+        assert_eq!(format_of(Path::new("gz")), None);
     }
 
     #[test]

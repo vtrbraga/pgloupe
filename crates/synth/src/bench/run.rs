@@ -1,6 +1,7 @@
 //! `bench run`: workers, ticker and stop condition around one container.
 
 use std::{
+    collections::BTreeMap,
     fs,
     os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
@@ -13,7 +14,7 @@ use std::{
 use anyhow::{Context as _, bail};
 
 use super::{
-    SETTINGS, pgbench, script, size,
+    SETTINGS, oltp, pgbench, script, size,
     truth::{self, Snapshots, Truth, WorkerStats},
 };
 use crate::{
@@ -58,6 +59,10 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
     let (pg, target, log_dir, snap_dir) = start(args, &dir)?;
     let mut control = target.control("postgres")?;
     tune(&mut control)?;
+    target
+        .control("bench")?
+        .batch_execute(oltp::SETUP_SQL)
+        .context("creating the hot table")?;
     let scripts = script::write_scripts(&dir.join("scripts"))?;
     pgbench::copy_scripts(&pg, &dir.join("scripts"))?;
 
@@ -72,17 +77,23 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
 
     let stop = AtomicBool::new(false);
     let began = Instant::now();
-    let (tpcb, literal, ticker) = thread::scope(|scope| {
-        let tpcb = scope.spawn(|| {
-            worker("tpcb", &stop, || {
-                pgbench::run_round(&pg, "bench:tpcb", &tpcb_args)
-            })
-        });
-        let literal = scope.spawn(|| {
-            worker("literal", &stop, || {
-                pgbench::run_round(&pg, "bench:literal", &literal_args)
-            })
-        });
+    let (workers, ticker) = thread::scope(|scope| {
+        let handles = vec![
+            scope.spawn(|| {
+                worker("tpcb", &stop, || {
+                    pgbench::run_round(&pg, "bench:tpcb", &tpcb_args)
+                })
+            }),
+            scope.spawn(|| {
+                worker("literal", &stop, || {
+                    pgbench::run_round(&pg, "bench:literal", &literal_args)
+                })
+            }),
+            scope.spawn(|| oltp::locks(target, args.seed, &stop)),
+            scope.spawn(|| oltp::analytic(target, &stop)),
+            scope.spawn(|| oltp::errors(target, &stop)),
+            scope.spawn(|| oltp::churn(target, &stop)),
+        ];
         let ticker = scope.spawn(|| {
             ticker(
                 &Ticker {
@@ -97,9 +108,11 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
             )
         });
         watch(&log_dir, target_bytes, &stop, began);
-        (join(tpcb), join(literal), join(ticker))
+        let workers: Vec<_> = handles.into_iter().map(join).collect();
+        (workers, join(ticker))
     });
-    let (tpcb, literal, ticker) = (tpcb?, literal?, ticker?);
+    let workers = workers.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+    let ticker = ticker?;
 
     let last = ticker
         .last
@@ -111,6 +124,7 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
     pg.stop()?;
 
     let formats = size::per_format(&log_dir)?;
+    let gzipped = gzip_oldest(&log_dir)?;
     let reached_bytes = formats.values().map(|f| f.bytes).min().unwrap_or(0);
     Truth {
         pg_major: major,
@@ -122,12 +136,13 @@ pub fn run(args: &BenchRunArgs) -> anyhow::Result<PathBuf> {
         wall_secs: began.elapsed().as_secs(),
         delta: end.minus(start),
         dealloc_at_end: end.dealloc,
-        workers: vec![tpcb, literal],
+        workers,
         snapshots: Snapshots {
             first: 0,
             after_reset: ticker.after_reset,
             last,
         },
+        gzipped,
     }
     .write(&dir)?;
     drop(pg);
@@ -175,6 +190,36 @@ fn start(
     Ok((pg, target, log_dir, snap_dir))
 }
 
+/// Compresses the oldest file of every format that rotated, so a run reads both plain and gzip
+/// input. Returns the names of the compressed files.
+fn gzip_oldest(log_dir: &Path) -> anyhow::Result<Vec<String>> {
+    let mut done = Vec::new();
+    for ext in ["log", "csv", "json"] {
+        let mut files: Vec<PathBuf> = fs::read_dir(log_dir)
+            .with_context(|| format!("reading {}", log_dir.display()))?
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(ext))
+            .collect();
+        files.sort();
+        if files.len() < 2 {
+            continue;
+        }
+        let status = process::Command::new("gzip")
+            .arg("-f")
+            .arg(&files[0])
+            .status()
+            .context("running gzip")?;
+        if !status.success() {
+            bail!("gzip failed on {}", files[0].display());
+        }
+        if let Some(name) = files[0].file_name().and_then(|n| n.to_str()) {
+            done.push(name.to_owned());
+        }
+    }
+    Ok(done)
+}
+
 /// Autovacuum on and chatty, so its entries appear in the log without a hand-run `VACUUM`.
 fn tune(control: &mut postgres::Client) -> anyhow::Result<()> {
     // One statement per call: ALTER SYSTEM cannot run inside a transaction block.
@@ -202,6 +247,7 @@ fn worker(
         name: name.to_owned(),
         rounds: 0,
         transactions: 0,
+        events: BTreeMap::new(),
     };
     while !stop.load(Ordering::Relaxed) {
         match round() {

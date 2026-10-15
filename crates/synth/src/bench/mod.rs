@@ -1,5 +1,6 @@
 //! Large-dataset validation: a pgbench-driven run that fills a log directory to a target size.
 
+pub mod oltp;
 pub mod pgbench;
 pub mod run;
 pub mod script;

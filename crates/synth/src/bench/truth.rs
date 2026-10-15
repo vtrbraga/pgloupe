@@ -90,6 +90,9 @@ pub struct WorkerStats {
     pub rounds: u32,
     /// Transactions pgbench reported over all rounds.
     pub transactions: u64,
+    /// Counters the worker kept itself (`deadlocks`, `errors`, `connects`, ...).
+    #[serde(default)]
+    pub events: BTreeMap<String, u64>,
 }
 
 /// Files and bytes of one log format.
@@ -138,6 +141,9 @@ pub struct Truth {
     pub workers: Vec<WorkerStats>,
     /// Snapshot numbers.
     pub snapshots: Snapshots,
+    /// Log files compressed after the run (the oldest of each format that rotated).
+    #[serde(default)]
+    pub gzipped: Vec<String>,
 }
 
 impl Truth {
@@ -154,6 +160,16 @@ impl Truth {
             .iter()
             .filter(|w| w.name == name)
             .map(|w| w.transactions)
+            .sum()
+    }
+
+    /// What worker `name` counted under `event`, 0 if it did not.
+    #[must_use]
+    pub fn event(&self, name: &str, event: &str) -> u64 {
+        self.workers
+            .iter()
+            .filter(|w| w.name == name)
+            .filter_map(|w| w.events.get(event))
             .sum()
     }
 
@@ -210,11 +226,13 @@ mod tests {
                     name: "tpcb".to_owned(),
                     rounds: 2,
                     transactions: 100,
+                    events: BTreeMap::new(),
                 },
                 WorkerStats {
                     name: "literal".to_owned(),
                     rounds: 2,
                     transactions: 50,
+                    events: BTreeMap::from([("deadlocks".to_owned(), 4)]),
                 },
             ],
             snapshots: Snapshots {
@@ -222,6 +240,7 @@ mod tests {
                 after_reset: Some(3),
                 last: 5,
             },
+            gzipped: Vec::new(),
         }
     }
 
@@ -265,5 +284,8 @@ mod tests {
         assert_eq!(truth.transactions(), 150);
         assert_eq!(truth.transactions_of("tpcb"), 100);
         assert_eq!(truth.transactions_of("nope"), 0);
+        assert_eq!(truth.event("literal", "deadlocks"), 4);
+        assert_eq!(truth.event("literal", "nope"), 0);
+        assert_eq!(truth.event("tpcb", "deadlocks"), 0);
     }
 }
