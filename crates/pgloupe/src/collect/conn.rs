@@ -178,6 +178,7 @@ impl ConnSpec {
             || "localhost".to_owned(),
             |h| match h {
                 Host::Tcp(name) => name.clone(),
+                #[cfg(unix)]
                 Host::Unix(path) => path.display().to_string(),
             },
         );
@@ -204,7 +205,10 @@ impl ConnSpec {
     pub fn connect(&self) -> Result<Client, CollectError> {
         let mut config = self.config.clone();
         // libpq does not use TLS over a Unix socket whatever `sslmode` says, and neither do we.
+        #[cfg(unix)]
         let socket = matches!(config.get_hosts().first(), Some(Host::Unix(_)));
+        #[cfg(not(unix))]
+        let socket = false;
         let ssl = if socket { SslMode::Disable } else { self.ssl };
         config.ssl_mode(match ssl {
             SslMode::Disable => postgres::config::SslMode::Disable,
@@ -480,6 +484,7 @@ fn pgpass_password(config: &Config) -> Option<String> {
         || "localhost".to_owned(),
         |h| match h {
             Host::Tcp(name) => name.clone(),
+            #[cfg(unix)]
             Host::Unix(_) => "localhost".to_owned(),
         },
     );
