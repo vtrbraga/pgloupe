@@ -1,6 +1,7 @@
 //! The combined report: log statistics joined with `pg_stat_statements` deltas.
 
 mod actions;
+mod compare;
 mod csv;
 mod findings;
 mod html;
@@ -10,6 +11,7 @@ mod testkit;
 mod text;
 
 pub use actions::{Action, actions};
+pub use compare::{Comparison, compare};
 pub use csv::csv;
 pub use findings::{Context, findings};
 pub use html::{HtmlError, html, html_live};
@@ -120,6 +122,9 @@ pub struct CombinedReport {
     pub statements: Vec<JoinedRow>,
     /// The log analysis; its own `statements` are empty because they are above.
     pub logs: Option<Report>,
+    /// This period against an earlier one, when asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<Comparison>,
     /// The zone the dashboard shows times in; every timestamp in this document stays UTC.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_tz: Option<String>,
@@ -313,6 +318,7 @@ pub fn build(
             report.statements.clear();
             report
         }),
+        comparison: None,
         display_tz: None,
     }
 }

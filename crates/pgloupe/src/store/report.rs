@@ -97,6 +97,18 @@ pub fn build(
     build_parts(store, path, since, until, options, bucket_secs).map(|(report, _acc)| report)
 }
 
+/// The window of the same whole-hour length that ends where `since`'s hour starts: what a report
+/// for `since..until` is compared with by default.
+#[must_use]
+pub fn previous_window(since: Timestamp, until: Timestamp) -> Option<(Timestamp, Timestamp)> {
+    let (lo, hi) = (floor_hour(since), ceil_hour(until));
+    let length = hi.checked_sub(lo).filter(|l| *l > 0)?;
+    Some((
+        Timestamp::from_second(lo.checked_sub(length)?).ok()?,
+        Timestamp::from_second(lo).ok()?,
+    ))
+}
+
 /// Like [`build`], and also returns the merged statistics the report was made from.
 ///
 /// # Errors
@@ -188,6 +200,19 @@ fn stored_diagnostics(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_previous_window_is_as_long_and_ends_where_this_one_starts() {
+        let at = |t: &str| t.parse::<Timestamp>().unwrap();
+        let (a, b) =
+            previous_window(at("2026-10-14T10:20:00Z"), at("2026-10-14T12:10:00Z")).unwrap();
+        // 10:00..13:00 is three hours, so the baseline is 07:00..10:00.
+        assert_eq!(
+            (a, b),
+            (at("2026-10-14T07:00:00Z"), at("2026-10-14T10:00:00Z"))
+        );
+        assert!(previous_window(at("2026-10-14T12:00:00Z"), at("2026-10-14T10:00:00Z")).is_none());
+    }
+
     use std::{fs, path::PathBuf};
 
     use serde_json::Value;

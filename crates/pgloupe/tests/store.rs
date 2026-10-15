@@ -440,3 +440,100 @@ fn a_store_report_lists_as_many_slowest_executions_as_asked_up_to_what_was_kept(
     assert_eq!(rows(&["--slowest", "500"])?, all);
     Ok(())
 }
+
+#[test]
+fn a_period_is_compared_with_the_one_before_it() -> io::Result<()> {
+    let d = dir("compare")?;
+    let store = d.join("s.db");
+    let (before, after) = (
+        fixtures().join("logs/compare_before.log"),
+        fixtures().join("logs/compare_after.log"),
+    );
+    let prefix = ["--prefix", "%m [%p] %q%u@%d/%a "];
+    assert!(
+        ingest(&store, &[&before, &after], &prefix)?
+            .status
+            .success()
+    );
+    let compared = |extra: &[&str]| -> io::Result<Output> {
+        let mut args = vec![
+            "report",
+            "--store",
+            path_str(&store),
+            "--since",
+            "2026-10-14T11:00:00Z",
+            "--until",
+            "2026-10-14T12:00:00Z",
+            "--output",
+            "json",
+        ];
+        args.extend(extra);
+        pgloupe(&args)
+    };
+    let out = compared(&["--baseline", "previous"])?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let value: Value = serde_json::from_str(&stdout(&out))?;
+    let c = &value["comparison"];
+    assert_eq!(c["baseline"]["since"], "2026-10-14T10:00:00Z");
+    let find = |status: &str| -> Vec<String> {
+        c["statements"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["status"] == status)
+            .map(|m| m["text"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    };
+    assert_eq!(find("slower").len(), 1, "{c}");
+    assert!(find("slower")[0].contains("orders"));
+    assert!(find("new")[0].contains("invoices"));
+    assert!(find("gone")[0].contains("legacy"));
+    assert_eq!(c["totals"]["errors"]["now"], 1.0);
+    assert_eq!(c["totals"]["errors"]["before"], 0.0);
+    // An explicit baseline gives the same answer; overlapping or half-given ones are refused.
+    let explicit = compared(&[
+        "--baseline-since",
+        "2026-10-14T10:00:00Z",
+        "--baseline-until",
+        "2026-10-14T11:00:00Z",
+    ])?;
+    assert!(explicit.status.success(), "{}", stderr(&explicit));
+    let value2: Value = serde_json::from_str(&stdout(&explicit))?;
+    assert_eq!(value2["comparison"]["totals"], c["totals"]);
+    let overlap = compared(&[
+        "--baseline-since",
+        "2026-10-14T10:30:00Z",
+        "--baseline-until",
+        "2026-10-14T11:30:00Z",
+    ])?;
+    assert!(!overlap.status.success());
+    assert!(
+        !compared(&["--baseline-since", "2026-10-14T10:00:00Z"])?
+            .status
+            .success()
+    );
+    for (format, needle) in [
+        ("text", "comparison (against 2026-10-14T10:00:00Z"),
+        ("html", "<h2>Comparison</h2>"),
+    ] {
+        let out = pgloupe(&[
+            "report",
+            "--store",
+            path_str(&store),
+            "--since",
+            "2026-10-14T11:00:00Z",
+            "--until",
+            "2026-10-14T12:00:00Z",
+            "--baseline",
+            "previous",
+            "--output",
+            format,
+        ])?;
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(stdout(&out).contains(needle), "{format}");
+    }
+    let plain = compared(&[])?;
+    let value3: Value = serde_json::from_str(&stdout(&plain))?;
+    assert!(value3.get("comparison").is_none());
+    Ok(())
+}

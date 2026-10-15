@@ -28,6 +28,19 @@
 </section>
 {% endif %}
 
+{% if report.comparison %}
+<section id="comparison">
+<h2>Comparison</h2>
+<p>Against {{ report.comparison.baseline.since }} &rarr; {{ report.comparison.baseline.until }}: {{ report.comparison.new_statements }} new statements, {{ report.comparison.gone_statements }} gone.</p>
+<table>
+<thead><tr><th>Change</th><th class="num">Calls</th><th class="num">Mean ms</th><th class="num">Total ms</th><th>Statement</th></tr></thead>
+<tbody>
+{% for m in report.comparison.statements %}<tr><td>{{ m.status }}</td><td class="num">{{ m.calls.before|n }} &rarr; {{ m.calls.now|n }}</td><td class="num">{% if m.mean_ms %}{{ m.mean_ms.before|ms }} &rarr; {{ m.mean_ms.now|ms }}{% else %}&mdash;{% endif %}</td><td class="num">{{ m.total_ms.before|ms }} &rarr; {{ m.total_ms.now|ms }}</td><td><code>{{ m.text|cut(140) }}</code></td></tr>
+{% endfor %}</tbody>
+</table>
+</section>
+{% endif %}
+
 {% if report.findings %}
 <section id="findings">
 <h2>Data caveats</h2>

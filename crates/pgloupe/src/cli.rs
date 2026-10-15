@@ -76,6 +76,25 @@ impl Cli {
                         ErrorKind::MissingRequiredArgument,
                         "--since and --until need --store",
                     )
+                } else if (args.baseline.is_some()
+                    || args.baseline_since.is_some()
+                    || args.baseline_until.is_some())
+                    && args.store.is_none()
+                {
+                    fail(
+                        ErrorKind::MissingRequiredArgument,
+                        "comparing periods needs a --store",
+                    )
+                } else if args.baseline_since.is_some() != args.baseline_until.is_some() {
+                    fail(
+                        ErrorKind::MissingRequiredArgument,
+                        "--baseline-since and --baseline-until go together",
+                    )
+                } else if args.baseline.is_some() && args.baseline_since.is_some() {
+                    fail(
+                        ErrorKind::ArgumentConflict,
+                        "use --baseline previous, or --baseline-since/--baseline-until, not both",
+                    )
                 } else if args.files.is_empty() && !args.filters.filter().is_empty() {
                     fail(
                         ErrorKind::ArgumentConflict,
@@ -476,6 +495,16 @@ struct CombinedArgs {
         default_value = "text"
     )]
     output: Vec<ReportFormat>,
+    /// Compare with an earlier period of the store: `previous` (the window just before this one,
+    /// as long), or give `--baseline-since` and `--baseline-until`.
+    #[arg(long, value_enum)]
+    baseline: Option<Baseline>,
+    /// Start of the baseline window (needs `--baseline-until`).
+    #[arg(long, value_parser = store_report::parse_time)]
+    baseline_since: Option<Timestamp>,
+    /// End of the baseline window.
+    #[arg(long, value_parser = store_report::parse_time)]
+    baseline_until: Option<Timestamp>,
     /// Show times in this IANA zone in the HTML dashboard (default UTC); JSON and text stay UTC.
     #[arg(long, value_parser = parse_zone)]
     display_tz: Option<(jiff::tz::TimeZone, String)>,
@@ -593,6 +622,13 @@ impl From<By> for SortBy {
 enum OutputFormat {
     Text,
     Json,
+}
+
+/// Which earlier period to compare with.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Baseline {
+    /// The window just before this one, as long.
+    Previous,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -847,6 +883,7 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
         top: args.top,
     };
     let mut failed = false;
+    let mut baseline = None;
     let logs = if let Some(store_path) = &args.store {
         let store = Store::open_existing(store_path)?;
         let since = args.since.or(delta.as_ref().map(|d| d.before_at));
@@ -856,8 +893,23 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
         if let Some(kept) = args.capture.slowest {
             report.slowest.rows.truncate(kept);
         }
+        let rows = all_statements(&acc);
+        baseline = baseline_window(args, since, until)?
+            .map(|(lo, hi)| {
+                let (before, before_acc) = store_report::build_parts(
+                    &store,
+                    store_path,
+                    Some(lo),
+                    Some(hi),
+                    &options,
+                    args.bucket,
+                )?;
+                let before_rows = all_statements(&before_acc);
+                anyhow::Ok(combined::compare((&report, &rows), (&before, &before_rows)))
+            })
+            .transpose()?;
         Some(LogData {
-            rows: all_statements(&acc),
+            rows,
             inputs: report.files.len(),
             report,
             source: "store",
@@ -899,6 +951,7 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
     };
     let mut combined = combined::build(logs, delta.as_ref(), &options);
     combined.display_tz = args.display_tz.as_ref().map(|(_, name)| name.clone());
+    combined.comparison = baseline;
     write_report(&combined, args, out, err)?;
     Ok(if failed { Exit::Failed } else { Exit::Ok })
 }
@@ -957,6 +1010,32 @@ fn write_report(
         (_, []) => {}
     }
     Ok(())
+}
+
+/// The window to compare with, from `--baseline previous` or the explicit pair.
+fn baseline_window(
+    args: &CombinedArgs,
+    since: Option<Timestamp>,
+    until: Option<Timestamp>,
+) -> anyhow::Result<Option<(Timestamp, Timestamp)>> {
+    if let (Some(lo), Some(hi)) = (args.baseline_since, args.baseline_until) {
+        if let (Some(since), Some(until)) = (since, until)
+            && lo < until
+            && since < hi
+        {
+            anyhow::bail!("the baseline window overlaps the period it is compared with");
+        }
+        return Ok(Some((lo, hi)));
+    }
+    if args.baseline.is_none() {
+        return Ok(None);
+    }
+    let (Some(since), Some(until)) = (since, until) else {
+        anyhow::bail!("--baseline previous needs a window: give --since and --until, or snapshots");
+    };
+    store_report::previous_window(since, until)
+        .map(Some)
+        .ok_or_else(|| anyhow::anyhow!("the window is empty, so there is no period before it"))
 }
 
 /// `, N skipped` when some lines could not be decoded.

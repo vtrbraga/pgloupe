@@ -55,6 +55,10 @@ pub fn text(report: &CombinedReport) -> String {
             }
         }
     }
+    if let Some(comparison) = &report.comparison {
+        lines.push(String::new());
+        lines.extend(comparison_lines(comparison));
+    }
     if !report.findings.is_empty() {
         lines.push(String::new());
         lines.push("data caveats".to_owned());
@@ -116,6 +120,62 @@ fn stats_line(report: &CombinedReport) -> String {
         input.server_version_num,
         input.reset.as_str()
     )
+}
+
+fn comparison_lines(c: &super::Comparison) -> Vec<String> {
+    let pct = |p: super::compare::Pair| match p.change_pct() {
+        Some(change) => format!("{change:+.0}%"),
+        None if p.now > 0.0 => "new".to_owned(),
+        None => "-".to_owned(),
+    };
+    let mut lines = vec![format!(
+        "comparison (against {} -> {})",
+        c.baseline.since.as_deref().unwrap_or("start"),
+        c.baseline.until.as_deref().unwrap_or("end")
+    )];
+    for (name, pair) in [
+        ("statements", c.totals.statements),
+        ("statement ms", c.totals.total_ms),
+        ("errors", c.totals.errors),
+        ("lock waits", c.totals.lock_waits),
+        ("deadlocks", c.totals.deadlocks),
+        ("temp bytes", c.totals.temp_bytes),
+    ] {
+        lines.push(format!(
+            "  {name:<13} {:>12.0} -> {:>12.0}  {}",
+            pair.before,
+            pair.now,
+            pct(pair)
+        ));
+    }
+    lines.push(format!(
+        "  {} new statements, {} gone",
+        c.new_statements, c.gone_statements
+    ));
+    let mut cells = vec![
+        ["change", "calls", "mean_ms", "total_ms", "query"]
+            .iter()
+            .map(|h| (*h).to_owned())
+            .collect::<Vec<_>>(),
+    ];
+    for m in c.statements.iter().take(15) {
+        cells.push(vec![
+            m.status.to_owned(),
+            format!("{:.0}->{:.0}", m.calls.before, m.calls.now),
+            m.mean_ms.map_or_else(
+                || "-".to_owned(),
+                |p| format!("{:.1}->{:.1}", p.before, p.now),
+            ),
+            format!("{:.1}->{:.1}", m.total_ms.before, m.total_ms.now),
+            cut(&m.text),
+        ]);
+    }
+    lines.extend(
+        align(&cells, &[false, true, true, true, false])
+            .into_iter()
+            .map(|l| format!("  {l}")),
+    );
+    lines
 }
 
 fn statements(rows: &[JoinedRow]) -> Vec<String> {

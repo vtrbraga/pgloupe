@@ -40,6 +40,7 @@
       { id: 'maintenance', label: 'Maintenance', show: !!logs },
       { id: 'breakdowns', label: 'Breakdowns', show: !!logs },
       { id: 'slowest', label: 'Slowest', show: !!(logs && logs.slowest && logs.slowest.rows.length) },
+      { id: 'comparison', label: 'Comparison', show: !!D.comparison },
       { id: 'findings', label: 'Data caveats', show: findings.length > 0 }
     ].filter(function (s) { return s.show; });
     if (!sections.some(function (s) { return s.id === state.s; })) { state.s = 'overview'; }
@@ -689,9 +690,45 @@
     });
     return out;
   }
+  function viewComparison() {
+    var c = D.comparison;
+    var out = [];
+    var change = function (p) {
+      if (!p.before) { return p.now ? 'new' : '\u2014'; }
+      var pct = (p.now - p.before) / p.before * 100;
+      return (pct >= 0 ? '+' : '') + Math.round(pct) + '%';
+    };
+    var tone = function (p, worseWhenUp) {
+      if (!p.before || p.now === p.before) { return ''; }
+      return (p.now > p.before) === worseWhenUp ? 'warn' : 'good';
+    };
+    out.push(h('p', { 'class': 'muted', text: 'This period against ' + L.fmtTime(c.baseline.since, true) + ' \u2192 ' + L.fmtTime(c.baseline.until, true) + '. ' + c.new_statements + ' statements are new, ' + c.gone_statements + ' are gone.' }));
+    var t = c.totals;
+    out.push(h('div', { 'class': 'kpis' }, [
+      kpi('Statement time', L.fmtMs(t.total_ms.now), 'before ' + L.fmtMs(t.total_ms.before) + ' \u00B7 ' + change(t.total_ms), null, tone(t.total_ms, true)),
+      kpi('Statements run', L.fmtInt(t.statements.now), 'before ' + L.fmtInt(t.statements.before) + ' \u00B7 ' + change(t.statements)),
+      kpi('Errors', L.fmtInt(t.errors.now), 'before ' + L.fmtInt(t.errors.before) + ' \u00B7 ' + change(t.errors), null, tone(t.errors, true)),
+      kpi('Lock waits', L.fmtInt(t.lock_waits.now), 'before ' + L.fmtInt(t.lock_waits.before) + ' \u00B7 ' + change(t.lock_waits), null, tone(t.lock_waits, true)),
+      kpi('Deadlocks', L.fmtInt(t.deadlocks.now), 'before ' + L.fmtInt(t.deadlocks.before), null, tone(t.deadlocks, true)),
+      kpi('Temp files', L.fmtBytes(t.temp_bytes.now), 'before ' + L.fmtBytes(t.temp_bytes.before), null, tone(t.temp_bytes, true))
+    ]));
+    var rows = c.statements.map(function (m) {
+      var tr = h('tr', { 'class': byFp[m.fingerprint] ? 'clickable' : '', onclick: function () { if (byFp[m.fingerprint]) { openStatement(m.fingerprint); } } }, [
+        h('td', null, badge(m.status, m.status === 'slower' || m.status === 'new' ? 'warn' : m.status === 'faster' ? 'info' : '')),
+        h('td', { 'class': 'num', text: L.fmtInt(m.calls.before) + ' \u2192 ' + L.fmtInt(m.calls.now) }),
+        h('td', { 'class': 'num', text: m.mean_ms ? L.fmtMs(m.mean_ms.before) + ' \u2192 ' + L.fmtMs(m.mean_ms.now) : '\u2014' }),
+        h('td', { 'class': 'num', text: L.fmtMs(m.total_ms.before) + ' \u2192 ' + L.fmtMs(m.total_ms.now) }),
+        h('td', { 'class': 'num', text: m.total_change_pct === null || m.total_change_pct === undefined ? 'new' : (m.total_change_pct >= 0 ? '+' : '') + Math.round(m.total_change_pct) + '%' }),
+        h('td', { 'class': 'mono', text: m.text.length > 140 ? m.text.slice(0, 139) + '\u2026' : m.text })
+      ]);
+      return tr;
+    });
+    out.push(panel('What moved most', simpleTable([{ label: 'Change' }, { label: 'Calls', num: true }, { label: 'Mean', num: true }, { label: 'Total time', num: true }, { label: '%', num: true }, { label: 'Statement' }], rows)));
+    return out;
+  }
   function viewFindings() { return [h('div', { 'class': 'findings' }, findings.map(findingNode))]; }
 
-  var VIEWS = { overview: viewOverview, statements: viewStatements, errors: viewErrors, locks: viewLocks, sessions: viewSessions, maintenance: viewMaintenance, breakdowns: viewBreakdowns, slowest: viewSlowest, findings: viewFindings };
+  var VIEWS = { overview: viewOverview, statements: viewStatements, errors: viewErrors, locks: viewLocks, sessions: viewSessions, maintenance: viewMaintenance, breakdowns: viewBreakdowns, slowest: viewSlowest, comparison: viewComparison, findings: viewFindings };
 
   /* ---------- render ---------- */
   var viewNode = null;
