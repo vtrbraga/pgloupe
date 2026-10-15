@@ -143,6 +143,17 @@ impl Correlator {
     /// Tells the correlator a filter dropped `record`, so a bare duration that follows it is
     /// dropped as well.
     pub fn dropped(&mut self, record: &LogRecord) {
+        // A wait that took no part in the analysis is not blamed on anyone either.
+        if matches!(classify(record), Event::LockWait { .. }) {
+            for holder in record.detail.as_deref().map(holders).unwrap_or_default() {
+                if let Some(holds) = self.holding.get_mut(&holder) {
+                    holds.retain(|h| !(h.at == record.ts && h.waiter == record.statement));
+                    if holds.is_empty() {
+                        self.holding.remove(&holder);
+                    }
+                }
+            }
+        }
         if let Some(untimed) = record.pid.and_then(|pid| self.untimed.get_mut(&pid)) {
             untimed.filtered = true;
         }

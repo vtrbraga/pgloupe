@@ -800,6 +800,19 @@ fn blockers_of(args: &[&str], log: &[u8], name: &str) -> io::Result<usize> {
 #[test]
 fn a_lock_wait_is_blamed_even_when_the_holders_records_are_filtered_out() -> io::Result<()> {
     assert_eq!(blockers_of(&[], BLOCKED.as_bytes(), "blk-all.log")?, 1);
+    // A wait whose waiter the filter drops is blamed on no one, and its SQL stays out.
+    assert_eq!(
+        blockers_of(&["--user", "nobody"], BLOCKED.as_bytes(), "blk-none.log")?,
+        0
+    );
+    assert_eq!(
+        blockers_of(
+            &["--exclude-hours", "10"],
+            BLOCKED.as_bytes(),
+            "blk-hours.log"
+        )?,
+        0
+    );
     assert_eq!(
         blockers_of(
             &["--user", "waiter"],

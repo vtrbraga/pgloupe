@@ -170,7 +170,16 @@ pub fn build_parts(
         since: edge(since, lo),
         until: edge(until, hi),
         inputs: inputs.len(),
-        filter: Some(store.filter()?).filter(|f| !f.is_empty()),
+        filter: Some(store.filter()?)
+            .filter(|f| !f.is_empty())
+            // Names in the filter would undo the anonymizing the logs went through.
+            .map(|f| {
+                if f.contains("anonymize (key") {
+                    "filtered at ingest (details withheld: anonymized)".to_owned()
+                } else {
+                    f
+                }
+            }),
     });
     Ok((report, output.acc))
 }

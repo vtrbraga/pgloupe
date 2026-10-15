@@ -113,15 +113,17 @@ impl<R: BufRead> Decoder for PgbouncerDecoder<R> {
             if line.trim().is_empty() {
                 continue;
             }
-            match parse_line(line, self.fallback) {
-                Some(record) => {
-                    self.stats.records += 1;
-                    return Ok(Some(record));
-                }
-                None => self
-                    .stats
-                    .skip_with(self.line_no, "not a pgBouncer log line", Some(line)),
+            if let Some(record) = parse_line(line, self.fallback) {
+                self.stats.records += 1;
+                return Ok(Some(record));
             }
+            let reason = if self.fallback.is_none() && parse_line(line, Some(Offset::UTC)).is_some()
+            {
+                "the timestamp has a zone other than UTC: give --log-tz (for example --log-tz +02)"
+            } else {
+                "not a pgBouncer log line"
+            };
+            self.stats.skip_with(self.line_no, reason, Some(line));
         }
     }
 
@@ -132,6 +134,17 @@ impl<R: BufRead> Decoder for PgbouncerDecoder<R> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_foreign_zone_without_log_tz_says_what_to_give() {
+        let line = "2026-10-14 10:00:00.123 CEST [1234] LOG C-0x5593a8: shop/app@10.0.0.1:50000 login attempt: db=shop user=app tls=no\n";
+        let mut decoder = PgbouncerDecoder::new(line.as_bytes(), None);
+        assert!(decoder.next_record().unwrap().is_none());
+        let reason = decoder.stats().first_skipped.clone();
+        assert!(format!("{reason:?}").contains("--log-tz"), "{reason:?}");
+        let mut with = PgbouncerDecoder::new(line.as_bytes(), Offset::from_hours(2).ok());
+        assert!(with.next_record().unwrap().is_some());
+    }
+
     #[test]
     fn a_zone_abbreviation_does_not_stop_the_format_being_recognized() {
         assert!(looks_like(

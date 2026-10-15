@@ -166,12 +166,13 @@ fn data_contradicts(code: &str, logs: &Report) -> bool {
             .any(|k| events.get(*k).copied().unwrap_or(0) > 0)
     };
     match code {
-        "no_statement_timings" => seen(&["statement", "execute"]),
+        "no_statement_timings" => logs.latency.count > 0,
         "no_lock_waits" => seen(&["lock_wait"]),
         "no_temp_files" => seen(&["temp_file"]),
         "no_checkpoints" => seen(&["checkpoint_done"]),
         "no_autovacuum" => seen(&["autovacuum"]),
-        "no_sessions" => seen(&["connection_received", "disconnection"]),
+        // The check fires when either setting is off: only a log with both kinds of line rules it out.
+        "no_sessions" => seen(&["connection_received"]) && seen(&["disconnection"]),
         _ => false,
     }
 }
@@ -388,6 +389,7 @@ mod tests {
         report.overview.records = 5_000;
         report.overview.events.insert("statement".to_owned(), 4_096);
         report.overview.events.insert("lock_wait".to_owned(), 1);
+        report.latency.count = 4_096;
         let only = settings(&[("log_min_duration_statement", "-1")]);
         let input = Input {
             logs: Some(&report),
@@ -409,6 +411,31 @@ mod tests {
         };
         let codes: Vec<&str> = advise(&input).iter().map(|a| a.code).collect();
         assert_eq!(codes, ["no_checkpoints"]);
+    }
+
+    #[test]
+    fn statements_without_durations_and_half_the_session_lines_do_not_hide_the_advice() {
+        let mut report = empty_report();
+        report.overview.records = 5_000;
+        report.overview.events.insert("statement".to_owned(), 500);
+        report
+            .overview
+            .events
+            .insert("connection_received".to_owned(), 3);
+        let file = settings(&[
+            ("log_min_duration_statement", "-1"),
+            ("log_connections", "on"),
+            ("log_disconnections", "off"),
+        ]);
+        let input = Input {
+            logs: Some(&report),
+            delta: None,
+            settings: Some(&file),
+            vendor: None,
+        };
+        let codes: Vec<&str> = advise(&input).iter().map(|a| a.code).collect();
+        assert!(codes.contains(&"no_statement_timings"), "{codes:?}");
+        assert!(codes.contains(&"no_sessions"), "{codes:?}");
     }
 
     #[test]

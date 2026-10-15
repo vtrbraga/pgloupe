@@ -564,3 +564,42 @@ fn a_period_is_compared_with_the_one_before_it() -> io::Result<()> {
     assert!(value3.get("comparison").is_none());
     Ok(())
 }
+
+#[test]
+fn an_anonymized_stores_report_does_not_print_the_names_it_was_filtered_by() -> io::Result<()> {
+    let d = dir("anon-filter")?;
+    let store = d.join("s.db");
+    let log = fixtures().join("logs/sample.json");
+    let ingest = pgloupe(&[
+        "logs",
+        "ingest",
+        "--store",
+        path_str(&store),
+        "--anonymize",
+        "--anonymize-key",
+        "hunter2",
+        "--user",
+        "secret_user",
+        "--include-query",
+        "secret_table",
+        path_str(&log),
+    ])?;
+    assert!(ingest.status.success(), "{}", stderr(&ingest));
+    let out = pgloupe(&[
+        "report",
+        "--store",
+        path_str(&store),
+        "--anonymize",
+        "--anonymize-key",
+        "hunter2",
+        "--output",
+        "json",
+    ])?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    for secret in ["secret_user", "secret_table", "hunter2", "key "] {
+        assert!(!text.contains(secret), "{secret} in the report");
+    }
+    assert!(text.contains("details withheld"), "{text}");
+    Ok(())
+}
