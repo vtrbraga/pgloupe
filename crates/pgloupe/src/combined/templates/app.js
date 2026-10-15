@@ -219,6 +219,7 @@
       var top = findings.slice(0, 3);
       parts.push(panel('Data caveats', h('div', { 'class': 'findings' }, top.map(findingNode)), findings.length > 3 ? h('button', { 'class': 'btn small', onclick: function () { setState({ s: 'findings' }); }, text: 'All ' + findings.length }) : null));
     }
+    if (D.database) { parts.push(databasePanel(D.database)); }
     if (stats) { parts.push(statsPanel()); }
     if (logs) {
       parts.push(timelinePanel());
@@ -272,6 +273,27 @@
       ['Entries', L.fmtInt(c.entries)], ['New', L.fmtInt(c['new'])], ['Gone', L.fmtInt(c.gone)], ['Restarted', L.fmtInt(c.restarted)]
     ];
     return panel('pg_stat_statements window', h('dl', { 'class': 'facts' }, facts.map(function (f) { return h('div', null, [h('dt', { text: f[0] }), h('dd', { text: String(f[1]) })]); })));
+  }
+  function databasePanel(db) {
+    var t = db.total;
+    var pct = function (v) { return v === null || v === undefined ? '-' : L.fmtPct(v, 1); };
+    var tone = function (bad) { return bad ? 'warn' : ''; };
+    var kpis = h('div', { 'class': 'grid kpis' }, [
+      kpi('Running statements', t.avg_active.toFixed(1), 'average sessions, ' + L.fmtInt(db.window_secs) + ' s window'),
+      kpi('Idle in transaction', t.avg_idle_in_transaction.toFixed(1), 'average sessions', null, tone(t.avg_idle_in_transaction >= 1)),
+      kpi('Connected', t.avg_sessions.toFixed(1), 'average sessions, ' + L.fmtInt(t.backends_now) + ' at the end'),
+      kpi('Rollbacks', pct(t.rollback_pct), L.fmtInt(t.rollbacks) + ' of ' + L.fmtInt(t.commits + t.rollbacks) + ' transactions', null, tone(t.rollback_pct >= 5 && t.rollbacks >= 100)),
+      kpi('Cache hit', pct(t.hit_pct), L.fmtInt(t.blocks_read) + ' blocks read'),
+      kpi('Abandoned sessions', pct(t.abandoned_pct), L.fmtInt(t.sessions_abandoned) + ' of ' + L.fmtInt(t.sessions), null, tone(t.abandoned_pct >= 20 && t.sessions_abandoned >= 50))
+    ]);
+    var note = db.statements_coverage_pct === null || db.statements_coverage_pct === undefined ? null :
+      h('p', { 'class': 'muted', text: 'pg_stat_statements accounts for ' + (db.statements_coverage_pct < 1 ? 'under 1' : Math.round(db.statements_coverage_pct)) + '% of the time the server spent running statements.' });
+    var heads = ['Database', 'Running', 'Idle in txn', 'Rollbacks', 'Cache hit', 'Abandoned', 'Temp files', 'Deadlocks'].map(function (label, i) { return { label: label, num: i > 0 }; });
+    var table = simpleTable(heads, db.databases.map(function (d) {
+      var cells = [d.name, d.avg_active.toFixed(2), d.avg_idle_in_transaction.toFixed(2), pct(d.rollback_pct), pct(d.hit_pct), pct(d.abandoned_pct), L.fmtInt(d.temp_files), L.fmtInt(d.deadlocks)];
+      return h('tr', null, cells.map(function (c, i) { return h('td', { 'class': i > 0 ? 'num' : '', text: String(c) }); }));
+    }));
+    return panel('Server load (pg_stat_database)', h('div', null, [kpis, note, table].filter(Boolean)));
   }
   function timelinePanel() {
     var host = h('div', { 'class': 'chart-host' });
