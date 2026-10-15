@@ -838,7 +838,7 @@ pub struct Totals {
     pub autovacuum: BTreeMap<String, TableStats>,
     pub timeline: Timeline,
     pub unparsed_statements: u64,
-    /// Cancelled statements by [`CancelReason`] name.
+    /// Cancelled statements by `CancelReason` name.
     pub cancelled: BTreeMap<String, u64>,
     /// Reason name -> fingerprint of the cancelled statement -> times. Capped to the busiest few
     /// per reason when a run ends.

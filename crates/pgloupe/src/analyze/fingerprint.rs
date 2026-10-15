@@ -27,7 +27,7 @@ thread_local! {
 ///
 /// Parsing is the dominant cost of a run, and nearly every log line repeats a statement shape with
 /// different literals, so a per-thread cache remembers the fingerprint of each
-/// [`shape_key`]. Statements the key cannot describe safely are parsed every time.
+/// `shape_key`. Statements the key cannot describe safely are parsed every time.
 #[must_use]
 pub fn fingerprint(sql: &str) -> Fingerprint {
     let Some(key) = shape_key(sql) else {

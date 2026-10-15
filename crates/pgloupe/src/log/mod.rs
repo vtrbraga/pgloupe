@@ -65,7 +65,7 @@ pub struct DecodeStats {
     pub no_label: u64,
     /// Entries a server cut short and said so (Amazon RDS does this to very long ones).
     pub truncated: u64,
-    /// Skipped lines whose shape was not tracked because [`MAX_SHAPES`] was reached.
+    /// Skipped lines whose shape was not tracked because `MAX_SHAPES` was reached.
     pub other_shapes: u64,
     pub(crate) shapes: HashMap<String, Shape>,
 }
