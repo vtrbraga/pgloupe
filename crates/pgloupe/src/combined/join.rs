@@ -61,6 +61,12 @@ fn add_counters(into: &mut Counters, d: &Counters) {
     into.temp_blks_read += d.temp_blks_read;
     into.temp_blks_written += d.temp_blks_written;
     into.wal_bytes += d.wal_bytes;
+    into.shared_blks_dirtied += d.shared_blks_dirtied;
+    into.shared_blks_written += d.shared_blks_written;
+    into.blk_read_time += d.blk_read_time;
+    into.blk_write_time += d.blk_write_time;
+    into.temp_blk_read_time += d.temp_blk_read_time;
+    into.temp_blk_write_time += d.temp_blk_write_time;
 }
 
 impl Group {
@@ -139,6 +145,26 @@ impl Group {
             temp_blks_read: counted.temp_blks_read,
             temp_blks_written: counted.temp_blks_written,
             wal_bytes: counted.wal_bytes,
+            shared_blks_dirtied: counted.shared_blks_dirtied,
+            shared_blks_written: counted.shared_blks_written,
+            io_read_ms: counted.blk_read_time,
+            io_write_ms: counted.blk_write_time,
+            temp_io_ms: counted.temp_blk_read_time + counted.temp_blk_write_time,
+            hit_pct: ratio_pct(
+                counted.shared_blks_hit,
+                counted.shared_blks_hit + counted.shared_blks_read,
+            ),
+            io_pct: (counted.total_exec_time > 0.0).then(|| {
+                let io = counted.blk_read_time
+                    + counted.blk_write_time
+                    + counted.temp_blk_read_time
+                    + counted.temp_blk_write_time;
+                io * 100.0 / counted.total_exec_time
+            }),
+            rows_per_call: (calls > 0).then(|| counted.rows as f64 / calls as f64),
+            blocks_read_per_row: (counted.rows > 0)
+                .then(|| counted.shared_blks_read as f64 / counted.rows as f64),
+            wal_per_call: (calls > 0).then(|| counted.wal_bytes as f64 / calls as f64),
             share_pct,
             nested_calls: if nested_only { 0 } else { self.nested.calls },
             entries: self.entries,
@@ -152,6 +178,15 @@ impl Group {
             flags: flags.into_iter().collect(),
         }
     }
+}
+
+/// `part` as a percentage of `whole`, if there is a whole.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "block counts stay far below 2^53"
+)]
+fn ratio_pct(part: u64, whole: u64) -> Option<f64> {
+    (whole > 0).then(|| part as f64 * 100.0 / whole as f64)
 }
 
 fn cut(text: &str) -> String {

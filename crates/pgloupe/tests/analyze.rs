@@ -890,3 +890,42 @@ fn pg_stat_database_adds_a_server_wide_section_and_findings() -> io::Result<()> 
     assert!(plain.get("database").is_none());
     Ok(())
 }
+
+#[test]
+fn statements_carry_cache_hit_io_share_and_blocks_per_row() -> io::Result<()> {
+    let stats = fixtures().join("stats");
+    let out = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args(["report", "--before"])
+        .arg(stats.join("io_before.csv"))
+        .arg("--after")
+        .arg(stats.join("io_after.csv"))
+        .args(["--output", "json"])
+        .output()?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    let find = |needle: &str| {
+        report["statements"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|s| s["text"].as_str().is_some_and(|t| t.contains(needle)))
+            .expect(needle)["stats"]
+            .clone()
+    };
+    // 200 calls and 4,000 ms; 20,000 hits and 10,000 reads; 2,000 ms reading, 0 writing, 150 ms
+    // of temp files; 400 rows.
+    let orders = find("orders");
+    assert_eq!(orders["calls"], 200);
+    assert!((orders["hit_pct"].as_f64().unwrap() - 66.666).abs() < 0.01);
+    assert!(
+        (orders["io_pct"].as_f64().unwrap() - 53.75).abs() < 0.01,
+        "{orders}"
+    );
+    assert!((orders["rows_per_call"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+    assert!((orders["blocks_read_per_row"].as_f64().unwrap() - 25.0).abs() < 1e-9);
+    // A delete returning nothing per call but reading thousands of blocks and writing WAL.
+    let delete = find("DELETE");
+    assert_eq!(delete["wal_per_call"], 200_000.0);
+    assert!(delete["io_pct"].as_f64().unwrap() > 20.0);
+    Ok(())
+}

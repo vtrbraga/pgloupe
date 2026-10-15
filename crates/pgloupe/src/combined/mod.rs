@@ -73,6 +73,24 @@ pub struct StatsSide {
     pub temp_blks_written: u64,
     /// WAL generated, in bytes.
     pub wal_bytes: u64,
+    /// Shared blocks the statement dirtied, and the ones it wrote itself.
+    pub shared_blks_dirtied: u64,
+    pub shared_blks_written: u64,
+    /// Time reading and writing shared data files, in milliseconds (`track_io_timing`).
+    pub io_read_ms: f64,
+    pub io_write_ms: f64,
+    /// Time reading and writing temporary files, in milliseconds (`track_io_timing`).
+    pub temp_io_ms: f64,
+    /// Blocks found in shared buffers as a share of all blocks asked for.
+    pub hit_pct: Option<f64>,
+    /// Time in file I/O as a share of execution time; 0 when `track_io_timing` is off.
+    pub io_pct: Option<f64>,
+    /// Rows returned or affected per call.
+    pub rows_per_call: Option<f64>,
+    /// Shared blocks read per row returned: high means scanning much to return little.
+    pub blocks_read_per_row: Option<f64>,
+    /// WAL bytes per call.
+    pub wal_per_call: Option<f64>,
     /// Share of all execution time in the window, in percent.
     pub share_pct: f64,
     /// Calls of the same statement inside functions (`track = all`), kept out of `calls`.
