@@ -38,6 +38,9 @@ pub struct Context<'a> {
     pub from_store: bool,
     /// Statement calls the log folded into its overflow bucket.
     pub log_overflow_calls: u64,
+    /// What the logs were filtered by (a store's ingest filter, or the records dropped while
+    /// reading files); `None` when nothing was left out.
+    pub log_filter: Option<String>,
 }
 
 /// `1 statement` or `3 statements`.
@@ -121,6 +124,17 @@ pub fn findings(ctx: &Context<'_>) -> Vec<Finding> {
                     .to_owned(),
             ));
         }
+    }
+    if let Some(filter) = &ctx.log_filter
+        && ctx.delta.is_some()
+    {
+        found.push(finding(
+            "logs_filtered",
+            "info",
+            format!(
+                "the logs were filtered ({filter}) but pg_stat_statements counts every statement, so coverage is lower than it would be unfiltered and statements the filter removed look statistics-only"
+            ),
+        ));
     }
     if ctx.log_overflow_calls > 0 {
         found.push(finding(
@@ -361,6 +375,7 @@ mod tests {
             has_logs: true,
             from_store: false,
             log_overflow_calls: 0,
+            log_filter: None,
         })
     }
 
@@ -584,6 +599,7 @@ mod tests {
             has_logs: true,
             from_store: true,
             log_overflow_calls: 0,
+            log_filter: None,
         });
         let f = found.iter().find(|f| f.code == "windows_mismatch").unwrap();
         assert!(f.message.contains("whole hours"), "{}", f.message);
@@ -649,6 +665,7 @@ mod tests {
             has_logs: true,
             from_store: false,
             log_overflow_calls: 0,
+            log_filter: None,
         };
         let heavy = |found: Vec<Finding>| {
             found
@@ -692,6 +709,7 @@ mod tests {
             has_logs: true,
             from_store: false,
             log_overflow_calls: 42,
+            log_filter: None,
         });
         let f = found.iter().find(|f| f.code == "log_overflow").unwrap();
         assert!(f.message.contains("42") && f.message.contains("--max-fingerprints"));

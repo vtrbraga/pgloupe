@@ -152,6 +152,7 @@ pub fn build_parts(
         since: edge(since, lo),
         until: edge(until, hi),
         inputs: inputs.len(),
+        filter: Some(store.filter()?).filter(|f| !f.is_empty()),
     });
     Ok((report, output.acc))
 }

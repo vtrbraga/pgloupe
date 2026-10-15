@@ -384,3 +384,40 @@ fn the_store_keeps_slowest_executions_and_parameters_only_if_ingest_asked() -> i
     }
     Ok(())
 }
+
+#[test]
+fn a_store_keeps_the_filter_its_logs_were_ingested_with() -> io::Result<()> {
+    let d = dir("filter")?;
+    let store = d.join("s.db");
+    let log = fixtures().join("logs/hours.log");
+    let filter = [
+        "--prefix",
+        "%m [%p] %q%u@%d/%a ",
+        "--between",
+        "09:00-18:00",
+        "--weekdays",
+        "mon-fri",
+        "--exclude-application",
+        "pgAdmin*",
+    ];
+    let first = ingest(&store, &[&log], &filter)?;
+    assert!(first.status.success(), "{}", stderr(&first));
+    // Mon and Wed, hours 10 and 14; the 06:00 pgAdmin rows were already outside the hours.
+    let value: Value = serde_json::from_str(&stdout(&report(&store, &[])?))?;
+    assert_eq!(value["overview"]["events"]["statement"], 4);
+    assert!(
+        value["store"]["filter"].as_str().is_some_and(
+            |f| f.contains("between=09:00-18:00") && f.contains("weekdays=mon,tue,wed,thu,fri")
+        ),
+        "{value}"
+    );
+    // The same filter may be used again; another, or none, is refused with the reason.
+    assert!(ingest(&store, &[&log], &filter)?.status.success());
+    let other = ingest(&store, &[&log], &["--prefix", "%m [%p] %q%u@%d/%a "])?;
+    assert!(!other.status.success());
+    assert!(stderr(&other).contains("filter"), "{}", stderr(&other));
+    // Filters cannot be applied later, to a store report.
+    let late = report(&store, &["--user", "u"])?;
+    assert!(!late.status.success());
+    Ok(())
+}

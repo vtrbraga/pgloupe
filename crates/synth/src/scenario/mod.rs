@@ -1,5 +1,6 @@
 //! Scenario framework: named workloads and the log events they must produce.
 
+pub mod apps;
 pub mod baseline;
 pub mod churn;
 pub mod connections;
@@ -202,6 +203,7 @@ pub const ALL: &[Scenario] = &[
     connections::SCENARIO,
     multiline::SCENARIO,
     extended::SCENARIO,
+    apps::SCENARIO,
     protocol::PHASES,
     protocol::CURSORS,
     protocol::PREPARED_SQL,
@@ -252,7 +254,7 @@ mod tests {
 
     #[test]
     fn scenarios_run_in_spec_order() {
-        const SPEC_ORDER: [&str; 14] = [
+        const SPEC_ORDER: [&str; 15] = [
             "baseline",
             "ddl",
             "lock_wait",
@@ -263,6 +265,7 @@ mod tests {
             "connections",
             "multiline",
             "extended",
+            "apps",
             "phases",
             "cursors",
             "prepared_sql",

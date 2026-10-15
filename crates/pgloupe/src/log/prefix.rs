@@ -126,12 +126,12 @@ impl Prefix {
             Some(index) => (&self.tokens[..index], Some(&self.tokens[index + 1..])),
             None => (self.tokens.as_slice(), None),
         };
-        let mut pos = match_tokens(head, line, 0, record, fallback)?;
+        let mut pos = match_tokens(head, line, 0, record, fallback, tail.is_none())?;
         // After `%q`, a process without session info prints nothing more of the prefix: the
         // label follows directly. If it does not, the rest of the prefix must match.
         let tail_end = tail
             .filter(|_| split_label(&line[pos..]).is_none())
-            .and_then(|tail| match_tokens(tail, line, pos, record, fallback).ok());
+            .and_then(|tail| match_tokens(tail, line, pos, record, fallback, true).ok());
         if let Some(end) = tail_end {
             pos = end;
         }
@@ -151,6 +151,7 @@ fn match_tokens(
     start: usize,
     record: &mut LogRecord,
     fallback: Option<Offset>,
+    label_follows: bool,
 ) -> Result<usize, String> {
     let mut pos = start;
     for (index, token) in tokens.iter().enumerate() {
@@ -171,6 +172,18 @@ fn match_tokens(
                     Some(Token::Literal(text)) => Some(text.as_str()),
                     _ => None,
                 };
+                if let Some(literal) = next_literal
+                    && is_free_text(*escape)
+                {
+                    return match_free_text(
+                        (*escape, literal),
+                        &tokens[index + 1..],
+                        line,
+                        pos,
+                        record,
+                        (fallback, label_follows),
+                    );
+                }
                 let len = escape_len(*escape, rest, next_literal).ok_or_else(|| {
                     format!(
                         "line does not match the log_line_prefix (%{escape} did not match at column {})",
@@ -183,6 +196,63 @@ fn match_tokens(
         }
     }
     Ok(pos)
+}
+
+/// Escapes whose value is free text, so it can hold the character that ends it: `application_name`
+/// is `pgAdmin 4 - CONN:123` when the prefix has a space after `%a`.
+fn is_free_text(escape: char) -> bool {
+    !matches!(escape, 't' | 's' | 'm' | 'n' | 'p' | 'l' | 'x' | 'P' | 'Q')
+}
+
+/// How many places a free-text value may end before the line is declared not to match.
+const FREE_TEXT_ATTEMPTS: usize = 8;
+
+/// Matches a free-text escape and what follows it. The value ends at the first `literal`; when the
+/// rest of the prefix does not match there, it is retried at the next one.
+fn match_free_text(
+    (escape, literal): (char, &str),
+    rest_tokens: &[Token],
+    line: &str,
+    pos: usize,
+    record: &mut LogRecord,
+    (fallback, label_follows): (Option<Offset>, bool),
+) -> Result<usize, String> {
+    let rest = &line[pos..];
+    let mut from = 0;
+    let mut failure = None;
+    for _ in 0..FREE_TEXT_ATTEMPTS {
+        let Some(found) = rest[from..].find(literal) else {
+            break;
+        };
+        let len = from + found;
+        apply(escape, &rest[..len], record, fallback)?;
+        match match_tokens(
+            rest_tokens,
+            line,
+            pos + len,
+            record,
+            fallback,
+            label_follows,
+        ) {
+            // When the prefix ends here a severity label must follow: `4` in `pgAdmin 4 - …` is
+            // also a number, so only the label tells which space ended the name.
+            Ok(end) if !label_follows || split_label(&line[end..]).is_some() => return Ok(end),
+            Ok(_) => failure.get_or_insert_with(|| {
+                format!(
+                    "no severity label after the log_line_prefix (column {})",
+                    pos + len + 1
+                )
+            }),
+            Err(error) => failure.get_or_insert(error),
+        };
+        from = len + rest[len..].chars().next().map_or(1, char::len_utf8);
+    }
+    Err(failure.unwrap_or_else(|| {
+        format!(
+            "line does not match the log_line_prefix (%{escape} did not match at column {})",
+            pos + 1
+        )
+    }))
 }
 
 fn push_literal(tokens: &mut Vec<Token>, c: char) {
@@ -429,6 +499,24 @@ mod tests {
         assert_eq!(record.user, None);
         assert_eq!(label, Label::Level(Severity::Log));
         assert_eq!(text, "database system is ready");
+    }
+
+    #[test]
+    fn an_application_name_with_spaces_is_read_whole() {
+        let prefix = Prefix::compile("%m [%p] %q%u@%d/%a %Q ").unwrap();
+        for app in [
+            "pgAdmin 4 - CONN:1234567",
+            "DBeaver 24.1.0 - Main <pagila>",
+            "psql",
+        ] {
+            let line = format!(
+                "2026-10-14 10:00:00.000 UTC [7] bob@shop/{app} 0 LOG:  statement: SELECT 1"
+            );
+            let (record, _, text) = parse(&prefix, &line).unwrap();
+            assert_eq!(record.application.as_deref(), Some(app), "{line}");
+            assert_eq!(record.database.as_deref(), Some("shop"));
+            assert_eq!(text, "statement: SELECT 1");
+        }
     }
 
     #[test]

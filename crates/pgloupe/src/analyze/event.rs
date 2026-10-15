@@ -138,6 +138,14 @@ fn classify_log(message: &str) -> Event {
 /// `process N still waiting for LOCK on TARGET after X ms` and `process N acquired LOCK on
 /// TARGET after X ms`.
 fn lock_event(message: &str) -> Option<Event> {
+    // A wait while a statement is being analysed carries its position: `… after 200 ms at
+    // character 22`.
+    let message = message
+        .rsplit_once(" at character ")
+        .filter(|(_, position)| {
+            !position.is_empty() && position.bytes().all(|b| b.is_ascii_digit())
+        })
+        .map_or(message, |(before, _)| before);
     let rest = message.strip_prefix("process ")?;
     let (pid, rest) = rest.split_once(' ')?;
     let pid: u32 = pid.parse().ok()?;
@@ -634,6 +642,26 @@ mod tests {
         assert_eq!(
             log("process x still waiting for ShareLock on y after 1 ms"),
             Event::Other
+        );
+    }
+
+    #[test]
+    fn a_wait_during_statement_analysis_carries_its_position() {
+        assert_eq!(
+            log(
+                "process 180 still waiting for AccessShareLock on relation 16936 of database 16387 after 200.370 ms at character 22"
+            ),
+            Event::LockWait {
+                pid: 180,
+                lock: "AccessShareLock".to_owned(),
+                target: "relation 16936 of database 16387".to_owned(),
+                waited_ms: 200.37
+            }
+        );
+        assert_eq!(
+            log("process 180 acquired AccessShareLock on relation 16936 of database 16387 after 401.432 ms at character 22")
+                .kind(),
+            "lock_acquired"
         );
     }
 

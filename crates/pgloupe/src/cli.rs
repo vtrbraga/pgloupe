@@ -11,7 +11,7 @@ use jiff::{Timestamp, tz::Offset};
 
 use crate::{
     analyze::{
-        filter::{Facets, Filter},
+        filter::{Clock, Facets, Filter, Matcher},
         pipeline::{self, AnalyzeError},
         render as analyze_render,
         report::{Report, ReportOptions, SortBy as ReportSortBy, all_statements},
@@ -74,7 +74,7 @@ impl Cli {
                 } else if args.files.is_empty() && !args.filters.filter().is_empty() {
                     fail(
                         ErrorKind::ArgumentConflict,
-                        "filters apply while reading log FILES; a store's slices are already aggregated and snapshots have no log records",
+                        "filters apply while reading logs: give them to `logs ingest` (the store then holds only what they keep), or to `report` with log FILES",
                     )
                 } else if args.files.is_empty()
                     && (args.capture.params || args.capture.slowest.is_some())
@@ -142,11 +142,11 @@ enum LogsCommand {
     Analyze(Box<AnalyzeArgs>),
     /// Add logs to a store; files already ingested are skipped and grown ones replace their old
     /// version.
-    Ingest(IngestArgs),
+    Ingest(Box<IngestArgs>),
     /// Report on a time window of a store.
     Report(StoreReportArgs),
     /// Download a time range of log files from a managed service or server (resumable).
-    Fetch(collect::commands::FetchArgs),
+    Fetch(Box<collect::commands::FetchArgs>),
 }
 
 #[derive(Debug, Args)]
@@ -217,42 +217,69 @@ struct AnalyzeArgs {
 }
 
 /// Which records of the log files take part.
+///
+/// Names for `--database`, `--user`, `--application` and `--host` are exact, a glob when they hold
+/// `*` or `?`, or a regular expression as `re:PATTERN`.
 #[derive(Debug, Args)]
 struct FilterArgs {
     /// Only records of these databases (repeat or comma-separate).
-    #[arg(long = "database", value_delimiter = ',')]
-    databases: Vec<String>,
+    #[arg(long = "database", value_delimiter = ',', value_parser = Matcher::parse)]
+    databases: Vec<Matcher>,
     /// Only records of these users.
-    #[arg(long = "user", value_delimiter = ',')]
-    users: Vec<String>,
+    #[arg(long = "user", value_delimiter = ',', value_parser = Matcher::parse)]
+    users: Vec<Matcher>,
     /// Only records of these applications (`application_name`).
-    #[arg(long = "application", value_delimiter = ',')]
-    applications: Vec<String>,
+    #[arg(long = "application", value_delimiter = ',', value_parser = Matcher::parse)]
+    applications: Vec<Matcher>,
     /// Only records from these client hosts.
-    #[arg(long = "host", value_delimiter = ',')]
-    hosts: Vec<String>,
+    #[arg(long = "host", value_delimiter = ',', value_parser = Matcher::parse)]
+    hosts: Vec<Matcher>,
     /// Drop records of these databases.
-    #[arg(long = "exclude-database", value_delimiter = ',')]
-    exclude_databases: Vec<String>,
+    #[arg(long = "exclude-database", value_delimiter = ',', value_parser = Matcher::parse)]
+    exclude_databases: Vec<Matcher>,
     /// Drop records of these users.
-    #[arg(long = "exclude-user", value_delimiter = ',')]
-    exclude_users: Vec<String>,
+    #[arg(long = "exclude-user", value_delimiter = ',', value_parser = Matcher::parse)]
+    exclude_users: Vec<Matcher>,
     /// Drop records of these applications.
-    #[arg(long = "exclude-application", value_delimiter = ',')]
-    exclude_applications: Vec<String>,
+    #[arg(long = "exclude-application", value_delimiter = ',', value_parser = Matcher::parse)]
+    exclude_applications: Vec<Matcher>,
     /// Drop records from these client hosts.
-    #[arg(long = "exclude-host", value_delimiter = ',')]
-    exclude_hosts: Vec<String>,
+    #[arg(long = "exclude-host", value_delimiter = ',', value_parser = Matcher::parse)]
+    exclude_hosts: Vec<Matcher>,
     /// Only records whose message or statement matches this regular expression.
     #[arg(long, value_parser = parse_regex)]
     include_query: Option<regex::Regex>,
     /// Drop records whose message or statement matches this regular expression.
     #[arg(long, value_parser = parse_regex)]
     exclude_query: Option<regex::Regex>,
+    /// Only records of these backend process ids.
+    #[arg(long = "pid", value_delimiter = ',')]
+    pids: Vec<u32>,
+    /// Drop records whose message matches this regular expression (noise such as health checks).
+    #[arg(long, value_parser = parse_regex)]
+    exclude_message: Option<regex::Regex>,
+    /// Only records inside this time of day, as `HH:MM-HH:MM` (wraps past midnight).
+    #[arg(long, value_parser = Clock::parse_between)]
+    between: Option<(u16, u16)>,
+    /// Drop records in these hours of the day, as `5-7` (hours 5 to 7 inclusive); repeatable.
+    #[arg(long = "exclude-hours", value_delimiter = ',', value_parser = Clock::parse_hours)]
+    exclude_hours: Vec<(u8, u8)>,
+    /// Only records on these days: `mon-fri`, `sat,sun`.
+    #[arg(long, value_parser = Clock::parse_weekdays)]
+    weekdays: Option<[bool; 7]>,
+    /// Zone for `--between`, `--exclude-hours` and `--weekdays`: an IANA name or `UTC` (default).
+    #[arg(long, value_parser = parse_zone)]
+    tz: Option<(jiff::tz::TimeZone, String)>,
 }
 
 impl FilterArgs {
     fn filter(&self) -> Filter {
+        let clock = Clock::new(
+            self.between,
+            self.exclude_hours.clone(),
+            self.weekdays,
+            self.tz.clone(),
+        );
         Filter {
             include: Facets {
                 databases: self.databases.clone(),
@@ -268,8 +295,17 @@ impl FilterArgs {
             },
             include_query: self.include_query.clone(),
             exclude_query: self.exclude_query.clone(),
+            pids: self.pids.clone(),
+            exclude_message: self.exclude_message.clone(),
+            clock,
         }
     }
+}
+
+fn parse_zone(text: &str) -> Result<(jiff::tz::TimeZone, String), String> {
+    jiff::tz::TimeZone::get(text)
+        .map(|zone| (zone, text.to_owned()))
+        .map_err(|e| format!("{text}: {e}"))
 }
 
 fn parse_regex(text: &str) -> Result<regex::Regex, String> {
@@ -322,6 +358,8 @@ struct IngestArgs {
     force: bool,
     #[command(flatten)]
     capture: CaptureArgs,
+    #[command(flatten)]
+    filters: FilterArgs,
 }
 
 #[derive(Debug, Args)]
@@ -667,7 +705,10 @@ fn logs_ingest(
     err: &mut dyn Write,
 ) -> anyhow::Result<Exit> {
     let mut store = Store::create(&args.store)?;
+    let filter = args.filters.filter();
+    store.claim_filter(&filter.describe())?;
     let options = pipeline::Options {
+        filter,
         format: match args.format {
             LogFormat::Auto => None,
             LogFormat::Csv => Some(Format::Csv),
@@ -683,7 +724,6 @@ fn logs_ingest(
         hash_marks: None,
         slowest: args.capture.slowest(),
         params: args.capture.params,
-        filter: Filter::default(),
     };
     let mut failed = false;
     for outcome in store::ingest(&mut store, &args.files, &options, args.force) {

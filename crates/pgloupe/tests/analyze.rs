@@ -553,3 +553,34 @@ fn phases_cursors_prepared_statements_and_bare_durations_land_on_their_statement
     );
     Ok(())
 }
+
+#[test]
+fn time_of_day_weekday_pid_and_name_filters_narrow_the_analysis() -> io::Result<()> {
+    let log = fixtures().join("logs/hours.log");
+    let events = |extra: &[&str]| -> io::Result<u64> {
+        let mut args = vec!["--prefix", "%m [%p] %q%u@%d/%a ", "--output", "json"];
+        args.extend(extra);
+        let out = analyze(&args, std::slice::from_ref(&log))?;
+        assert!(out.status.success(), "{}", stderr(&out));
+        let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+        Ok(report["overview"]["events"]["statement"]
+            .as_u64()
+            .unwrap_or(0))
+    };
+    assert_eq!(events(&[])?, 15);
+    assert_eq!(events(&["--weekdays", "mon-fri"])?, 10);
+    assert_eq!(events(&["--between", "09:00-18:00"])?, 6);
+    assert_eq!(events(&["--exclude-hours", "3-6"])?, 9);
+    assert_eq!(events(&["--pid", "106"])?, 3);
+    assert_eq!(events(&["--application", "pgAdmin4*"])?, 3);
+    assert_eq!(events(&["--exclude-application", "re:^pgAdmin"])?, 12);
+    assert_eq!(events(&["--exclude-message", "SELECT 20 "])?, 12);
+    // 12:00 UTC is 09:00 in Sao Paulo: the zone moves the window.
+    assert_eq!(
+        events(&["--between", "11:00-12:00", "--tz", "America/Sao_Paulo"])?,
+        3
+    );
+    let bad = analyze(&["--between", "9-18"], &[log])?;
+    assert!(!bad.status.success());
+    Ok(())
+}

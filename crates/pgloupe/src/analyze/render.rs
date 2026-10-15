@@ -109,7 +109,15 @@ fn header(report: &Report, elapsed: Option<Duration>) -> Vec<String> {
                 store.until.as_deref().unwrap_or("all")
             ),
             format!("inputs:     {}", report.files.len()),
-        ],
+        ]
+        .into_iter()
+        .chain(
+            store
+                .filter
+                .iter()
+                .map(|filter| format!("filter:     {filter} (applied when ingested)")),
+        )
+        .collect(),
         None => vec![
             "pgloupe logs analyze".to_owned(),
             format!("files:      {}", report.files.len()),
@@ -651,6 +659,7 @@ mod tests {
     fn store_header_names_store_range_and_inputs() {
         let mut report = report(10);
         report.store = Some(crate::analyze::report::StoreInfo {
+            filter: None,
             path: "logs.db".to_owned(),
             since: Some("2026-10-14T11:00:00Z".to_owned()),
             until: None,

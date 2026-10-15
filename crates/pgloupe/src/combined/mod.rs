@@ -245,6 +245,20 @@ pub fn build(
     let log_overflow_calls = log_report
         .as_ref()
         .map_or(0, |report| report.diagnostics.overflow_calls);
+    let log_filter = log_report.as_ref().and_then(|report| {
+        report
+            .store
+            .as_ref()
+            .and_then(|store| store.filter.clone())
+            .or_else(|| {
+                (report.diagnostics.filtered > 0).then(|| {
+                    format!(
+                        "{} records dropped by the filters",
+                        report.diagnostics.filtered
+                    )
+                })
+            })
+    });
     let mut joined = join(log_rows, delta);
     rank(&mut joined.rows, options.by);
     let shown = joined.rows.len().min(options.top);
@@ -259,6 +273,7 @@ pub fn build(
             .as_ref()
             .is_some_and(|input| input.source == "store"),
         log_overflow_calls,
+        log_filter,
     });
     let to_do = actions(log_report.as_ref(), &joined);
     joined.rows.truncate(shown);

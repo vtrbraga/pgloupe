@@ -10,7 +10,7 @@ use std::path::Path;
 pub use ingest::{FileOutcome, Status, ingest};
 pub use manifest::{Input, StoredDiag};
 
-use rusqlite::{Connection, OpenFlags, ffi::ErrorCode};
+use rusqlite::{Connection, OpenFlags, OptionalExtension as _, ffi::ErrorCode};
 use thiserror::Error;
 
 /// Version written to `PRAGMA user_version`; a store with another number is refused.
@@ -47,6 +47,14 @@ pub enum StoreError {
     Missing { path: String },
     #[error("{path}: store is locked by another process")]
     Locked { path: String },
+    #[error(
+        "{path}: this store holds logs ingested with the filter {stored}, not {asked}; use another store, or the same filter"
+    )]
+    FilterMismatch {
+        path: String,
+        stored: String,
+        asked: String,
+    },
     #[error("store database error")]
     Sql(#[from] rusqlite::Error),
     #[error("store holds data this version cannot read")]
@@ -85,6 +93,67 @@ pub(crate) fn sql_error(err: rusqlite::Error, path: &str) -> StoreError {
 }
 
 impl Store {
+    /// The filter every input of this store was read with, `""` when none (or when the store
+    /// predates filters).
+    ///
+    /// # Errors
+    ///
+    /// Fails on a database error.
+    pub fn filter(&self) -> Result<String, StoreError> {
+        let found: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'ingest_filter'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(found.unwrap_or_default())
+    }
+
+    /// Ties the store to `filter` (see [`crate::analyze::filter::Filter::describe`]): the first
+    /// ingest into an empty store sets it, later ones must agree, so a window never mixes
+    /// differently filtered logs.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the store already holds inputs read with a different filter.
+    pub fn claim_filter(&mut self, filter: &str) -> Result<(), StoreError> {
+        let stored = self.filter()?;
+        if stored == filter {
+            if !filter.is_empty() {
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO meta VALUES ('ingest_filter', ?1)",
+                    [filter],
+                )?;
+            }
+            return Ok(());
+        }
+        let inputs: i64 = self
+            .conn
+            .query_row("SELECT count(*) FROM inputs", [], |row| row.get(0))?;
+        if inputs > 0 {
+            return Err(StoreError::FilterMismatch {
+                path: self.path.clone(),
+                stored: if stored.is_empty() {
+                    "none".to_owned()
+                } else {
+                    stored
+                },
+                asked: if filter.is_empty() {
+                    "none".to_owned()
+                } else {
+                    filter.to_owned()
+                },
+            });
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta VALUES ('ingest_filter', ?1)",
+            [filter],
+        )?;
+        Ok(())
+    }
+
     /// Opens the store at `path`, creating and initializing it when the file does not exist or is
     /// empty.
     ///

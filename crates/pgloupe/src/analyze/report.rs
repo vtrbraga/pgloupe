@@ -214,6 +214,9 @@ pub struct StoreInfo {
     /// The requested upper bound, snapped up to the hour; `None` when unbounded.
     pub until: Option<String>,
     pub inputs: usize,
+    /// What the logs were filtered by when they were ingested, if anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

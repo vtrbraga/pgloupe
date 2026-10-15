@@ -325,3 +325,56 @@ fn blocked_parse_and_bind_and_cursor_fetches_land_on_their_statements() -> io::R
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
+fn application_name_patterns_pick_tool_sessions_out_of_the_corpus() -> io::Result<()> {
+    use pgloupe::analyze::filter::{Filter, Matcher};
+    let path = corpus().join("log").join(reference());
+    let by_app = |filter: Filter| -> io::Result<Vec<String>> {
+        let out = pipeline::run(
+            std::slice::from_ref(&path),
+            &Options {
+                filter,
+                ..Options::new()
+            },
+        )
+        .map_err(io_err)?;
+        let report = pgloupe::analyze::report::Report::build(
+            &out,
+            &pgloupe::analyze::report::ReportOptions {
+                by: pgloupe::analyze::report::SortBy::Total,
+                top: 1,
+            },
+        );
+        Ok(report
+            .dimensions
+            .application
+            .into_iter()
+            .map(|row| row.value)
+            .collect())
+    };
+    let tools = |patterns: &[&str]| Filter {
+        include: pgloupe::analyze::filter::Facets {
+            applications: patterns
+                .iter()
+                .map(|p| Matcher::parse(p).unwrap())
+                .collect(),
+            ..Default::default()
+        },
+        ..Filter::default()
+    };
+    let admin = by_app(tools(&["pgAdmin 4*"]))?;
+    assert!(
+        admin.iter().all(|a| a.starts_with("pgAdmin 4 - CONN:")),
+        "{admin:?}"
+    );
+    assert_eq!(admin.len(), 2);
+    let dbeaver = by_app(tools(&["re:^DBeaver [0-9.]+ - "]))?;
+    assert_eq!(dbeaver.len(), 2, "{dbeaver:?}");
+    let web = by_app(tools(&["app-web-?"]))?;
+    let mut web = web;
+    web.sort();
+    assert_eq!(web, ["app-web-1", "app-web-2"]);
+    Ok(())
+}
