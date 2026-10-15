@@ -1,0 +1,3 @@
+snapshot_at,datid,datname,numbackends,xact_commit,xact_rollback,blks_read,blks_hit,tup_returned,tup_fetched,tup_inserted,tup_updated,tup_deleted,conflicts,temp_files,temp_bytes,deadlocks,checksum_failures,checksum_last_failure,blk_read_time,blk_write_time,session_time,active_time,idle_in_transaction_time,sessions,sessions_abandoned,sessions_fatal,sessions_killed,stats_reset
+2026-10-14 10:10:00+00,16384,shop,8,190000,9500,12000,186000,5000,2500,100,50,10,0,3,12288,0,0,,1200,240,84000000,9600000,8200000,1400,700,0,0,2026-10-01 00:00:00+00
+2026-10-14 10:10:00+00,16385,billing,8,26000,12,150,25850,5000,2500,100,50,10,0,0,0,0,0,,15,3,3600000,160000,20000,60,1,0,0,2026-10-01 00:00:00+00

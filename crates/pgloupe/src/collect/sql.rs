@@ -27,6 +27,11 @@ pub const PGSS_INFO: &str = "COPY (SELECT now() AS snapshot_at, * FROM pg_stat_s
 pub const SETTINGS: &str = "COPY (SELECT name, setting, unit, source, pending_restart \
     FROM pg_settings ORDER BY name) TO STDOUT WITH (FORMAT csv, HEADER)";
 
+/// Per-database counters (Postgres 14 and later): transactions, cache, temp files, sessions and
+/// the time spent active, idle in a transaction and connected.
+pub const DATABASE: &str = "COPY (SELECT now() AS snapshot_at, * FROM pg_stat_database \
+    WHERE datname IS NOT NULL ORDER BY datname) TO STDOUT WITH (FORMAT csv, HEADER)";
+
 /// Where one snapshot went.
 #[derive(Debug, Clone)]
 pub struct Snapshot {
@@ -36,6 +41,8 @@ pub struct Snapshot {
     pub info: Option<PathBuf>,
     /// The settings file written beside it, when the role could read them.
     pub settings: Option<PathBuf>,
+    /// The per-database counters file written beside it, on Postgres 14 and later.
+    pub database: Option<PathBuf>,
     /// Server time of the snapshot.
     pub taken_at: Timestamp,
     /// Entries whose query text the role may not read.
@@ -142,6 +149,14 @@ fn take_in(client: &mut Client, dir: &Path) -> Result<Snapshot, CollectError> {
     let settings = write_atomically(client, SETTINGS, &settings_path, "reading pg_settings")
         .ok()
         .map(|()| settings_path);
+    let database = if version >= 140_000 {
+        let path = dir.join(format!("pg_stat_database_{name}.csv"));
+        write_atomically(client, DATABASE, &path, "reading pg_stat_database")
+            .ok()
+            .map(|()| path)
+    } else {
+        None
+    };
     let unreadable_text: i64 = client
         .query_one(
             "SELECT count(*) FROM pg_stat_statements WHERE query = '<insufficient privilege>'",
@@ -153,6 +168,7 @@ fn take_in(client: &mut Client, dir: &Path) -> Result<Snapshot, CollectError> {
         pgss,
         info,
         settings,
+        database,
         taken_at,
         unreadable_text: u64::try_from(unreadable_text).unwrap_or(0),
     })
@@ -172,7 +188,7 @@ mod tests {
 
     #[test]
     fn the_snapshot_sql_only_reads() {
-        for sql in [PGSS, PGSS_INFO, SETTINGS] {
+        for sql in [PGSS, PGSS_INFO, SETTINGS, DATABASE] {
             let lower = sql.to_ascii_lowercase();
             assert!(lower.starts_with("copy (select"), "{sql}");
             assert!(lower.contains("to stdout"));

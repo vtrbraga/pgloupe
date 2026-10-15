@@ -842,3 +842,51 @@ fn a_lock_wait_still_pending_at_a_batch_boundary_is_blamed() -> io::Result<()> {
     assert_eq!(blockers_of(&[], log.as_bytes(), "blk-edge.log")?, 1);
     Ok(())
 }
+
+#[test]
+fn pg_stat_database_adds_a_server_wide_section_and_findings() -> io::Result<()> {
+    let stats = fixtures().join("stats");
+    let out = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args(["report", "--before"])
+        .arg(stats.join("basic_before.csv"))
+        .arg("--after")
+        .arg(stats.join("basic_after.csv"))
+        .arg("--before-db")
+        .arg(stats.join("db_before.csv"))
+        .arg("--after-db")
+        .arg(stats.join("db_after.csv"))
+        .args(["--output", "json"])
+        .output()?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    let db = &report["database"];
+    assert_eq!(db["window_secs"], 600.0);
+    assert_eq!(db["total"]["commits"], 96_000);
+    assert_eq!(db["total"]["rollbacks"], 9_002);
+    assert_eq!(db["databases"][0]["name"], "shop", "busiest first");
+    let codes: Vec<&str> = report["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|f| f["code"].as_str())
+        .collect();
+    for wanted in [
+        "statements_cover_little",
+        "many_rollbacks",
+        "sessions_abandoned",
+        "idle_in_transaction",
+    ] {
+        assert!(codes.contains(&wanted), "{wanted} in {codes:?}");
+    }
+    // Without the files nothing changes.
+    let plain = Command::new(env!("CARGO_BIN_EXE_pgloupe"))
+        .args(["report", "--before"])
+        .arg(stats.join("basic_before.csv"))
+        .arg("--after")
+        .arg(stats.join("basic_after.csv"))
+        .args(["--output", "json"])
+        .output()?;
+    let plain: serde_json::Value = serde_json::from_str(&stdout(&plain))?;
+    assert!(plain.get("database").is_none());
+    Ok(())
+}

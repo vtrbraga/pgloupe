@@ -112,6 +112,9 @@ pub fn snap(args: &SnapArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyhow
     if let Some(settings) = &snapshot.settings {
         writeln!(out, "wrote {}", settings.display())?;
     }
+    if let Some(database) = &snapshot.database {
+        writeln!(out, "wrote {}", database.display())?;
+    }
     if snapshot.unreadable_text > 0 {
         writeln!(
             err,

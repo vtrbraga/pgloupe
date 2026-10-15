@@ -4,6 +4,7 @@ mod actions;
 mod advice;
 mod compare;
 mod csv;
+mod database;
 mod findings;
 mod html;
 mod join;
@@ -15,6 +16,7 @@ pub use actions::{Action, actions};
 pub use advice::{Advice, Input as AdviceInput, advise, detect_vendor, read_settings};
 pub use compare::{Comparison, compare};
 pub use csv::csv;
+pub use database::{DatabaseReport, DatabaseRow, database_findings, database_report};
 pub use findings::{Context, findings};
 pub use html::{HtmlError, html, html_live};
 pub use join::{Joined, join, rank};
@@ -129,6 +131,9 @@ pub struct CombinedReport {
     /// This period against an earlier one, when asked for.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comparison: Option<Comparison>,
+    /// The server-wide counters from `pg_stat_database`, when two snapshots of them were given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<DatabaseReport>,
     /// The zone the dashboard shows times in; every timestamp in this document stays UTC.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_tz: Option<String>,
@@ -232,6 +237,23 @@ fn log_filter(report: Option<&Report>) -> Option<String> {
         })
 }
 
+impl CombinedReport {
+    /// Adds the `pg_stat_database` section and the findings it supports.
+    #[must_use]
+    pub fn with_database(
+        mut self,
+        database: &crate::stats::database::DatabaseDelta,
+        statements: Option<&Delta>,
+    ) -> Self {
+        let section = database_report(database, statements);
+        self.findings
+            .extend(database_findings(&section, statements));
+        self.findings.sort_by_key(|f| f.severity != "warn");
+        self.database = Some(section);
+        self
+    }
+}
+
 /// Joins the two sources, ranks and truncates the statements by `options`, and adds findings.
 #[must_use]
 pub fn build(
@@ -327,6 +349,7 @@ pub fn build(
         }),
         advice: Vec::new(),
         comparison: None,
+        database: None,
         display_tz: None,
     }
 }

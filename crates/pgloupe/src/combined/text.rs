@@ -55,6 +55,10 @@ pub fn text(report: &CombinedReport) -> String {
             }
         }
     }
+    if let Some(database) = &report.database {
+        lines.push(String::new());
+        lines.extend(database_lines(database));
+    }
     if let Some(comparison) = &report.comparison {
         lines.push(String::new());
         lines.extend(comparison_lines(comparison));
@@ -139,6 +143,57 @@ fn stats_line(report: &CombinedReport) -> String {
         input.server_version_num,
         input.reset.as_str()
     )
+}
+
+fn database_lines(db: &super::DatabaseReport) -> Vec<String> {
+    let pct = |value: Option<f64>| value.map_or_else(|| "-".to_owned(), |v| format!("{v:.1}%"));
+    let mut lines = vec![format!(
+        "server load (pg_stat_database, {:.0} s{})",
+        db.window_secs,
+        if db.total.partial { ", partial" } else { "" }
+    )];
+    let t = &db.total;
+    lines.push(format!(
+        "  average sessions: {:.1} connected, {:.1} running statements, {:.1} idle in a transaction",
+        t.avg_sessions, t.avg_active, t.avg_idle_in_transaction
+    ));
+    lines.push(format!(
+        "  transactions: {} committed, {} rolled back ({}); cache hit {}",
+        t.commits,
+        t.rollbacks,
+        pct(t.rollback_pct),
+        pct(t.hit_pct)
+    ));
+    lines.push(format!(
+        "  sessions: {} started, {} abandoned ({}), {} fatal, {} killed; temp files {} ({} bytes); deadlocks {}",
+        t.sessions,
+        t.sessions_abandoned,
+        pct(t.abandoned_pct),
+        t.sessions_fatal,
+        t.sessions_killed,
+        t.temp_files,
+        t.temp_bytes,
+        t.deadlocks
+    ));
+    if let Some(coverage) = db.statements_coverage_pct {
+        lines.push(format!(
+            "  pg_stat_statements accounts for {} of the time spent running statements",
+            super::database::about(coverage)
+        ));
+    }
+    lines.push("  database          active  idle/xact  rollback%   hit%   abandoned%".to_owned());
+    for d in &db.databases {
+        lines.push(format!(
+            "  {:<16} {:>7.2} {:>10.2} {:>10} {:>6} {:>12}",
+            d.name,
+            d.avg_active,
+            d.avg_idle_in_transaction,
+            pct(d.rollback_pct),
+            pct(d.hit_pct),
+            pct(d.abandoned_pct)
+        ));
+    }
+    lines
 }
 
 fn comparison_lines(c: &super::Comparison) -> Vec<String> {

@@ -20,6 +20,7 @@ use crate::{
     combined::{self, LogData},
     log::{self, Format, Options, source, time::parse_offset_arg},
     stats::{
+        database::{self, DatabaseDelta, DatabaseSnapshot},
         delta::{self, SortBy},
         render::{self, View},
         snapshot::{Info, Snapshot},
@@ -504,6 +505,13 @@ struct CombinedArgs {
     /// `pg_stat_statements_info` CSV taken with the newer snapshot.
     #[arg(long, requires = "before")]
     after_info: Option<PathBuf>,
+    /// `pg_stat_database` CSV taken with the older snapshot; found beside it when it is named
+    /// `pg_stat_database_<time>.csv`.
+    #[arg(long, requires = "after_db")]
+    before_db: Option<PathBuf>,
+    /// `pg_stat_database` CSV taken with the newer snapshot.
+    #[arg(long, requires = "before_db")]
+    after_db: Option<PathBuf>,
     /// Log format of `FILES`; `auto` looks at each file's first line.
     #[arg(long, value_enum, default_value_t = LogFormat::Auto, conflicts_with = "store")]
     format: LogFormat,
@@ -934,8 +942,48 @@ fn load_delta(args: &CombinedArgs) -> anyhow::Result<Option<delta::Delta>> {
     Ok(Some(delta::diff(&before, &after)?))
 }
 
+/// The `pg_stat_database` change for the snapshots: the files given, or the ones `snap` wrote
+/// beside them.
+fn load_database(
+    args: &CombinedArgs,
+    err: &mut dyn Write,
+) -> anyhow::Result<Option<DatabaseDelta>> {
+    let beside = |snapshot: &Option<PathBuf>| -> Option<PathBuf> {
+        let snapshot = snapshot.as_deref()?;
+        let stamp = snapshot
+            .file_name()?
+            .to_str()?
+            .strip_prefix("pgss_")?
+            .strip_suffix(".csv")?;
+        let path = snapshot.with_file_name(format!("pg_stat_database_{stamp}.csv"));
+        path.exists().then_some(path)
+    };
+    let (before, after) = match (&args.before_db, &args.after_db) {
+        (Some(before), Some(after)) => (before.clone(), after.clone()),
+        _ => match (beside(&args.before), beside(&args.after)) {
+            (Some(before), Some(after)) => (before, after),
+            _ => return Ok(None),
+        },
+    };
+    let delta = DatabaseSnapshot::from_path(&before)
+        .and_then(|b| DatabaseSnapshot::from_path(&after).map(|a| (b, a)))
+        .and_then(|(b, a)| database::diff(&b, &a));
+    match delta {
+        Ok(delta) => Ok(Some(delta)),
+        Err(error) if args.before_db.is_some() => Err(error.into()),
+        Err(error) => {
+            writeln!(
+                err,
+                "note: the pg_stat_database files were not used: {error}"
+            )?;
+            Ok(None)
+        }
+    }
+}
+
 fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Result<Exit> {
     let delta = load_delta(args)?;
+    let database = load_database(args, err)?;
     let options = ReportOptions {
         by: args.by.into(),
         top: args.top,
@@ -1016,6 +1064,9 @@ fn report(args: &CombinedArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
         anonymize_inputs(&mut logs, delta.as_mut(), err)?;
     }
     let mut combined = combined::build(logs, delta.as_ref(), &options);
+    if let Some(database) = &database {
+        combined = combined.with_database(database, delta.as_ref());
+    }
     combined.display_tz = args.display_tz.as_ref().map(|(_, name)| name.clone());
     combined.comparison = baseline;
     combined.advice = report_advice(args, &combined, delta.as_ref(), err)?;
