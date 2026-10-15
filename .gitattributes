@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.gz binary
+*.png binary
+fixtures/**/*.golden.* linguist-generated=true

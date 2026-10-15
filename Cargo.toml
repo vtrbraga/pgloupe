@@ -7,6 +7,11 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.88"
 repository = "https://github.com/vtrbraga/pgloupe"
+homepage = "https://github.com/vtrbraga/pgloupe"
+license = "MIT OR Apache-2.0"
+authors = ["Vitor Braga"]
+keywords = ["postgres", "pg_stat_statements", "logs", "performance", "report"]
+categories = ["command-line-utilities", "database"]
 publish = false
 
 [workspace.dependencies]

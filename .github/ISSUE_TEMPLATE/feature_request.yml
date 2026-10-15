@@ -1,0 +1,15 @@
+name: Feature request
+description: Something pgloupe does not show yet.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What are you trying to find out?
+      description: The question you could not answer, not the feature you imagine.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What do you do today?

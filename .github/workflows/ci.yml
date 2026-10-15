@@ -4,34 +4,111 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
 
 jobs:
-  check:
+  lint:
+    name: fmt, clippy, docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install libclang (needed by pg_query's bindgen)
+      - name: Install libclang (pg_query's bindgen)
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
 
-  synth:
-    if: github.ref == 'refs/heads/main'
-    needs: check
-    runs-on: ubuntu-latest
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Install libclang (needed by pg_query's bindgen)
+      - name: Install libclang (pg_query's bindgen)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libclang-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: docker pull postgres:17
-      - run: cargo test -p synth -- --ignored --test-threads=2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: cargo test --workspace
+
+  windows:
+    name: build (windows, experimental)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p pgloupe
+
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libclang (pg_query's bindgen)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p pgloupe --all-targets
+        env:
+          RUSTUP_TOOLCHAIN: "1.88"
+
+  deny:
+    name: licenses and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  postgres:
+    name: PostgreSQL ${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["14", "15", "16", "17", "18"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libclang (pg_query's bindgen)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: docker pull postgres:${{ matrix.pg }}
+      - name: Generate the corpus and check the analysis against it
+        run: |
+          cargo run -p synth -- generate --pg ${{ matrix.pg }} --force
+          PGLOUPE_PG=${{ matrix.pg }} cargo test -p pgloupe --test analyze_corpus --test logs_corpus --test combined_corpus --test store_corpus -- --ignored
+
+  live:
+    name: live-server tests (Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libclang (pg_query's bindgen)
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Pull the images the tests start
+        run: for v in 14 15 16 17 18; do docker pull postgres:$v; done
+      - run: cargo test -p pgloupe --test collect_snap --test collect_tls --test collect_fetch -- --ignored --test-threads=2
