@@ -39,16 +39,16 @@ the version.
 
 ```bash
 # Linux, macOS: installer script
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/vtrbraga/pgloupe/releases/download/v0.1.0-alpha.2/pgloupe-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/vtrbraga/pgloupe/releases/download/v0.1.0-alpha.3/pgloupe-installer.sh | sh
 
 # Homebrew
 brew install vtrbraga/tap/pgloupe
 
 # Prebuilt, through cargo-binstall
-cargo binstall pgloupe@0.1.0-alpha.2
+cargo binstall pgloupe@0.1.0-alpha.3
 
 # Docker
-docker run --rm -v "$PWD:/data" ghcr.io/vtrbraga/pgloupe:0.1.0-alpha.2 report /data/postgresql.log
+docker run --rm -v "$PWD:/data" ghcr.io/vtrbraga/pgloupe:0.1.0-alpha.3 report /data/postgresql.log
 ```
 
 Windows (PowerShell), Cargo from source, archives with checksums and attestations, updating and
