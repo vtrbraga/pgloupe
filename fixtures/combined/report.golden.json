@@ -55,6 +55,30 @@
       "after_at": "2026-10-14T10:10:00Z",
       "before_at": "2026-10-14T10:00:00Z",
       "blind_spot": true,
+      "by_database": [
+        {
+          "calls": 66,
+          "entries": 3,
+          "hit_pct": null,
+          "io_pct": 0.0,
+          "name": "pagila",
+          "rows": 66,
+          "share_pct": 100.0,
+          "total_ms": 500.0
+        }
+      ],
+      "by_user": [
+        {
+          "calls": 66,
+          "entries": 3,
+          "hit_pct": null,
+          "io_pct": 0.0,
+          "name": "postgres",
+          "rows": 66,
+          "share_pct": 100.0,
+          "total_ms": 500.0
+        }
+      ],
       "counts": {
         "entries": 4,
         "gone": 1,
@@ -67,7 +91,19 @@
       "evictions": null,
       "reset": "none",
       "reset_at": null,
-      "server_version_num": 170011
+      "server_version_num": 170011,
+      "totals": {
+        "blocks_read": 0,
+        "calls": 66,
+        "exec_ms": 500.0,
+        "hit_pct": null,
+        "io_ms": 0.0,
+        "io_pct": 0.0,
+        "nested_entries": 0,
+        "plan_ms": 0.0,
+        "plan_pct": null,
+        "wal_bytes": 0
+      }
     }
   },
   "kind": "pgloupe.report",
@@ -609,6 +645,7 @@
         "io_pct": 0.0,
         "io_read_ms": 0.0,
         "io_write_ms": 0.0,
+        "max_ms": null,
         "mean_ms": 100.0,
         "nested_calls": 0,
         "plans": 0,
@@ -623,10 +660,12 @@
         "shared_blks_hit": 0,
         "shared_blks_read": 0,
         "shared_blks_written": 0,
+        "stddev_ms": null,
         "temp_blks_read": 0,
         "temp_blks_written": 0,
         "temp_io_ms": 0.0,
         "total_exec_ms": 400.0,
+        "variability": null,
         "wal_bytes": 0,
         "wal_per_call": 0.0
       },
@@ -649,6 +688,7 @@
         "io_pct": 0.0,
         "io_read_ms": 0.0,
         "io_write_ms": 0.0,
+        "max_ms": null,
         "mean_ms": 35.0,
         "nested_calls": 0,
         "plans": 0,
@@ -663,10 +703,12 @@
         "shared_blks_hit": 0,
         "shared_blks_read": 0,
         "shared_blks_written": 0,
+        "stddev_ms": null,
         "temp_blks_read": 0,
         "temp_blks_written": 0,
         "temp_io_ms": 0.0,
         "total_exec_ms": 70.0,
+        "variability": null,
         "wal_bytes": 0,
         "wal_per_call": 0.0
       },
@@ -714,6 +756,7 @@
         "io_pct": 0.0,
         "io_read_ms": 0.0,
         "io_write_ms": 0.0,
+        "max_ms": null,
         "mean_ms": 0.5,
         "nested_calls": 0,
         "plans": 0,
@@ -728,10 +771,12 @@
         "shared_blks_hit": 0,
         "shared_blks_read": 0,
         "shared_blks_written": 0,
+        "stddev_ms": null,
         "temp_blks_read": 0,
         "temp_blks_written": 0,
         "temp_io_ms": 0.0,
         "total_exec_ms": 30.0,
+        "variability": null,
         "wal_bytes": 0,
         "wal_per_call": 0.0
       },

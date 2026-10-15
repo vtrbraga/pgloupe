@@ -140,6 +140,9 @@ pub struct Entry {
     pub query: Option<String>,
     /// PG17+: when this entry's counters started.
     pub stats_since: Option<Timestamp>,
+    /// Spread and slowest run since the entry was created or last reset; not a window figure.
+    pub stddev_exec_time: Option<f64>,
+    pub max_exec_time: Option<f64>,
     pub counters: Counters,
 }
 
@@ -197,6 +200,8 @@ struct RawRow {
     shared_blk_write_time: Option<f64>,
     temp_blk_read_time: Option<f64>,
     temp_blk_write_time: Option<f64>,
+    stddev_exec_time: Option<f64>,
+    max_exec_time: Option<f64>,
 }
 
 /// A `pg_stat_statements_info` CSV row; `snapshot_at` is ignored.
@@ -395,6 +400,8 @@ fn entry_from(
         rolname: raw.rolname,
         query: raw.query,
         stats_since,
+        stddev_exec_time: raw.stddev_exec_time,
+        max_exec_time: raw.max_exec_time,
         counters: Counters {
             calls: raw.calls,
             rows: raw.rows,
