@@ -163,6 +163,7 @@ var PgLib = (function () {
       case 'rows_call': return stats ? stats.rows_per_call : null;
       case 'blocks_row': return stats ? stats.blocks_read_per_row : null;
       case 'wal_call': return stats ? stats.wal_per_call : null;
+      case 'variability': return stats ? stats.variability : null;
       case 'errors': return log ? log.errors : null;
       case 'statement': return row.text;
       default: return null;

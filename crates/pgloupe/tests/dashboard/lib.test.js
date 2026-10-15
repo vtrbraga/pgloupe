@@ -218,3 +218,13 @@ test('durations read in the unit that fits', () => {
   assert.equal(L.fmtDuration(7200), '2 h');
   assert.equal(L.fmtDuration(null), '—');
 });
+
+test('spread sorts like any other statistics column', () => {
+  const rows = [
+    { fingerprint: 'a', text: 'a', link: 'stats', stats: { variability: 0.5 } },
+    { fingerprint: 'b', text: 'b', link: 'stats', stats: { variability: 3.6 } },
+    { fingerprint: 'c', text: 'c', link: 'log' },
+  ];
+  assert.equal(L.column(rows[2], 'variability'), null);
+  assert.deepEqual(L.sortRows(rows, (r) => L.column(r, 'variability'), 'desc').map((r) => r.fingerprint), ['b', 'a', 'c']);
+});

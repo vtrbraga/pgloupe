@@ -84,7 +84,7 @@ html.app #app{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:
 /* charts */
 .tl-chart,.histogram{width:100%;height:auto;display:block;overflow:visible}
 .tl-chart .grid{stroke:var(--line);stroke-width:1}.tl-chart .grid.faint{stroke-dasharray:2 4;opacity:.7}
-.tl-chart .axis,.histogram .axis{fill:var(--muted);font:10px system-ui}
+.tl-chart .axis,.histogram .axis{fill:var(--muted);font:11px system-ui}
 .tl-chart .panel-label{font:600 11px system-ui}
 .tl-chart .cross{stroke:var(--muted);stroke-dasharray:3 3}
 .tl-chart .brush{fill:var(--accent);opacity:.12;pointer-events:none}
@@ -198,7 +198,7 @@ html.app #app{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:
 .topbar .actions{flex:none;flex-wrap:nowrap}.topbar>div:first-child{min-width:0}
 .drawer table{font-size:12.5px}.drawer .table-wrap{box-shadow:none}.drawer .finding{font-size:13px}
 .drawer .panel>h3{margin-bottom:8px}
-.histogram .axis{font-size:8px}.histogram .value{font-size:9px}.histogram{max-height:280px}
+.histogram .axis{font-size:11px}.histogram .value{font-size:11px}.histogram{max-height:280px}
 .chip-off{border-radius:6px;padding:0 6px;font:11px var(--mono);color:var(--muted);background:rgba(127,127,127,.1);cursor:help}
 
 .live-pill{position:fixed;right:16px;bottom:16px;z-index:20;display:flex;flex-wrap:wrap;align-items:center;gap:8px;max-width:calc(100vw - 32px);padding:6px 12px;border:1px solid var(--line);border-radius:999px;background:var(--surface);color:var(--fg);font-size:12.5px;box-shadow:0 2px 10px rgba(0,0,0,.18)}
@@ -242,3 +242,5 @@ tr.clickable:focus-visible{outline:2px solid var(--accent)}
   .topbar .sub{display:flex;flex-direction:column;gap:2px;font-size:12px}
   .topbar .actions{justify-content:flex-start}
 }
+ @media(max-width:700px){#app table.cards td.nil{display:none}}
+.ladder{margin:6px 0 0;font-weight:600}

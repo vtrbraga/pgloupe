@@ -57,7 +57,7 @@ var PgCharts = (function (L) {
     }
     var W = Math.max(320, host.clientWidth || 800);
     var narrow = W < 560;
-    var left = narrow ? 84 : 128, right = 10, axis = 22;
+    var left = narrow ? 96 : 150, right = 10, axis = 22;
     var areaH = 52, eventH = 20, gap = 8;
     var rowsH = series.map(function (s) { return s.kind === 'event' ? eventH : areaH; });
     var H = rowsH.reduce(function (n, v) { return n + v + gap; }, 0) + axis;
