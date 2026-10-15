@@ -3,6 +3,7 @@
 pub mod pgbench;
 pub mod script;
 pub mod size;
+pub mod truth;
 
 /// Server settings for a bench run, on top of [`crate::container::SETTINGS`].
 ///
