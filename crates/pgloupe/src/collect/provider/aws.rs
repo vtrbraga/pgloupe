@@ -311,15 +311,19 @@ impl LogProvider for AwsRds {
             let local = safe_name(&file.name);
             let key = format!("marker:{}", file.name);
             let size = u64::try_from(file.size).unwrap_or(0);
-            let mut stored = sink.stored(&local);
-            if stored > size {
-                // The instance's copy is smaller than ours: it was rotated or recreated.
+            let size_key = format!("size:{}", file.name);
+            // The size RDS reported last time, not the bytes we wrote: those can differ when the
+            // log is not valid UTF-8, and would look like a rotation on every run.
+            let last_size = state.get(&size_key).and_then(|v| v.parse::<u64>().ok());
+            let stored = sink.stored(&local);
+            let shrunk = last_size.map_or(stored > size, |last| size < last);
+            if shrunk {
+                // The instance's copy is smaller than before: it was rotated or recreated.
                 sink.reset(&local)?;
                 state.remove(&key);
                 summary.restarted.push(local.clone());
-                stored = 0;
             }
-            if stored == size && state.contains_key(&key) {
+            if !shrunk && last_size == Some(size) && state.contains_key(&key) {
                 continue;
             }
             let mut marker = state.get(&key).cloned().unwrap_or_else(|| "0".to_owned());
@@ -350,6 +354,7 @@ impl LogProvider for AwsRds {
             if wrote && !summary.files.contains(&local) {
                 summary.files.push(local);
             }
+            state.insert(size_key, size.to_string());
             sink.checkpoint(state)?;
         }
         Ok(summary)

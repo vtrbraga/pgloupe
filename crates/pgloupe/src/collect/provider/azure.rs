@@ -204,38 +204,63 @@ impl LogProvider for AzureFlexible {
                     })
                 }
             });
-            let downloaded = result.and_then(|()| {
+            let appended = result.and_then(|()| {
                 let path = find_download(&tmp).ok_or(FetchError::Output {
                     provider: "azure-flexible",
                     what: "server-logs download",
                     detail: format!("the CLI reported success but saved no file for {remote}"),
                 })?;
-                fs::read(&path).map_err(|source| FetchError::Io {
-                    path: path.display().to_string(),
-                    source,
-                })
+                append_new(sink, &local, &path, &mut summary)
             });
             drop(fs::remove_dir_all(&tmp));
-            let content = downloaded?;
-            // Downloads are whole files; the file only grows, so add what is new.
-            let stored = usize::try_from(sink.stored(&local)).unwrap_or(0);
-            let tail = if content.len() < stored {
-                sink.reset(&local)?;
-                summary.restarted.push(local.clone());
-                &*content
-            } else {
-                &content[stored..]
-            };
-            if !tail.is_empty() {
-                sink.append(&local, tail)?;
-                summary.bytes += tail.len() as u64;
-                summary.files.push(local);
-            }
+            appended?;
             state.insert(format!("seen:{remote}"), modified.to_string());
             sink.checkpoint(state)?;
         }
         Ok(summary)
     }
+}
+
+/// Bytes copied per step, so a large download never sits in memory whole.
+const CHUNK: usize = 1 << 20;
+
+/// Adds what is new in the downloaded file to `sink`. Downloads are whole files that only grow, so
+/// what the sink already holds is skipped; a file smaller than that was rotated and starts over.
+fn append_new(
+    sink: &mut dyn LogSink,
+    local: &str,
+    path: &Path,
+    summary: &mut Summary,
+) -> Result<(), FetchError> {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+    let io = |source| FetchError::Io {
+        path: path.display().to_string(),
+        source,
+    };
+    let mut file = fs::File::open(path).map_err(io)?;
+    let size = file.metadata().map_err(io)?.len();
+    let mut stored = sink.stored(local);
+    if size < stored {
+        sink.reset(local)?;
+        summary.restarted.push(local.to_owned());
+        stored = 0;
+    }
+    file.seek(SeekFrom::Start(stored)).map_err(io)?;
+    let mut buf = vec![0_u8; CHUNK];
+    let mut added = 0_u64;
+    loop {
+        let n = file.read(&mut buf).map_err(io)?;
+        if n == 0 {
+            break;
+        }
+        sink.append(local, &buf[..n])?;
+        added += n as u64;
+    }
+    if added > 0 {
+        summary.bytes += added;
+        summary.files.push(local.to_owned());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

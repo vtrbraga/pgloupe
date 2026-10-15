@@ -84,6 +84,17 @@ fn stamp(at: Timestamp) -> String {
 /// Fails if `pg_stat_statements` is not usable (the message says how to enable it), a query
 /// fails, or a file cannot be written.
 pub fn take(client: &mut Client, dir: &Path) -> Result<Snapshot, CollectError> {
+    // One transaction, so the statistics, their info row and the settings describe one moment.
+    client
+        .batch_execute("BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ")
+        .map_err(|e| query_error("starting the snapshot transaction", &e))?;
+    let taken = take_in(client, dir);
+    let end = if taken.is_ok() { "COMMIT" } else { "ROLLBACK" };
+    drop(client.batch_execute(end));
+    taken
+}
+
+fn take_in(client: &mut Client, dir: &Path) -> Result<Snapshot, CollectError> {
     fs::create_dir_all(dir).map_err(|source| CollectError::Io {
         path: dir.display().to_string(),
         source,

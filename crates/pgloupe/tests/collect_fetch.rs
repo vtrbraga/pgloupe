@@ -411,8 +411,8 @@ fn export_collects_snapshots_and_logs_and_builds_the_report() -> Result<(), Stri
         fs::read_dir(dir.join("snapshots"))
             .map_err(|e| e.to_string())?
             .count(),
-        4,
-        "two snapshots and their info files"
+        6,
+        "two snapshots, their info files and their settings"
     );
     for out in [&first, &second] {
         let all = format!(

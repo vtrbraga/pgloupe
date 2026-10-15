@@ -59,18 +59,18 @@ fn cloudwatch_pages_by_token_and_resumes_without_duplicates() {
     let mut sink = MemorySink::default();
     let mut state = ProviderState::new();
     provider.fetch(&request(), &mut sink, &mut state).unwrap();
-    let hour10 = text(&sink, "_aws_rds_instance_prod_postgresql-20261014-10.log");
+    let hour10 = text(&sink, "aws-cloudwatch-prod-20261014-10.log");
     assert!(
         hour10.contains("SELECT 1\n") && hour10.contains("boom\nSTATEMENT:  SELECT 2\n"),
         "{hour10}"
     );
     assert_eq!(
-        text(&sink, "_aws_rds_instance_prod_postgresql-20261014-11.log"),
+        text(&sink, "aws-cloudwatch-prod-20261014-11.log"),
         "next hour\n"
     );
     provider.fetch(&request(), &mut sink, &mut state).unwrap();
     assert_eq!(
-        text(&sink, "_aws_rds_instance_prod_postgresql-20261014-11.log"),
+        text(&sink, "aws-cloudwatch-prod-20261014-11.log"),
         "next hour\nbrand new\n",
         "the repeated event is skipped, the new one added"
     );

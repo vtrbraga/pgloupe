@@ -316,6 +316,21 @@ pub fn build_provider(
     args: &TargetArgs,
     conn: Option<ConnSpec>,
 ) -> anyhow::Result<Box<dyn LogProvider>> {
+    // Values go to the vendor's CLI as separate arguments: one that starts with `-` would be read
+    // as an option there.
+    for (flag, value) in [
+        ("--instance", &args.instance),
+        ("--region", &args.region),
+        ("--profile", &args.profile),
+        ("--project", &args.project),
+        ("--resource-group", &args.resource_group),
+        ("--subscription", &args.subscription),
+        ("--log-group", &args.log_group),
+    ] {
+        if value.as_deref().is_some_and(|v| v.starts_with('-')) {
+            anyhow::bail!("{flag} must not start with '-'");
+        }
+    }
     let need = |value: &Option<String>, flag: &str, provider: &str| -> anyhow::Result<String> {
         value
             .clone()
@@ -480,6 +495,9 @@ pub struct ExportArgs {
     /// Also write the report here (HTML) from the logs and the two newest snapshots.
     #[arg(long)]
     report: Option<PathBuf>,
+    /// The server's `log_line_prefix`, for stderr logs whose prefix cannot be inferred.
+    #[arg(long, requires = "report")]
+    prefix: Option<String>,
 }
 
 fn vendor_of(kind: ProviderKind) -> Option<&'static str> {
@@ -517,7 +535,8 @@ pub fn export(args: &ExportArgs, out: &mut dyn Write, err: &mut dyn Write) -> an
 
     if let Some(report) = &args.report {
         writeln!(err, "4/4 building the report")?;
-        build_report(&snapshots, &logs, report, out, err).context("step 4 (report)")?;
+        build_report(&snapshots, &logs, report, args.prefix.as_deref(), out, err)
+            .context("step 4 (report)")?;
     } else {
         writeln!(
             err,
@@ -532,6 +551,7 @@ fn build_report(
     snapshots: &std::path::Path,
     logs: &std::path::Path,
     report: &std::path::Path,
+    prefix: Option<&str>,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> anyhow::Result<()> {
@@ -548,9 +568,19 @@ fn build_report(
         })
         .map(|p| p.display().to_string())
         .collect();
+    let snaps = super::watch::snapshot_files(snapshots);
+    if log_files.is_empty() && snaps.len() < 2 {
+        writeln!(
+            err,
+            "note: no logs fetched yet and only one snapshot, so there is nothing to report; run export again later"
+        )?;
+        return Ok(());
+    }
     let mut argv: Vec<String> = vec!["pgloupe".to_owned(), "report".to_owned()];
     argv.extend(log_files);
-    let snaps = super::watch::snapshot_files(snapshots);
+    if let Some(prefix) = prefix {
+        argv.extend(["--prefix".to_owned(), prefix.to_owned()]);
+    }
     if let [.., older, newer] = snaps.as_slice() {
         argv.extend([
             "--before".to_owned(),
@@ -662,15 +692,15 @@ struct Writing<'a> {
 
 impl Cycle for Writing<'_> {
     fn run(&mut self) -> Result<Built, CycleError> {
-        let built = self.inner.run()?;
+        let mut built = self.inner.run()?;
         if let Some(path) = self.out {
             let tmp = path.with_extension("html.part");
-            std::fs::write(&tmp, &built.page)
-                .and_then(|()| std::fs::rename(&tmp, path))
-                .map_err(|e| CycleError {
-                    step: "write",
-                    message: format!("{}: {e}", path.display()),
-                })?;
+            // A file that cannot be written is worth a note; the live report is still good.
+            if let Err(e) =
+                std::fs::write(&tmp, &built.page).and_then(|()| std::fs::rename(&tmp, path))
+            {
+                built.notes.push(format!("write: {}: {e}", path.display()));
+            }
         }
         Ok(built)
     }

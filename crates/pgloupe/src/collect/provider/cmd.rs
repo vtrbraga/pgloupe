@@ -13,6 +13,30 @@ use super::FetchError;
 /// How much of a tool's stderr is kept in an error.
 const STDERR_KEPT: usize = 600;
 
+/// The most a tool may print on standard output; more is a failure, not a bigger buffer.
+const STDOUT_LIMIT: u64 = 256 << 20;
+
+/// The most of standard error that is read.
+const STDERR_LIMIT: u64 = 1 << 20;
+
+/// `ETXTBSY`: a program file that something still has open for writing.
+const TEXT_FILE_BUSY: i32 = 26;
+
+/// Starts `command`. A program that was written an instant ago can fail with "text file busy"
+/// while another thread's `fork` still holds the file open; that clears in milliseconds.
+fn spawn_retrying(command: &mut Command) -> std::io::Result<std::process::Child> {
+    let mut attempts = 0;
+    loop {
+        match command.spawn() {
+            Err(error) if error.raw_os_error() == Some(TEXT_FILE_BUSY) && attempts < 10 => {
+                attempts += 1;
+                thread::sleep(Duration::from_millis(25));
+            }
+            other => return other,
+        }
+    }
+}
+
 /// What a finished tool printed.
 #[derive(Debug, Clone)]
 pub struct Output {
@@ -63,40 +87,44 @@ impl Tool {
         if let Some(cwd) = cwd {
             command.current_dir(cwd);
         }
-        let mut child = command
+        command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::NotFound {
-                    FetchError::MissingCli {
-                        program: shown.clone(),
-                        hint: self.install_hint,
-                    }
-                } else {
-                    FetchError::Command {
-                        program: shown.clone(),
-                        command: String::new(),
-                        status: "could not start".to_owned(),
-                        stderr: error.to_string(),
-                        hint: String::new(),
-                    }
+            .stderr(Stdio::piped());
+        let mut child = spawn_retrying(&mut command).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                FetchError::MissingCli {
+                    program: shown.clone(),
+                    hint: self.install_hint,
                 }
-            })?;
+            } else {
+                FetchError::Command {
+                    program: shown.clone(),
+                    command: String::new(),
+                    status: "could not start".to_owned(),
+                    stderr: error.to_string(),
+                    hint: String::new(),
+                }
+            }
+        })?;
         let mut out = child.stdout.take();
         let mut err = child.stderr.take();
+        let over = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let over_in_reader = std::sync::Arc::clone(&over);
         let stdout_reader = thread::spawn(move || {
             let mut buf = Vec::new();
             if let Some(out) = out.as_mut() {
-                drop(out.read_to_end(&mut buf));
+                drop(out.take(STDOUT_LIMIT + 1).read_to_end(&mut buf));
+            }
+            if buf.len() as u64 > STDOUT_LIMIT {
+                over_in_reader.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             buf
         });
         let stderr_reader = thread::spawn(move || {
             let mut buf = Vec::new();
             if let Some(err) = err.as_mut() {
-                drop(err.read_to_end(&mut buf));
+                drop(err.take(STDERR_LIMIT).read_to_end(&mut buf));
             }
             buf
         });
@@ -104,6 +132,17 @@ impl Tool {
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break status,
+                Ok(None) if over.load(std::sync::atomic::Ordering::Relaxed) => {
+                    drop(child.kill());
+                    drop(child.wait());
+                    return Err(FetchError::Command {
+                        program: shown,
+                        command: String::new(),
+                        status: format!("printed more than {} MB", STDOUT_LIMIT >> 20),
+                        stderr: String::new(),
+                        hint: String::new(),
+                    });
+                }
                 Ok(None) if Instant::now() >= deadline => {
                     drop(child.kill());
                     drop(child.wait());

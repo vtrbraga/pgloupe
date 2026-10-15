@@ -45,6 +45,17 @@ impl AwsCloudWatch {
         AwsCloudWatch { cli, group }
     }
 
+    /// The name the hourly files carry: the instance (or cluster) in the log group, when it has one.
+    fn prefix(&self) -> String {
+        let parts: Vec<&str> = self.group.split('/').filter(|p| !p.is_empty()).collect();
+        // `/aws/rds/instance/<id>/postgresql` -> `<id>`
+        let name = match parts.as_slice() {
+            ["aws", "rds", _, id, ..] => (*id).to_owned(),
+            _ => self.group.clone(),
+        };
+        format!("aws-cloudwatch-{name}")
+    }
+
     /// The log group RDS exports an instance's PostgreSQL log to.
     #[must_use]
     pub fn instance_group(instance: &str) -> String {
@@ -103,7 +114,7 @@ impl LogProvider for AwsCloudWatch {
                     })
                 })
                 .collect();
-            let (files, bytes) = entries::write(sink, &self.group, &batch, &mut cursor)?;
+            let (files, bytes) = entries::write(sink, &self.prefix(), &batch, &mut cursor)?;
             summary.bytes += bytes;
             for file in files {
                 if !summary.files.contains(&file) {

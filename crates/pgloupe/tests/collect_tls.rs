@@ -53,6 +53,26 @@ fn tls_modes_do_what_libpq_does() -> Result<(), String> {
         .ok_or("verify-full without a trusted root must fail")?
         .to_string();
     assert!(!err.contains(&pg.password), "{err}");
+    // verify-ca checks the chain only: a certificate for another name is accepted, while
+    // verify-full refuses it.
+    let wrong_name = |mode: &str| {
+        format!(
+            "host=wrong.example hostaddr=127.0.0.1 port={} user=postgres password={} dbname=postgres sslmode={mode}",
+            pg.port, pg.password
+        )
+    };
+    let ca = ConnSpec::parse(&wrong_name("verify-ca"), None, Some(root.clone()))
+        .map_err(|e| e.to_string())?;
+    assert!(
+        uses_tls(&ca)?,
+        "verify-ca should accept a certificate for another name"
+    );
+    let full = ConnSpec::parse(&wrong_name("verify-full"), None, Some(root.clone()))
+        .map_err(|e| e.to_string())?;
+    assert!(
+        full.connect().is_err(),
+        "verify-full must refuse another name"
+    );
     // disable stays plain.
     let spec = ConnSpec::parse(&format!("{base}?sslmode=disable"), None, None)
         .map_err(|e| e.to_string())?;

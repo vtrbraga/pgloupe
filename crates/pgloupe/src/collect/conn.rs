@@ -26,6 +26,8 @@ pub enum SslMode {
     Prefer,
     /// Require TLS; the certificate is not checked (libpq's `require`).
     Require,
+    /// Require TLS and check the certificate chain (libpq's `verify-ca`), not the host name.
+    VerifyCa,
     /// Require TLS and check the certificate chain and the host name.
     VerifyFull,
 }
@@ -87,7 +89,8 @@ fn parse_ssl(value: Option<&str>) -> Result<SslMode, CollectError> {
         None | Some("prefer") => Ok(SslMode::Prefer),
         Some("disable") => Ok(SslMode::Disable),
         Some("require" | "allow") => Ok(SslMode::Require),
-        Some("verify-ca" | "verify-full") => Ok(SslMode::VerifyFull),
+        Some("verify-ca") => Ok(SslMode::VerifyCa),
+        Some("verify-full") => Ok(SslMode::VerifyFull),
         Some(other) => Err(CollectError::Dsn(format!(
             "unknown sslmode {other:?}; use disable, prefer, require or verify-full"
         ))),
@@ -108,7 +111,26 @@ impl ConnSpec {
         password_env: Option<&str>,
         root_cert: Option<PathBuf>,
     ) -> Result<ConnSpec, CollectError> {
+        Self::parse_with(dsn, password_env, root_cert, &|name| {
+            std::env::var(name).ok().filter(|v| !v.is_empty())
+        })
+    }
+
+    /// Like [`ConnSpec::parse`], reading environment variables through `getenv`.
+    ///
+    /// # Errors
+    ///
+    /// Fails like [`ConnSpec::parse`].
+    pub fn parse_with(
+        dsn: &str,
+        password_env: Option<&str>,
+        root_cert: Option<PathBuf>,
+        getenv: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<ConnSpec, CollectError> {
         let (cleaned, mode) = split_sslmode(dsn);
+        // libpq's own environment variables apply when the connection string says nothing.
+        let mode = mode.or_else(|| getenv("PGSSLMODE"));
+        let root_cert = root_cert.or_else(|| getenv("PGSSLROOTCERT").map(PathBuf::from));
         if cleaned.to_ascii_lowercase().contains("sslmode") {
             // Spaced forms such as `sslmode = require` are not recognised; never fall back to `prefer`.
             return Err(CollectError::Dsn(
@@ -123,6 +145,9 @@ impl ConnSpec {
             // A root certificate means the user wants the chain checked.
             ssl = SslMode::VerifyFull;
         }
+        if root_cert.is_some() && ssl == SslMode::Prefer {
+            ssl = SslMode::VerifyFull;
+        }
         let mut config = Config::from_str(&cleaned).map_err(|_unparsed| {
             CollectError::Dsn(
                 "not a valid connection string; use postgres://user@host:5432/dbname or key=value pairs"
@@ -130,7 +155,7 @@ impl ConnSpec {
             )
         })?;
         if config.get_password().is_none() {
-            let from_env = std::env::var(password_env.unwrap_or("PGPASSWORD")).ok();
+            let from_env = getenv(password_env.unwrap_or("PGPASSWORD"));
             let found = from_env.or_else(|| pgpass_password(&config));
             if let Some(password) = found {
                 config.password(password);
@@ -178,14 +203,19 @@ impl ConnSpec {
     /// cannot be negotiated as `sslmode` demands, or the login is refused.
     pub fn connect(&self) -> Result<Client, CollectError> {
         let mut config = self.config.clone();
-        config.ssl_mode(match self.ssl {
+        // libpq does not use TLS over a Unix socket whatever `sslmode` says, and neither do we.
+        let socket = matches!(config.get_hosts().first(), Some(Host::Unix(_)));
+        let ssl = if socket { SslMode::Disable } else { self.ssl };
+        config.ssl_mode(match ssl {
             SslMode::Disable => postgres::config::SslMode::Disable,
             SslMode::Prefer => postgres::config::SslMode::Prefer,
-            SslMode::Require | SslMode::VerifyFull => postgres::config::SslMode::Require,
+            SslMode::Require | SslMode::VerifyCa | SslMode::VerifyFull => {
+                postgres::config::SslMode::Require
+            }
         });
         let failed =
             |error: postgres::Error| CollectError::Connect(self.redact(&error_chain(&error)));
-        let mut client = if self.ssl == SslMode::Disable {
+        let mut client = if ssl == SslMode::Disable {
             config.connect(postgres::NoTls).map_err(failed)?
         } else {
             let tls = MakeRustlsConnect::new(self.tls_config()?);
@@ -208,7 +238,7 @@ impl ConnSpec {
         let builder = ClientConfig::builder_with_provider(Arc::clone(&provider))
             .with_safe_default_protocol_versions()
             .map_err(|e| CollectError::Connect(format!("TLS setup: {e}")))?;
-        if self.ssl != SslMode::VerifyFull {
+        if !matches!(self.ssl, SslMode::VerifyFull | SslMode::VerifyCa) {
             // libpq's `prefer` and `require` encrypt without checking the certificate.
             return Ok(builder
                 .dangerous()
@@ -243,7 +273,73 @@ impl ConnSpec {
                 drop(roots.add(cert));
             }
         }
+        if self.ssl == SslMode::VerifyCa {
+            let inner = rustls::client::WebPkiServerVerifier::builder_with_provider(
+                Arc::new(roots),
+                Arc::clone(&provider),
+            )
+            .build()
+            .map_err(|e| CollectError::Connect(format!("TLS setup: {e}")))?;
+            return Ok(builder
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(ChainOnly { inner }))
+                .with_no_client_auth());
+        }
         Ok(builder.with_root_certificates(roots).with_no_client_auth())
+    }
+}
+
+/// Checks the certificate chain and the signatures but accepts any host name: libpq's
+/// `verify-ca`.
+#[derive(Debug)]
+struct ChainOnly {
+    inner: Arc<rustls::client::WebPkiServerVerifier>,
+}
+
+impl ServerCertVerifier for ChainOnly {
+    fn verify_server_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, TlsError> {
+        match self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        ) {
+            Err(TlsError::InvalidCertificate(
+                rustls::CertificateError::NotValidForName
+                | rustls::CertificateError::NotValidForNameContext { .. },
+            )) => Ok(ServerCertVerified::assertion()),
+            other => other,
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
+        self.inner.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TlsError> {
+        self.inner.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.inner.supported_verify_schemes()
     }
 }
 
@@ -302,7 +398,7 @@ impl ServerCertVerifier for AcceptAny {
         _end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
-        _ocsp: &[u8],
+        _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, TlsError> {
         Ok(ServerCertVerified::assertion())
@@ -443,6 +539,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn libpq_environment_variables_apply_when_the_string_says_nothing() {
+        let env = |name: &str| match name {
+            "PGSSLMODE" => Some("verify-ca".to_owned()),
+            "PGSSLROOTCERT" => Some("/etc/ca.pem".to_owned()),
+            _ => None,
+        };
+        let spec = ConnSpec::parse_with("postgres://u@h/db", None, None, &env).unwrap();
+        assert_eq!(spec.ssl, SslMode::VerifyCa);
+        assert_eq!(spec.root_cert, Some(PathBuf::from("/etc/ca.pem")));
+        // What the string or the flag says wins.
+        let spec = ConnSpec::parse_with(
+            "postgres://u@h/db?sslmode=require",
+            None,
+            Some(PathBuf::from("/mine.pem")),
+            &env,
+        )
+        .unwrap();
+        assert_eq!(
+            spec.ssl,
+            SslMode::VerifyFull,
+            "a root certificate checks the chain"
+        );
+        assert_eq!(spec.root_cert, Some(PathBuf::from("/mine.pem")));
+    }
+
+    #[test]
     fn a_spaced_sslmode_is_refused_not_downgraded_to_prefer() {
         let err = ConnSpec::parse("host=h sslmode = require", None, None).unwrap_err();
         assert!(err.to_string().contains("sslmode"), "{err}");
@@ -499,7 +621,8 @@ mod tests {
     #[test]
     fn modes_map_and_unknown_ones_are_refused() {
         assert_eq!(parse_ssl(None).unwrap(), SslMode::Prefer);
-        assert_eq!(parse_ssl(Some("verify-ca")).unwrap(), SslMode::VerifyFull);
+        assert_eq!(parse_ssl(Some("verify-ca")).unwrap(), SslMode::VerifyCa);
+        assert_eq!(parse_ssl(Some("verify-full")).unwrap(), SslMode::VerifyFull);
         assert_eq!(parse_ssl(Some("disable")).unwrap(), SslMode::Disable);
         assert!(matches!(
             parse_ssl(Some("sometimes")),

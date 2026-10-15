@@ -345,12 +345,19 @@ fn statistics(dir: &Path, since: Timestamp) -> Result<Option<delta::Delta>, Stri
     let Some(after) = files.last() else {
         return Ok(None);
     };
-    let before = files
+    // Only snapshots inside the window: pairing one from before it would describe a period the
+    // logs do not cover.
+    let inside: Vec<&PathBuf> = files
         .iter()
-        .find(|p| snapshot_time(p).is_some_and(|t| t >= since))
-        .or_else(|| files.first());
+        .filter(|p| snapshot_time(p).is_some_and(|t| t >= since))
+        .collect();
+    let before = inside.first().copied();
     let Some(before) = before.filter(|b| *b != after) else {
-        return Ok(None);
+        return if inside.len() < 2 && files.len() > 1 {
+            Err("statistics: fewer than two snapshots fall inside the window, so the statistics side is left out".to_owned())
+        } else {
+            Ok(None)
+        };
     };
     let load = |path: &Path| -> Result<Snapshot, String> {
         let mut snapshot = Snapshot::from_path(path).map_err(|e| e.to_string())?;
@@ -509,6 +516,18 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(narrow.before_at, at("2026-10-14T10:00:00Z"));
+    }
+
+    #[test]
+    fn snapshots_older_than_the_window_are_never_paired_with_a_newer_one() {
+        let dir = scratch("stale");
+        snapshots(&dir);
+        let at = |s: &str| s.parse::<Timestamp>().unwrap();
+        // Only the newest snapshot is inside: left out, and the reader is told why.
+        let err = statistics(&dir, at("2026-10-14T10:05:00Z")).unwrap_err();
+        assert!(err.contains("inside the window"), "{err}");
+        // Nothing inside at all: the same.
+        statistics(&dir, at("2026-10-14T12:00:00Z")).unwrap_err();
     }
 
     #[test]

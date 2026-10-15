@@ -75,11 +75,24 @@ impl DirSink {
         let lock_path = dir.join(LOCK_FILE);
         if let Ok(text) = fs::read_to_string(&lock_path) {
             let pid: u32 = text.trim().parse().unwrap_or(0);
-            if pid != 0 && alive(pid) {
+            // A lock with no process id is one whose owner has not written it yet, unless it is
+            // old: then its owner died between creating and writing it.
+            let being_written = pid == 0
+                && fs::metadata(&lock_path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|age| age < std::time::Duration::from_secs(5));
+            if being_written || (pid != 0 && alive(pid)) {
                 return Err(FetchError::Io {
                     path: lock_path.display().to_string(),
                     source: std::io::Error::other(format!(
-                        "another fetch (process {pid}) is using this directory; if it is not running, delete the file"
+                        "another fetch (process {}) is using this directory; if it is not running, delete the file",
+                        if pid == 0 {
+                            "starting".to_owned()
+                        } else {
+                            pid.to_string()
+                        }
                     )),
                 });
             }
@@ -200,7 +213,10 @@ impl DirSink {
             path: path.display().to_string(),
             source: std::io::Error::other(e.to_string()),
         })?;
-        fs::write(&tmp, text).map_err(io_error(&tmp))?;
+        let mut file = File::create(&tmp).map_err(io_error(&tmp))?;
+        file.write_all(text.as_bytes()).map_err(io_error(&tmp))?;
+        // On disk before it replaces the old state, or a crash could leave an empty one.
+        file.sync_all().map_err(io_error(&tmp))?;
         fs::rename(&tmp, &path).map_err(io_error(&path))
     }
 }
@@ -224,6 +240,15 @@ mod tests {
         assert!(err.contains("another fetch"), "{err}");
         drop(first);
         DirSink::open(&d, "aws-rds").unwrap();
+    }
+
+    #[test]
+    fn a_lock_with_no_process_id_yet_is_a_fetch_that_is_starting() {
+        let d = dir("starting");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join(LOCK_FILE), "").unwrap();
+        let err = DirSink::open(&d, "aws-rds").unwrap_err().to_string();
+        assert!(err.contains("another fetch"), "{err}");
     }
 
     #[test]
