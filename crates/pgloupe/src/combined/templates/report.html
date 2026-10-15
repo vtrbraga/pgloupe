@@ -210,6 +210,8 @@
 <footer class="static-footer">{{ report.generator }} · schema {{ report.schema_version }}</footer>
 <div id="app"></div>
 <script type="application/json" id="pgloupe-data">{{ data_json }}</script>
+{% if live_json %}<script type="application/json" id="pgloupe-live">{{ live_json|safe }}</script>
+{% endif %}
 <script>{{ js }}</script>
 </body>
 </html>

@@ -22,6 +22,8 @@ const JS: &str = concat!(
     "\n",
     include_str!("templates/app.js")
 );
+/// The poller, present only in pages served by `pgloupe watch`; the static report never fetches.
+const LIVE_JS: &str = include_str!("templates/live.js");
 /// Bars in the timeline chart; longer timelines are merged into this many.
 const MAX_BARS: usize = 240;
 /// Statements listed in the server-rendered view; the dashboard and the JSON hold all of them.
@@ -45,6 +47,20 @@ pub enum HtmlError {
 ///
 /// Fails if the template cannot be rendered or the data cannot be serialized.
 pub fn html(report: &CombinedReport) -> Result<String, HtmlError> {
+    render(report, None)
+}
+
+/// Like [`html`], for a page served by `pgloupe watch`: it polls the server every `poll_secs`
+/// seconds and swaps in each newer report.
+///
+/// # Errors
+///
+/// Fails if the template cannot be rendered or the data cannot be serialized.
+pub fn html_live(report: &CombinedReport, poll_secs: u32) -> Result<String, HtmlError> {
+    render(report, Some(poll_secs))
+}
+
+fn render(report: &CombinedReport, poll_secs: Option<u32>) -> Result<String, HtmlError> {
     let env = environment()?;
     let (svg, bucket) = report.logs.as_ref().map_or_else(
         || (String::new(), String::new()),
@@ -70,8 +86,12 @@ pub fn html(report: &CombinedReport) -> Result<String, HtmlError> {
         hist_statements => Value::from(Serde(&hist_statements)),
         hist_sessions => Value::from(Serde(&hist_sessions)),
         css => Value::from_safe_string(CSS.to_owned()),
-        js => Value::from_safe_string(JS.to_owned()),
+        js => Value::from_safe_string(match poll_secs {
+            Some(_) => format!("{JS}\n{LIVE_JS}"),
+            None => JS.to_owned(),
+        }),
         data_json => Value::from_safe_string(embedded_json(report)?),
+        live_json => poll_secs.map(|secs| format!("{{\"poll_secs\":{secs}}}")),
         timeline_svg => Value::from_safe_string(svg),
         bucket_label => bucket,
     })?;
@@ -352,6 +372,20 @@ mod tests {
         ] {
             assert!(!page.contains(forbidden), "found {forbidden:?}");
         }
+    }
+
+    #[test]
+    fn only_the_live_page_carries_a_poll_config() {
+        let report = fixture_report(SortBy::Total, 20, true, true);
+        assert!(!html(&report).unwrap().contains("id=\"pgloupe-live\""));
+        let live = html_live(&report, 15).unwrap();
+        assert!(live.contains("id=\"pgloupe-live\">{\"poll_secs\":15}</script>"));
+        // Still one self-contained document: the poller only talks to its own origin.
+        for forbidden in ["http://", "https://", "//cdn"] {
+            assert!(!live.contains(forbidden), "found {forbidden:?}");
+        }
+        assert!(live.contains("fetch('/status'") || live.contains("'/status'"));
+        assert!(!html(&report).unwrap().contains("/status"));
     }
 
     #[test]

@@ -10,7 +10,7 @@ mod text;
 
 pub use actions::{Action, actions};
 pub use findings::{Context, findings};
-pub use html::{HtmlError, html};
+pub use html::{HtmlError, html, html_live};
 pub use join::{Joined, join, rank};
 pub use text::text;
 

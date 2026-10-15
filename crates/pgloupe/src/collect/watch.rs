@@ -11,6 +11,9 @@ use std::{
 
 use jiff::Timestamp;
 
+/// How often the served dashboard asks for news, in seconds.
+const LIVE_POLL_SECS: u32 = 15;
+
 use super::{
     conn::ConnSpec,
     fetch::DirSink,
@@ -304,7 +307,8 @@ impl Live {
             }
         };
         let combined = combined::build(Some(logs), delta.as_ref(), &options);
-        let html = combined::html(&combined).map_err(|e| fail("report", e.to_string()))?;
+        let html = combined::html_live(&combined, LIVE_POLL_SECS)
+            .map_err(|e| fail("report", e.to_string()))?;
         let json = combined
             .to_json()
             .map_err(|e| fail("report", e.to_string()))?;

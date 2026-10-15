@@ -284,7 +284,31 @@ var PgLib = (function () {
     return { from: Math.max(0, a), to: Math.min(b, last) };
   }
 
+  /** "just now", "42 s ago", "2 min ago", "3 h ago". */
+  function fmtAgo(seconds) {
+    if (!isNum(seconds) || seconds < 10) { return 'just now'; }
+    if (seconds < 60) { return Math.round(seconds) + ' s ago'; }
+    if (seconds < 3600) { return Math.round(seconds / 60) + ' min ago'; }
+    return Math.round(seconds / 3600) + ' h ago';
+  }
+
+  /** "in 45 s", "in 4 min"; "any moment" once due. */
+  function fmtIn(seconds) {
+    if (!isNum(seconds)) { return '\u2014'; }
+    if (seconds <= 0) { return 'any moment'; }
+    if (seconds < 60) { return 'in ' + Math.round(seconds) + ' s'; }
+    if (seconds < 3600) { return 'in ' + Math.round(seconds / 60) + ' min'; }
+    return 'in ' + Math.round(seconds / 3600) + ' h';
+  }
+
+  /** Whether the server has built a report this page has not loaded. */
+  function shouldFetch(status, loaded) {
+    if (!status || !isNum(status.generation) || status.generation < 1) { return false; }
+    return status.generation !== loaded;
+  }
+
   var api = {
+    fmtAgo: fmtAgo, fmtIn: fmtIn, shouldFetch: shouldFetch,
     clampRange: clampRange,
     fmtInt: fmtInt, fmtMs: fmtMs, fmtBytes: fmtBytes, fmtPct: fmtPct, fmtCoverage: fmtCoverage, fmtCompact: fmtCompact,
     shortFp: shortFp, fmtTime: fmtTime, compareValues: compareValues, sortRows: sortRows,

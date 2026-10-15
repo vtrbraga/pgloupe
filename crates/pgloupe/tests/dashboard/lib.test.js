@@ -130,3 +130,25 @@ test('a selection is ordered and kept inside the buckets', () => {
   assert.equal(L.clampRange(null, 3, 10), null);
   assert.equal(L.clampRange(0, 3, 0), null);
 });
+
+test('elapsed and upcoming times read like a person would say them', () => {
+  assert.equal(L.fmtAgo(3), 'just now');
+  assert.equal(L.fmtAgo(42), '42 s ago');
+  assert.equal(L.fmtAgo(125), '2 min ago');
+  assert.equal(L.fmtAgo(7300), '2 h ago');
+  assert.equal(L.fmtAgo(-5), 'just now');
+  assert.equal(L.fmtIn(0), 'any moment');
+  assert.equal(L.fmtIn(-3), 'any moment');
+  assert.equal(L.fmtIn(45), 'in 45 s');
+  assert.equal(L.fmtIn(200), 'in 3 min');
+  assert.equal(L.fmtIn(NaN), '—');
+});
+
+test('a newer generation is fetched; the same, or none built yet, is not', () => {
+  assert.equal(L.shouldFetch({ generation: 3 }, 2), true);
+  assert.equal(L.shouldFetch({ generation: 3 }, 3), false);
+  assert.equal(L.shouldFetch({ generation: 0 }, 0), false);
+  assert.equal(L.shouldFetch({ generation: 1 }, null), true);
+  assert.equal(L.shouldFetch(null, 1), false);
+  assert.equal(L.shouldFetch({}, 1), false);
+});
