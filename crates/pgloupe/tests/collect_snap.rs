@@ -1,5 +1,7 @@
 //! `snap` against real servers. Needs Docker; run with `-- --ignored`.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
 mod support;
 
 use std::{fs, path::PathBuf};

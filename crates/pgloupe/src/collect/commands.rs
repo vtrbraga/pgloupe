@@ -8,6 +8,8 @@ use clap::{Args, ValueEnum};
 use super::{
     conn::ConnSpec,
     doctor::{self, Check},
+    fetch::DirSink,
+    provider::{LogProvider, Request, aws::AwsRds, sql::SqlLogdir},
     sql,
 };
 use crate::cli::Exit;
@@ -182,4 +184,199 @@ fn write_text(out: &mut dyn Write, facts: &doctor::Facts, found: &[Check]) -> st
         )?;
     }
     Ok(())
+}
+
+/// Where logs come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ProviderKind {
+    /// Amazon RDS and Aurora PostgreSQL, through the `aws` CLI.
+    #[value(name = "aws-rds")]
+    AwsRds,
+    /// The server's own log directory over SQL (EXPERIMENTAL).
+    Sql,
+}
+
+/// Which instance to read logs from, and how to reach the vendor.
+#[derive(Debug, Args)]
+pub struct TargetArgs {
+    /// Log source.
+    #[arg(long, value_enum)]
+    provider: ProviderKind,
+    /// The instance identifier (`aws-rds`).
+    #[arg(long)]
+    instance: Option<String>,
+    /// AWS region (`aws-rds`); default from the AWS CLI configuration.
+    #[arg(long)]
+    region: Option<String>,
+    /// AWS CLI profile (`aws-rds`).
+    #[arg(long)]
+    profile: Option<String>,
+    /// Path of the `aws` executable.
+    #[arg(long, default_value = "aws")]
+    aws_bin: PathBuf,
+}
+
+/// `logs fetch`: download a time range of log files.
+#[derive(Debug, Args)]
+pub struct FetchArgs {
+    #[command(flatten)]
+    target: TargetArgs,
+    /// Connection for `--provider sql`.
+    #[arg(long, env = "PGLOUPE_DSN", hide_env_values = true)]
+    conn: Option<String>,
+    /// Environment variable that holds the password (default `PGPASSWORD`).
+    #[arg(long)]
+    password_env: Option<String>,
+    /// CA certificate (PEM) to trust.
+    #[arg(long)]
+    sslrootcert: Option<PathBuf>,
+    /// Start: `30m`, `24h`, `7d`, `2w` back from now, or an RFC 3339 time or `YYYY-MM-DD` (UTC).
+    #[arg(long, default_value = "24h")]
+    since: String,
+    /// Directory the files go to (created if missing); a rerun continues where this stopped.
+    #[arg(long)]
+    out: PathBuf,
+}
+
+/// A point in time: a span back from `now` (`24h`) or an absolute time.
+///
+/// # Errors
+///
+/// Fails if `text` is neither.
+pub fn parse_since(text: &str, now: jiff::Timestamp) -> Result<jiff::Timestamp, String> {
+    let text = text.trim();
+    if let Some(unit) = text.chars().last()
+        && let Ok(n) = text[..text.len() - unit.len_utf8()].parse::<i64>()
+    {
+        let seconds = match unit {
+            's' => Some(1),
+            'm' => Some(60),
+            'h' => Some(3_600),
+            'd' => Some(86_400),
+            'w' => Some(604_800),
+            _ => None,
+        };
+        if let Some(per) = seconds {
+            return now
+                .checked_sub(jiff::SignedDuration::from_secs(n.saturating_mul(per)))
+                .map_err(|e| e.to_string());
+        }
+    }
+    crate::store::report::parse_time(text).map_err(|_unparsed| {
+        format!("{text:?} is not a span like 24h or 7d, nor an RFC 3339 time or a date")
+    })
+}
+
+/// Builds the provider named by `args`.
+///
+/// # Errors
+///
+/// Fails when a required option for that provider is missing.
+pub fn build_provider(
+    args: &TargetArgs,
+    conn: Option<ConnSpec>,
+) -> anyhow::Result<Box<dyn LogProvider>> {
+    match args.provider {
+        ProviderKind::AwsRds => {
+            let instance = args
+                .instance
+                .clone()
+                .context("--provider aws-rds needs --instance (the DB instance identifier)")?;
+            Ok(Box::new(AwsRds::new(
+                args.aws_bin.clone(),
+                instance,
+                args.region.clone(),
+                args.profile.clone(),
+            )))
+        }
+        ProviderKind::Sql => Ok(Box::new(SqlLogdir::new(
+            conn.context("--provider sql needs --conn")?,
+        ))),
+    }
+}
+
+/// Runs `logs fetch`.
+///
+/// # Errors
+///
+/// Fails when the provider cannot be set up, its tool is missing or not signed in, or a step of
+/// the download fails (what was fetched stays).
+pub fn fetch(args: &FetchArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Result<Exit> {
+    let conn = args
+        .conn
+        .as_deref()
+        .map(|dsn| ConnSpec::parse(dsn, args.password_env.as_deref(), args.sslrootcert.clone()))
+        .transpose()?;
+    let provider = build_provider(&args.target, conn)?;
+    let since = parse_since(&args.since, jiff::Timestamp::now()).map_err(anyhow::Error::msg)?;
+    fetch_with(provider.as_ref(), &args.out, since, out, err)
+}
+
+/// Checks `provider`, then fetches into `dir`, reporting on `out` and `err`.
+///
+/// # Errors
+///
+/// See [`fetch`].
+pub fn fetch_with(
+    provider: &dyn LogProvider,
+    dir: &std::path::Path,
+    since: jiff::Timestamp,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> anyhow::Result<Exit> {
+    if provider.experimental() {
+        writeln!(
+            err,
+            "warning: provider {} is experimental (not yet confirmed against the real service)",
+            provider.name()
+        )?;
+    }
+    provider.check()?;
+    let mut sink = DirSink::open(dir, provider.name())?;
+    let mut state = sink.state();
+    let request = Request { since, until: None };
+    let summary = provider.fetch(&request, &mut sink, &mut state)?;
+    for name in &summary.restarted {
+        writeln!(
+            err,
+            "note: {name} is smaller than before (rotated?); fetched again from the start"
+        )?;
+    }
+    writeln!(
+        out,
+        "fetched {} file(s), {} bytes into {}",
+        summary.files.len(),
+        summary.bytes,
+        dir.display()
+    )?;
+    if !summary.files.is_empty() {
+        writeln!(
+            out,
+            "analyze them: pgloupe logs analyze {}/*",
+            dir.display()
+        )?;
+    }
+    Ok(Exit::Ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn now() -> jiff::Timestamp {
+        "2026-10-14T12:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn spans_and_absolute_times_are_understood() {
+        let at = |text| parse_since(text, now()).unwrap().to_string();
+        assert_eq!(at("30m"), "2026-10-14T11:30:00Z");
+        assert_eq!(at("24h"), "2026-10-13T12:00:00Z");
+        assert_eq!(at("7d"), "2026-10-07T12:00:00Z");
+        assert_eq!(at("2w"), "2026-09-30T12:00:00Z");
+        assert_eq!(at("2026-10-01"), "2026-10-01T00:00:00Z");
+        assert_eq!(at("2026-10-01T05:00:00Z"), "2026-10-01T05:00:00Z");
+        parse_since("soon", now()).unwrap_err();
+        parse_since("12x", now()).unwrap_err();
+    }
 }

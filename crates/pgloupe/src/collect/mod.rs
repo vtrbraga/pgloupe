@@ -4,6 +4,8 @@
 pub mod commands;
 pub mod conn;
 pub mod doctor;
+pub mod fetch;
+pub mod provider;
 pub mod sql;
 
 use thiserror::Error;

@@ -1,5 +1,7 @@
 //! TLS modes against a real server with a self-signed certificate. Needs Docker.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
 mod support;
 
 use std::fs;

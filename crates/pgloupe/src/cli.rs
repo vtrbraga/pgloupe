@@ -141,6 +141,8 @@ enum LogsCommand {
     Ingest(IngestArgs),
     /// Report on a time window of a store.
     Report(StoreReportArgs),
+    /// Download a time range of log files from a managed service or server (resumable).
+    Fetch(collect::commands::FetchArgs),
 }
 
 #[derive(Debug, Args)]
@@ -537,6 +539,9 @@ pub fn run(cli: &Cli, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Resul
         Command::Logs {
             command: LogsCommand::Report(args),
         } => logs_report(args, out),
+        Command::Logs {
+            command: LogsCommand::Fetch(args),
+        } => collect::commands::fetch(args, out, err),
         Command::Report(args) => report(args, out, err),
         Command::Snap(args) => collect::commands::snap(args, out, err),
         Command::Doctor(args) => collect::commands::doctor(args, out, err),

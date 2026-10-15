@@ -2,6 +2,8 @@
 
 #![allow(dead_code, reason = "each test file uses a part")]
 
+pub mod fake_cli;
+
 use std::{
     process::{Command, Stdio},
     thread,
