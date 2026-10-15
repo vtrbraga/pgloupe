@@ -38,25 +38,25 @@ connections. It also tells you which server settings are limiting the report and
 ## Install
 
 pgloupe is one binary. Every release has prebuilt archives for Linux (x86-64, arm64), macOS (Intel,
-Apple silicon) and Windows (x86-64). Until `0.1.0` ships, releases are alphas, so the commands name
-the version.
+Apple silicon) and Windows (x86-64).
 
 ```bash
 # Linux, macOS: installer script
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/vtrbraga/pgloupe/releases/download/v0.1.0-alpha.3/pgloupe-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/vtrbraga/pgloupe/releases/latest/download/pgloupe-installer.sh | sh
 
 # Homebrew
 brew install vtrbraga/tap/pgloupe
 
-# Prebuilt, through cargo-binstall
-cargo binstall pgloupe@0.1.0-alpha.3
+# Cargo: prebuilt, or from source (needs a C toolchain and libclang)
+cargo binstall pgloupe
+cargo install pgloupe
 
 # Docker
-docker run --rm -v "$PWD:/data" ghcr.io/vtrbraga/pgloupe:0.1.0-alpha.3 report /data/postgresql.log
+docker run --rm -v "$PWD:/data" ghcr.io/vtrbraga/pgloupe:latest report /data/postgresql.log
 ```
 
-Windows (PowerShell), Cargo from source, archives with checksums and attestations, updating and
-uninstalling are in the [install guide](https://vtrbraga.github.io/pgloupe/install.html).
+Windows (PowerShell), archives with checksums and attestations, updating and uninstalling are in
+the [install guide](https://vtrbraga.github.io/pgloupe/install.html).
 
 Linux and macOS are tested in CI. Windows builds are experimental.
 

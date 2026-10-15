@@ -2,16 +2,14 @@
 
 pgloupe is one binary. Pick the channel that suits you; each channel updates the way that channel normally does.
 
-> **Pre-release.** Until `0.1.0` is out, every release is an alpha. The installer scripts, archives, Homebrew formula and the Docker image all carry it, but a few commands differ from the stable ones, noted below.
-
 | Channel | Install | Update |
 |---|---|---|
-| Installer script (Linux, macOS) | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/vtrbraga/pgloupe/releases/download/v0.1.0-alpha.3/pgloupe-installer.sh \| sh` (the `latest` URL works once there is a stable release) | `pgloupe-update --prerelease` |
-| Installer script (Windows) | `powershell -ExecutionPolicy Bypass -c "irm https://github.com/vtrbraga/pgloupe/releases/download/v0.1.0-alpha.3/pgloupe-installer.ps1 \| iex"` | `pgloupe-update --prerelease` |
+| Installer script (Linux, macOS) | `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/vtrbraga/pgloupe/releases/latest/download/pgloupe-installer.sh \| sh` | `pgloupe-update` |
+| Installer script (Windows) | `powershell -ExecutionPolicy Bypass -c "irm https://github.com/vtrbraga/pgloupe/releases/latest/download/pgloupe-installer.ps1 \| iex"` | `pgloupe-update` |
 | Homebrew | `brew install vtrbraga/tap/pgloupe` | `brew upgrade pgloupe` |
-| Cargo | `cargo install pgloupe --version 0.1.0-alpha.3` (needs a C toolchain and `libclang`; a pre-release is only installed when you name its version) | the same command with the new version |
-| Prebuilt, through cargo-binstall | `cargo binstall pgloupe@0.1.0-alpha.3` | the same command |
-| Docker | `docker run --rm -v "$PWD:/data" ghcr.io/vtrbraga/pgloupe:<version> report /data/postgresql.log` (the `latest` tag appears with the first stable release) | `docker pull ghcr.io/vtrbraga/pgloupe:<version>` |
+| Cargo | `cargo install pgloupe` (needs a C toolchain and `libclang`) | `cargo install pgloupe` again |
+| Prebuilt, through cargo-binstall | `cargo binstall pgloupe` | the same command |
+| Docker | `docker run --rm -v "$PWD:/data" ghcr.io/vtrbraga/pgloupe:latest report /data/postgresql.log` (or a version tag such as `:0.1.0`) | `docker pull ghcr.io/vtrbraga/pgloupe:latest` |
 | Archive | download from the [releases page](https://github.com/vtrbraga/pgloupe/releases), unpack, put `pgloupe` on your `PATH` | download again |
 
 Linux and macOS are tested in CI. Windows builds are experimental.
@@ -22,7 +20,7 @@ The archives carry `dist-assets/man/pgloupe.1` (and one page per command, such a
 
 ## Updating
 
-- **Installer script:** `pgloupe-update` updates the install in place. It reads the receipt the installer left and connects to the network only when you run it. It ignores pre-releases unless you pass `--prerelease` (or `--tag v0.1.0-alpha.3` for a specific one).
+- **Installer script:** `pgloupe-update` updates the install in place. It reads the receipt the installer left and connects to the network only when you run it. Pass `--tag v0.1.0` to move to a specific version.
 - **Homebrew, Cargo, Docker:** use their own upgrade command (table above). `pgloupe-update` only knows about installs made by the installer.
 - pgloupe never checks for a newer version on its own. Watch the [releases feed](https://github.com/vtrbraga/pgloupe/releases.atom) and the [changelog](https://github.com/vtrbraga/pgloupe/blob/main/CHANGELOG.md).
 
