@@ -903,6 +903,14 @@ impl Accumulators {
         for stat in self.totals.errors.values_mut() {
             stat.keep_busiest_statements();
         }
+        // Only the people the kept examples point at: which ones a worker saw along the way
+        // depends on how records were split.
+        let used: std::collections::BTreeSet<u64> = self
+            .queries
+            .values()
+            .flat_map(|query| query.examples.rows().iter().map(|example| example.who))
+            .collect();
+        self.who.retain(|key, _| used.contains(key));
         self.cap_queries(limit);
     }
 
@@ -1559,7 +1567,7 @@ mod tests {
         let mut a = acc();
         a.add_record(&statement(1, 2.0, "SELECT 1 FROM t"));
         let query = a.queries.values().next().unwrap();
-        assert!(query.examples.rows().is_empty());
+        assert_eq!(query.examples.rows().len(), 0);
         assert!(a.who.is_empty());
     }
 }
