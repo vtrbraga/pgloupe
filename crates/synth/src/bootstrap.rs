@@ -63,5 +63,14 @@ pub fn load(pg: &PgContainer, target: Target) -> anyhow::Result<String> {
          GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO app_rw;",
         )
         .context("granting privileges on pagila")?;
+    // Autovacuum stays off so it cannot add log lines to other scenarios. It is switched off here,
+    // not on the command line, because a command-line setting cannot be changed by ALTER SYSTEM
+    // and the `autovacuum` scenario has to turn it back on.
+    control
+        .batch_execute("ALTER SYSTEM SET autovacuum = off")
+        .context("turning autovacuum off")?;
+    control
+        .batch_execute("SELECT pg_reload_conf()")
+        .context("reloading the configuration")?;
     query_scalar(&mut control, "SELECT now()::text")
 }

@@ -33,7 +33,6 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("log_checkpoints", "on"),
     ("log_connections", "on"),
     ("log_disconnections", "on"),
-    ("autovacuum", "off"),
     ("checkpoint_timeout", "1d"),
     ("max_wal_size", "4GB"),
     ("jit", "off"),
