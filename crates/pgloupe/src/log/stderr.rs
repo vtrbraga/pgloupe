@@ -359,7 +359,8 @@ impl<R: BufRead> Decoder for StderrDecoder<R> {
                 self.continue_field(rest, &line);
                 continue;
             }
-            if line == TRUNCATED {
+            // RDS puts a space in front of it.
+            if line.trim() == TRUNCATED {
                 // Amazon RDS cuts a very long entry and says so on a line of its own; the rest
                 // of the entry (CONTEXT, STATEMENT) still follows.
                 self.stats.truncated += 1;
@@ -404,7 +405,7 @@ mod tests {
     fn the_rds_truncation_marker_is_counted_and_the_entry_keeps_its_context() {
         let text = format!(
             "{SESSION} LOG:  a very long message\n\
-             [Your log message was truncated]\n\
+             \x20[Your log message was truncated]\n\
              {SESSION} CONTEXT:  PL/pgSQL function f() line 3\n\
              {SESSION} STATEMENT:  CREATE TEMPORARY TABLE t AS SELECT 1\n\
              2026-10-14 10:20:13.000 UTC [44] LOG:  checkpoint starting\n"
