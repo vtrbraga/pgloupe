@@ -96,6 +96,40 @@ cargo run -p pgloupe -- report --before pgss_1.csv --after pgss_2.csv          #
 - With `--store`, the log window is the snapshot interval widened to whole hours unless `--since/--until` are given.
 - The `findings` block explains odd results: resets and evictions, unreadable query text (grant `pg_read_all_stats`), windows that do not match, statements missing from one side, partitions rolled up.
 
+## Collect from a live server
+
+`snap`, `doctor`, `logs fetch`, `export` and `watch` read a running server. They never write to it: the session is read-only, `pg_stat_statements_reset()` is never called, and nothing is installed.
+
+```bash
+export PGLOUPE_DSN='postgres://pgloupe@mydb.abc.eu-west-1.rds.amazonaws.com:5432/postgres'   # password: PGPASSWORD or ~/.pgpass
+pgloupe doctor --vendor rds                      # what the server or role lacks, and how to fix it
+pgloupe snap --out snaps/                        # pgss_<time>.csv + pgss_info_<time>.csv
+pgloupe logs fetch --provider aws-rds --instance mydb --since 24h --out logs/
+pgloupe export --provider aws-rds --instance mydb --since 24h --out export/ --report report.html
+pgloupe watch --provider aws-rds --instance mydb --interval 5m --window 24h    # prints http://127.0.0.1:8080/
+```
+
+- **Connection:** `--conn` or `PGLOUPE_DSN`. TLS is on by default (`prefer`); `sslmode=verify-full` or `--sslrootcert FILE` checks the certificate and host name (RDS: the regional bundle from AWS). Passwords are never printed.
+- **`watch`** loops: snapshot, fetch new log bytes, ingest into a SQLite store in `--state-dir`, rebuild the report for the last `--window`, and serve it with `tiny_http` on loopback (`--listen`, `--allow-remote` to expose it; the page contains statement text). The dashboard polls `/status` and swaps in each new report keeping its view; a failed cycle keeps the last good report, shows a banner and retries with backoff. Routes: `/`, `/report.json`, `/status`, `/healthz`. `--once` runs one cycle and exits.
+- **Providers** read logs through the vendor's CLI (argument lists, no shell, your own credentials). Use `--bin` to point at a CLI that is not on `PATH`.
+
+| Provider | Status | Needs |
+|---|---|---|
+| `aws-rds` (RDS, Aurora PostgreSQL) | supported | `aws` CLI; IAM `rds:DescribeDBLogFiles`, `rds:DownloadDBLogFilePortion` |
+| `sql` (self-managed) | experimental | role allowed `pg_ls_logdir()` and `pg_read_binary_file()` (`pg_read_server_files`) |
+| `aws-cloudwatch` | experimental | `aws` CLI; log export to CloudWatch on; `logs:FilterLogEvents` |
+| `azure-flexible` | experimental | `az` CLI; server log download enabled |
+| `gcp-cloudsql` | experimental | `gcloud`; `logging.logEntries.list` |
+| `aiven` | experimental | `avn`, logged in |
+| `heroku` | experimental | `heroku` CLI; recent lines only |
+
+Experimental connectors are tested against a fake CLI replaying payloads written from the vendor's documentation, not against the real services, and print a warning on every use.
+
+**What the server needs** (`doctor` checks all of this):
+
+- Database role: `GRANT pg_monitor TO pgloupe;` (or `pg_read_all_stats` and `pg_read_all_settings`) so query text and settings are visible; `CREATE EXTENSION pg_stat_statements;` in the database.
+- Parameter group (RDS) or `postgresql.conf`: `shared_preload_libraries` includes `pg_stat_statements` (RDS default; a reboot applies it), `log_min_duration_statement` (for example `250`), `log_lock_waits = on`, `log_temp_files = 0`, `log_checkpoints = on`, `log_autovacuum_min_duration` (for example `1000`), `log_connections` and `log_disconnections = on`, `track_io_timing = on`, `compute_query_id = auto`. RDS fixes `log_line_prefix`, so application name and SQLSTATE columns are empty there.
+
 ## Benchmark input
 
 `cargo run --release --example gen_log -- OUT RECORDS HOURS FINGERPRINTS [SEED]` writes a deterministic jsonlog with many hours and many distinct statements (per tenant and partition), for timing `logs analyze`, `logs ingest` and `logs report` on something larger and wider than the synth corpus.
