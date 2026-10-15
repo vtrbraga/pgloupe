@@ -25,7 +25,7 @@ const REQUIRED: [&str; 8] = [
 ];
 
 /// Columns that may be absent from an export. Two snapshots must have the same ones to be compared.
-const OPTIONAL: [&str; 9] = [
+const OPTIONAL: [&str; 17] = [
     "toplevel",
     "stats_since",
     "plans",
@@ -35,6 +35,15 @@ const OPTIONAL: [&str; 9] = [
     "temp_blks_read",
     "temp_blks_written",
     "wal_bytes",
+    "shared_blks_dirtied",
+    "shared_blks_written",
+    // PostgreSQL 17 renamed `blk_read_time` and `blk_write_time` to `shared_blk_*_time`.
+    "blk_read_time",
+    "shared_blk_read_time",
+    "blk_write_time",
+    "shared_blk_write_time",
+    "temp_blk_read_time",
+    "temp_blk_write_time",
 ];
 
 /// Identity of one `pg_stat_statements` entry.
@@ -59,6 +68,14 @@ pub struct Counters {
     pub temp_blks_read: u64,
     pub temp_blks_written: u64,
     pub wal_bytes: u64,
+    pub shared_blks_dirtied: u64,
+    pub shared_blks_written: u64,
+    /// Time reading and writing shared data files; needs `track_io_timing`.
+    pub blk_read_time: f64,
+    pub blk_write_time: f64,
+    /// Time reading and writing temporary files; needs `track_io_timing`.
+    pub temp_blk_read_time: f64,
+    pub temp_blk_write_time: f64,
 }
 
 impl Counters {
@@ -75,6 +92,12 @@ impl Counters {
             || self.temp_blks_read < before.temp_blks_read
             || self.temp_blks_written < before.temp_blks_written
             || self.wal_bytes < before.wal_bytes
+            || self.shared_blks_dirtied < before.shared_blks_dirtied
+            || self.shared_blks_written < before.shared_blks_written
+            || self.blk_read_time < before.blk_read_time
+            || self.blk_write_time < before.blk_write_time
+            || self.temp_blk_read_time < before.temp_blk_read_time
+            || self.temp_blk_write_time < before.temp_blk_write_time
     }
 
     /// Field-wise `self - before`. Only meaningful when `!self.went_backwards(before)`.
@@ -95,6 +118,16 @@ impl Counters {
                 .temp_blks_written
                 .saturating_sub(before.temp_blks_written),
             wal_bytes: self.wal_bytes.saturating_sub(before.wal_bytes),
+            shared_blks_dirtied: self
+                .shared_blks_dirtied
+                .saturating_sub(before.shared_blks_dirtied),
+            shared_blks_written: self
+                .shared_blks_written
+                .saturating_sub(before.shared_blks_written),
+            blk_read_time: self.blk_read_time - before.blk_read_time,
+            blk_write_time: self.blk_write_time - before.blk_write_time,
+            temp_blk_read_time: self.temp_blk_read_time - before.temp_blk_read_time,
+            temp_blk_write_time: self.temp_blk_write_time - before.temp_blk_write_time,
         }
     }
 }
@@ -156,6 +189,14 @@ struct RawRow {
     temp_blks_read: Option<u64>,
     temp_blks_written: Option<u64>,
     wal_bytes: Option<u64>,
+    shared_blks_dirtied: Option<u64>,
+    shared_blks_written: Option<u64>,
+    blk_read_time: Option<f64>,
+    shared_blk_read_time: Option<f64>,
+    blk_write_time: Option<f64>,
+    shared_blk_write_time: Option<f64>,
+    temp_blk_read_time: Option<f64>,
+    temp_blk_write_time: Option<f64>,
 }
 
 /// A `pg_stat_statements_info` CSV row; `snapshot_at` is ignored.
@@ -365,6 +406,18 @@ fn entry_from(
             temp_blks_read: raw.temp_blks_read.unwrap_or(0),
             temp_blks_written: raw.temp_blks_written.unwrap_or(0),
             wal_bytes: raw.wal_bytes.unwrap_or(0),
+            shared_blks_dirtied: raw.shared_blks_dirtied.unwrap_or(0),
+            shared_blks_written: raw.shared_blks_written.unwrap_or(0),
+            blk_read_time: raw
+                .shared_blk_read_time
+                .or(raw.blk_read_time)
+                .unwrap_or(0.0),
+            blk_write_time: raw
+                .shared_blk_write_time
+                .or(raw.blk_write_time)
+                .unwrap_or(0.0),
+            temp_blk_read_time: raw.temp_blk_read_time.unwrap_or(0.0),
+            temp_blk_write_time: raw.temp_blk_write_time.unwrap_or(0.0),
         },
     };
     Ok((key, entry))

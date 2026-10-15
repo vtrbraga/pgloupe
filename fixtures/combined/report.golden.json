@@ -601,9 +601,14 @@
       },
       "query_id_matches": null,
       "stats": {
+        "blocks_read_per_row": 0.0,
         "calls": 4,
         "entries": 1,
         "flags": [],
+        "hit_pct": null,
+        "io_pct": 0.0,
+        "io_read_ms": 0.0,
+        "io_write_ms": 0.0,
         "mean_ms": 100.0,
         "nested_calls": 0,
         "plans": 0,
@@ -612,13 +617,18 @@
           "2"
         ],
         "rows": 4,
+        "rows_per_call": 1.0,
         "share_pct": 80.0,
+        "shared_blks_dirtied": 0,
         "shared_blks_hit": 0,
         "shared_blks_read": 0,
+        "shared_blks_written": 0,
         "temp_blks_read": 0,
         "temp_blks_written": 0,
+        "temp_io_ms": 0.0,
         "total_exec_ms": 400.0,
-        "wal_bytes": 0
+        "wal_bytes": 0,
+        "wal_per_call": 0.0
       },
       "text": "UPDATE film SET rental_rate = $1"
     },
@@ -629,11 +639,16 @@
       "log": null,
       "query_id_matches": null,
       "stats": {
+        "blocks_read_per_row": 0.0,
         "calls": 2,
         "entries": 1,
         "flags": [
           "new"
         ],
+        "hit_pct": null,
+        "io_pct": 0.0,
+        "io_read_ms": 0.0,
+        "io_write_ms": 0.0,
         "mean_ms": 35.0,
         "nested_calls": 0,
         "plans": 0,
@@ -642,13 +657,18 @@
           "5"
         ],
         "rows": 2,
+        "rows_per_call": 1.0,
         "share_pct": 14.0,
+        "shared_blks_dirtied": 0,
         "shared_blks_hit": 0,
         "shared_blks_read": 0,
+        "shared_blks_written": 0,
         "temp_blks_read": 0,
         "temp_blks_written": 0,
+        "temp_io_ms": 0.0,
         "total_exec_ms": 70.0,
-        "wal_bytes": 0
+        "wal_bytes": 0,
+        "wal_per_call": 0.0
       },
       "text": "DELETE FROM rental WHERE rental_id = $1"
     },
@@ -686,9 +706,14 @@
       },
       "query_id_matches": null,
       "stats": {
+        "blocks_read_per_row": 0.0,
         "calls": 60,
         "entries": 1,
         "flags": [],
+        "hit_pct": null,
+        "io_pct": 0.0,
+        "io_read_ms": 0.0,
+        "io_write_ms": 0.0,
         "mean_ms": 0.5,
         "nested_calls": 0,
         "plans": 0,
@@ -697,13 +722,18 @@
           "1"
         ],
         "rows": 60,
+        "rows_per_call": 1.0,
         "share_pct": 6.0,
+        "shared_blks_dirtied": 0,
         "shared_blks_hit": 0,
         "shared_blks_read": 0,
+        "shared_blks_written": 0,
         "temp_blks_read": 0,
         "temp_blks_written": 0,
+        "temp_io_ms": 0.0,
         "total_exec_ms": 30.0,
-        "wal_bytes": 0
+        "wal_bytes": 0,
+        "wal_per_call": 0.0
       },
       "text": "SELECT * FROM film WHERE film_id = $1"
     },

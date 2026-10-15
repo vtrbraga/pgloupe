@@ -1,0 +1,3 @@
+snapshot_at,server_version_num,datname,rolname,userid,dbid,toplevel,queryid,query,calls,total_exec_time,rows,shared_blks_hit,shared_blks_read,shared_blk_read_time,shared_blk_write_time,temp_blk_read_time,temp_blk_write_time,wal_bytes
+2026-10-14 10:00:00+00,170011,shop,app,10,16384,t,1,SELECT * FROM orders WHERE customer_id = $1,100,1000.0,100,9000,1000,50.0,5.0,0,0,0
+2026-10-14 10:00:00+00,170011,shop,app,10,16384,t,2,DELETE FROM sessions WHERE expires < now(),10,100.0,0,100,0,0,0,0,0,1000
