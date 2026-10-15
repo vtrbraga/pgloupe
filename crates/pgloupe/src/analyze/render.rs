@@ -310,14 +310,44 @@ fn errors(rows: &[ErrorRow]) -> Vec<String> {
 
 fn locks(report: &Report) -> Vec<String> {
     let l = &report.locks;
-    vec![format!(
+    let mut lines = vec![format!(
         "waits {}, acquired {}, total wait {} ms, longest {} ms, deadlocks {}",
         l.waits,
         l.acquired,
         num(l.total_wait_ms),
         num(l.max_wait_ms),
         l.deadlocks
-    )]
+    )];
+    if !l.blockers.is_empty() {
+        lines.push("who blocks whom (holder -> waiter):".to_owned());
+        let mut cells = vec![
+            ["times", "wait_ms", "holder", "waiter"]
+                .iter()
+                .map(|h| (*h).to_owned())
+                .collect::<Vec<_>>(),
+        ];
+        for b in l.blockers.iter().take(10) {
+            let name = |text: &str| {
+                if text.is_empty() {
+                    "(not in the log)".to_owned()
+                } else {
+                    cut(text)
+                }
+            };
+            cells.push(vec![
+                b.count.to_string(),
+                num(b.total_wait_ms),
+                name(&b.blocker_text),
+                name(&b.waiter_text),
+            ]);
+        }
+        lines.extend(
+            align(&cells, &[true, true, false, false])
+                .into_iter()
+                .map(|line| format!("  {line}")),
+        );
+    }
+    lines
 }
 
 fn temp_files(report: &Report) -> Vec<String> {

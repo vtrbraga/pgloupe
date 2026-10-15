@@ -17,14 +17,14 @@ use thiserror::Error;
 use super::{
     Merge,
     acc::Accumulators,
-    anonymize::{Anonymizer, scrub},
+    anonymize::{self, Anonymizer},
     correlate::Correlator,
     filter::Filter,
     slice::Slices,
 };
 use crate::log::{
-    DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions, SetupError,
-    Severity, decoder_for,
+    BlockPair, DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions,
+    SetupError, Severity, decoder_for,
     infer::{Inference, SAMPLE_LINES, infer_prefix},
     prefix::Prefix,
     source,
@@ -217,6 +217,7 @@ fn run_with<S: Fold>(
     let failure = Arc::new(Mutex::new(None));
     let batches = Batches {
         correlator: Correlator::new(),
+        carry: Vec::new(),
         anonymizer: options.filter.anonymize.as_deref().map(Anonymizer::new),
         pending: paths.iter().cloned().collect(),
         current: None,
@@ -274,6 +275,8 @@ struct Current {
 /// Yields batches of records, file after file.
 struct Batches {
     correlator: Correlator,
+    /// Lock waits settled when a file ended with no record left to carry them.
+    carry: Vec<BlockPair>,
     anonymizer: Option<Anonymizer>,
     pending: VecDeque<PathBuf>,
     current: Option<Current>,
@@ -345,9 +348,6 @@ impl Iterator for Batches {
                             if self.options.filter.keeps(&record) {
                                 if let Some(anonymizer) = &mut self.anonymizer {
                                     anonymizer.apply(&mut record);
-                                    if let Some(c) = &mut record.correlation {
-                                        c.sql = scrub(&c.sql);
-                                    }
                                 }
                                 batch.push(record);
                             } else {
@@ -368,12 +368,22 @@ impl Iterator for Batches {
                     }
                 }
             }
+            if finished {
+                let mut left = self.correlator.finish();
+                if self.anonymizer.is_some() {
+                    left.iter_mut().for_each(anonymize::scrub_pair);
+                }
+                self.carry.extend(left);
+            }
             if let Some(error) = error {
                 self.fail(error);
             } else if finished {
                 self.finish_current();
             }
             if !batch.is_empty() {
+                if let Some(first) = batch.first_mut() {
+                    first.blocks.append(&mut self.carry);
+                }
                 return Some(batch);
             }
             if self.current.is_none() && self.pending.is_empty() {

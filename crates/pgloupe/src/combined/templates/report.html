@@ -121,6 +121,15 @@
 <section id="locks">
 <h2>Locks</h2>
 <p>{{ report.logs.locks.waits|int }} waits, {{ report.logs.locks.acquired|int }} acquired, total wait {{ report.logs.locks.total_wait_ms|ms }}, longest {{ report.logs.locks.max_wait_ms|ms }}, {{ report.logs.locks.deadlocks|int }} deadlocks.</p>
+{% if report.logs.locks.blockers %}
+<h3>Who blocks whom</h3>
+<table>
+<thead><tr><th class="num">Times</th><th class="num">Waited</th><th>Holder</th><th>Waiter</th></tr></thead>
+<tbody>
+{% for b in report.logs.locks.blockers %}<tr><td class="num">{{ b.count|n }}</td><td class="num">{{ b.total_wait_ms|ms }}</td><td><code>{{ (b.blocker_text or '(not in the log)')|cut(140) }}</code></td><td><code>{{ (b.waiter_text or '(not in the log)')|cut(140) }}</code></td></tr>
+{% endfor %}</tbody>
+</table>
+{% endif %}
 </section>
 
 <section id="temp-files">

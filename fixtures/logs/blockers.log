@@ -1,0 +1,16 @@
+2026-10-14 10:00:00.000 UTC [20] u@db/app LOG:  duration: 3.000 ms  statement: BEGIN
+2026-10-14 10:00:00.100 UTC [20] u@db/app LOG:  duration: 4.000 ms  statement: UPDATE accounts SET balance = balance - 1 WHERE id = 1
+2026-10-14 10:00:01.000 UTC [21] u@db/app LOG:  process 21 still waiting for ShareLock on transaction 500 after 200.100 ms
+2026-10-14 10:00:01.000 UTC [21] u@db/app DETAIL:  Process holding the lock: 20. Wait queue: 21.
+2026-10-14 10:00:01.000 UTC [21] u@db/app STATEMENT:  UPDATE accounts SET balance = balance + 1 WHERE id = 1
+2026-10-14 10:00:05.000 UTC [20] u@db/app LOG:  duration: 0.500 ms  statement: COMMIT
+2026-10-14 10:00:05.001 UTC [21] u@db/app LOG:  process 21 acquired ShareLock on transaction 500 after 4000.200 ms
+2026-10-14 10:00:05.001 UTC [21] u@db/app STATEMENT:  UPDATE accounts SET balance = balance + 1 WHERE id = 1
+2026-10-14 10:01:00.000 UTC [30] u@db/app LOG:  duration: 1.000 ms  statement: BEGIN
+2026-10-14 10:01:10.000 UTC [31] u@db/app LOG:  process 31 still waiting for AccessExclusiveLock on relation 16 of database 1 after 200.100 ms
+2026-10-14 10:01:10.000 UTC [31] u@db/app DETAIL:  Process holding the lock: 30. Wait queue: 31.
+2026-10-14 10:01:10.000 UTC [31] u@db/app STATEMENT:  ALTER TABLE accounts ADD COLUMN note text
+2026-10-14 10:02:00.000 UTC [30] u@db/app LOG:  duration: 59000.000 ms  statement: UPDATE accounts SET balance = 0 WHERE batch = 7
+2026-10-14 10:03:00.000 UTC [40] u@db/app LOG:  process 41 still waiting for ShareLock on transaction 9 after 200.100 ms
+2026-10-14 10:03:00.000 UTC [40] u@db/app DETAIL:  Process holding the lock: 99. Wait queue: 41.
+2026-10-14 10:03:00.000 UTC [40] u@db/app STATEMENT:  DELETE FROM accounts WHERE id = 5

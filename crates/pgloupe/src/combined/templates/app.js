@@ -605,6 +605,16 @@
         return h('tr', { 'class': 'clickable', onclick: function () { openStatement(r.fingerprint); } }, [h('td', null, h('div', { 'class': 'stmt' }, h('span', { 'class': 'sql', text: r.text.replace(/\s+/g, ' ') }))), h('td', { 'class': 'num', text: L.fmtInt(r.log.lock_waits) }), h('td', { 'class': 'num', text: L.fmtMs(r.log.lock_wait_ms) })]);
       })));
     }
+    if (l.blockers && l.blockers.length) {
+      out.push(h('h2', { text: 'Who blocks whom' }));
+      out.push(h('p', { 'class': 'muted', text: 'The holder is the statement the blocking backend was running, or had last run while idle in its transaction. Waits are the times the log reported, at least that long.' }));
+      var holder = function (fp, text) {
+        return h('td', null, fp && byFp[fp] ? h('button', { 'class': 'linklike', onclick: function () { openStatement(fp); }, text: text.replace(/\s+/g, ' ').slice(0, 140) }) : h('span', { 'class': fp ? 'sql' : 'muted', text: fp ? text.replace(/\s+/g, ' ').slice(0, 140) : '(not in the log)' }));
+      };
+      out.push(simpleTable([{ label: 'Times', num: true }, { label: 'Waited', num: true }, { label: 'Holder' }, { label: 'Waiter' }], l.blockers.map(function (b) {
+        return h('tr', null, [h('td', { 'class': 'num', text: L.fmtInt(b.count) }), h('td', { 'class': 'num', text: L.fmtMs(b.total_wait_ms) }), holder(b.blocker, b.blocker_text), holder(b.waiter, b.waiter_text)]);
+      })));
+    }
     var temps = rows.filter(function (r) { return r.log && r.log.temp_files > 0; }).sort(function (a, b) { return b.log.temp_bytes - a.log.temp_bytes; }).slice(0, 15);
     if (temps.length) {
       out.push(h('h2', { text: 'Statements that wrote temp files' }));

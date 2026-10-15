@@ -140,6 +140,7 @@ pub fn actions(logs: Option<&Report>, joined: &Joined) -> Vec<Action> {
     dominant_statement(joined, &mut found);
     if let Some(logs) = logs {
         lock_waits(logs, joined, &mut found);
+        blockers(logs, joined, &mut found);
         temp_files(logs, joined, &mut found);
         errors(logs, &mut found);
     }
@@ -298,6 +299,44 @@ fn lock_waits(logs: &Report, joined: &Joined, found: &mut Vec<Action>) {
         evidence: None,
         evidence_kind: "log",
         statements: fingerprints(waiting),
+        section: "locks",
+    });
+}
+
+/// The statement that made others wait the most, when the log says who held the lock.
+fn blockers(logs: &Report, joined: &Joined, found: &mut Vec<Action>) {
+    // Total wait per holding statement; a holder the log shows nothing of is not actionable.
+    let mut by_blocker: std::collections::BTreeMap<&str, (u64, f64, &str)> =
+        std::collections::BTreeMap::new();
+    for row in &logs.locks.blockers {
+        if let Some(blocker) = row.blocker.as_deref() {
+            let entry = by_blocker
+                .entry(blocker)
+                .or_insert((0, 0.0, &row.blocker_text));
+            entry.0 += row.count;
+            entry.1 += row.total_wait_ms;
+        }
+    }
+    let Some((fingerprint, (count, wait_ms, text))) = by_blocker
+        .iter()
+        .max_by(|a, b| a.1.1.total_cmp(&b.1.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(fp, v)| (*fp, *v))
+    else {
+        return;
+    };
+    let shown = joined.rows.iter().any(|row| row.fingerprint == fingerprint);
+    found.push(Action {
+        code: "blocking_statement",
+        priority: if wait_ms >= URGENT_LOCK_WAIT_MS { "high" } else { "medium" },
+        title: format!(
+            "One statement held locks that made others wait {} times ({} in all)",
+            count,
+            ms(wait_ms)
+        ),
+        advice: "The statement shown was running, or was the last one its transaction ran before sitting idle, when others queued behind it. Shorten that transaction: commit sooner, take locks in the same order everywhere, and keep slow work out of it.".to_owned(),
+        evidence: Some(cut(text)),
+        evidence_kind: "statement",
+        statements: if shown { vec![fingerprint.to_owned()] } else { Vec::new() },
         section: "locks",
     });
 }

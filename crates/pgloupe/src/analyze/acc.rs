@@ -351,6 +351,9 @@ pub struct ErrorStat {
     pub statements: BTreeMap<u64, u64>,
 }
 
+/// Blocker and waiter pairs kept.
+const BLOCKER_PAIRS: usize = 200;
+
 /// Statements remembered per kind of error.
 const ERROR_STATEMENTS: usize = 5;
 
@@ -401,6 +404,14 @@ impl Merge for ErrorStat {
             *self.statements.entry(id).or_insert(0) += n;
         }
     }
+}
+
+/// How often one statement made another wait for a lock, and for how long.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStat {
+    pub count: u64,
+    pub wait_us: u64,
+    pub max_us: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -587,6 +598,10 @@ pub struct Totals {
     /// per reason when a run ends.
     #[serde(default)]
     pub cancelled_statements: BTreeMap<String, BTreeMap<u64, u64>>,
+    /// `(blocker, waiter)` fingerprints -> how often. Blocker 0 is a backend the log shows no
+    /// statement of. Capped to the longest waits when a run ends.
+    #[serde(default, with = "pairs")]
+    pub blockers: BTreeMap<(u64, u64), BlockStat>,
 }
 
 impl Totals {
@@ -610,7 +625,20 @@ impl Totals {
             unparsed_statements: 0,
             cancelled: BTreeMap::new(),
             cancelled_statements: BTreeMap::new(),
+            blockers: BTreeMap::new(),
         }
+    }
+
+    /// Keeps the pairs that made others wait longest.
+    fn keep_longest_blockers(&mut self) {
+        if self.blockers.len() <= BLOCKER_PAIRS {
+            return;
+        }
+        let mut ranked: Vec<((u64, u64), BlockStat)> =
+            self.blockers.iter().map(|(k, v)| (*k, *v)).collect();
+        ranked.sort_by(|a, b| b.1.wait_us.cmp(&a.1.wait_us).then(a.0.cmp(&b.0)));
+        ranked.truncate(BLOCKER_PAIRS);
+        self.blockers = ranked.into_iter().collect();
     }
 
     fn add(&mut self, record: &LogRecord, event: &Event) {
@@ -779,6 +807,12 @@ impl Merge for Totals {
         for (reason, n) in other.cancelled {
             *self.cancelled.entry(reason).or_insert(0) += n;
         }
+        for (key, stat) in other.blockers {
+            let mine = self.blockers.entry(key).or_default();
+            mine.count += stat.count;
+            mine.wait_us += stat.wait_us;
+            mine.max_us = mine.max_us.max(stat.max_us);
+        }
         for (reason, statements) in other.cancelled_statements {
             let mine = self.cancelled_statements.entry(reason).or_default();
             for (id, n) in statements {
@@ -914,6 +948,21 @@ impl Accumulators {
                 }
             }
             _ => {}
+        }
+        for block in &record.blocks {
+            let blocker = block
+                .blocker
+                .as_deref()
+                .map_or(0, |sql| self.query_for(sql, ts, None).id);
+            let waiter = block
+                .waiter
+                .as_deref()
+                .map_or(0, |sql| self.query_for(sql, ts, None).id);
+            let us = to_micros(block.waited_ms);
+            let stat = self.totals.blockers.entry((blocker, waiter)).or_default();
+            stat.count += 1;
+            stat.wait_us += us;
+            stat.max_us = stat.max_us.max(us);
         }
         if record.level.is_error()
             && let Some(sql) = record.statement.as_deref()
@@ -1057,6 +1106,7 @@ impl Accumulators {
             stat.keep_busiest_statements();
         }
         self.totals.keep_busiest_cancelled();
+        self.totals.keep_longest_blockers();
         // Only the people the kept examples point at: which ones a worker saw along the way
         // depends on how records were split.
         let used: std::collections::BTreeSet<u64> = self

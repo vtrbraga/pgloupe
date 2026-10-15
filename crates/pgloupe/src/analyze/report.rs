@@ -343,6 +343,59 @@ pub struct LocksReport {
     pub total_wait_ms: f64,
     pub max_wait_ms: f64,
     pub deadlocks: u64,
+    /// Which statements held locks that made which others wait, longest waits first.
+    pub blockers: Vec<BlockerRow>,
+}
+
+/// One statement making another wait.
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockerRow {
+    /// 16 hex digits; `None` when the log shows no statement of the holding backend.
+    pub blocker: Option<String>,
+    pub blocker_text: String,
+    /// 16 hex digits; `None` when the log line did not name the waiting statement.
+    pub waiter: Option<String>,
+    pub waiter_text: String,
+    /// Times it happened.
+    pub count: u64,
+    /// The waits the log reported while it happened (at least that long), in milliseconds.
+    pub total_wait_ms: f64,
+    pub max_wait_ms: f64,
+}
+
+fn blockers(acc: &Accumulators) -> Vec<BlockerRow> {
+    let named = |id: u64| -> (Option<String>, String) {
+        match acc.queries.get(&id) {
+            Some(q) if id != 0 => (Some(format!("{id:016x}")), q.text.clone()),
+            _ => (None, String::new()),
+        }
+    };
+    let mut rows: Vec<BlockerRow> = acc
+        .totals
+        .blockers
+        .iter()
+        .map(|((blocker, waiter), stat)| {
+            let (blocker, blocker_text) = named(*blocker);
+            let (waiter, waiter_text) = named(*waiter);
+            BlockerRow {
+                blocker,
+                blocker_text,
+                waiter,
+                waiter_text,
+                count: stat.count,
+                total_wait_ms: ms(stat.wait_us),
+                max_wait_ms: ms(stat.max_us),
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.total_wait_ms
+            .total_cmp(&a.total_wait_ms)
+            .then_with(|| a.blocker.cmp(&b.blocker))
+            .then_with(|| a.waiter.cmp(&b.waiter))
+    });
+    rows.truncate(20);
+    rows
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -469,6 +522,7 @@ impl Report {
                 total_wait_ms: ms(totals.locks.wait_total_us),
                 max_wait_ms: ms(totals.locks.wait_max_us),
                 deadlocks: totals.locks.deadlocks,
+                blockers: blockers(acc),
             },
             temp_files: TempReport {
                 files: totals.temp.files,

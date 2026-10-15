@@ -88,6 +88,20 @@ pub struct Correlation {
     pub timing_only: bool,
 }
 
+/// One statement making another wait for a lock, as the correlation stage works it out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockPair {
+    /// The statement the holding backend was running, or had last run when it was idle in its
+    /// transaction; `None` when the log shows nothing of that backend.
+    pub blocker: Option<String>,
+    /// The holding backend's process id.
+    pub blocker_pid: u32,
+    /// The statement that had to wait, when the log line names it.
+    pub waiter: Option<String>,
+    /// How long it had waited when the log said so.
+    pub waited_ms: f64,
+}
+
 /// One log entry. Optional fields are `None` when the format or the prefix does not carry them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LogRecord {
@@ -141,6 +155,9 @@ pub struct LogRecord {
     /// Filled in by the correlation stage; not part of the log.
     #[serde(skip)]
     pub correlation: Option<Correlation>,
+    /// Lock waits this record settles: its statement, or an earlier one, was holding the lock.
+    #[serde(skip)]
+    pub blocks: Vec<BlockPair>,
 }
 
 impl LogRecord {
@@ -174,6 +191,7 @@ impl LogRecord {
             statement: None,
             cursor_position: None,
             correlation: None,
+            blocks: Vec::new(),
         }
     }
 }

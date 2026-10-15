@@ -42,6 +42,12 @@ pub fn scrub(text: &str) -> String {
     IPV4.replace_all(&text, "?.?.?.?").into_owned()
 }
 
+/// Scrubs the statements of a lock wait.
+pub fn scrub_pair(pair: &mut crate::log::BlockPair) {
+    pair.blocker = pair.blocker.take().map(|s| scrub(&s));
+    pair.waiter = pair.waiter.take().map(|s| scrub(&s));
+}
+
 /// Rewrites records in place.
 #[derive(Debug, Clone)]
 pub struct Anonymizer {
@@ -86,6 +92,12 @@ impl Anonymizer {
             }
         }
         record.message = self.text(&record.message);
+        if let Some(c) = &mut record.correlation {
+            c.sql = scrub(&c.sql);
+        }
+        for pair in &mut record.blocks {
+            scrub_pair(pair);
+        }
         for field in [
             &mut record.detail,
             &mut record.hint,

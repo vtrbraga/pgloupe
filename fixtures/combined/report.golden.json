@@ -305,6 +305,7 @@
     ],
     "locks": {
       "acquired": 0,
+      "blockers": [],
       "deadlocks": 0,
       "max_wait_ms": 0.0,
       "total_wait_ms": 0.0,

@@ -584,3 +584,44 @@ fn time_of_day_weekday_pid_and_name_filters_narrow_the_analysis() -> io::Result<
     assert!(!bad.status.success());
     Ok(())
 }
+
+#[test]
+fn lock_waits_name_the_statement_that_held_the_lock() -> io::Result<()> {
+    let out = analyze(
+        &["--prefix", "%m [%p] %q%u@%d/%a ", "--output", "json"],
+        &[fixtures().join("logs/blockers.log")],
+    )?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    let blockers = report["locks"]["blockers"].as_array().expect("blockers");
+    let pair = |holder: &str, waiter: &str| {
+        blockers.iter().find(|b| {
+            b["blocker_text"].as_str().unwrap_or("").contains(holder)
+                && b["waiter_text"].as_str().unwrap_or("").contains(waiter)
+        })
+    };
+    // Idle in its transaction: the holder is the last statement it ran, not the COMMIT.
+    let idle = pair("balance - $1", "balance + $1").expect("idle holder");
+    assert_eq!(idle["count"], 1);
+    assert_eq!(idle["max_wait_ms"], 200.1);
+    // One long statement: the holder is the statement that was running, not the BEGIN before.
+    assert!(pair("WHERE batch", "ALTER TABLE").is_some(), "{blockers:?}");
+    // A holder the log never shows is reported as such.
+    let unknown = blockers
+        .iter()
+        .find(|b| b["blocker"].is_null())
+        .expect("unknown holder");
+    assert!(
+        unknown["waiter_text"]
+            .as_str()
+            .unwrap_or("")
+            .contains("DELETE")
+    );
+    assert_eq!(blockers.len(), 3);
+    let text = stdout(&analyze(
+        &["--prefix", "%m [%p] %q%u@%d/%a "],
+        &[fixtures().join("logs/blockers.log")],
+    )?);
+    assert!(text.contains("who blocks whom"), "{text}");
+    Ok(())
+}

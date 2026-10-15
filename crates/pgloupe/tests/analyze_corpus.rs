@@ -378,3 +378,32 @@ fn application_name_patterns_pick_tool_sessions_out_of_the_corpus() -> io::Resul
     assert_eq!(web, ["app-web-1", "app-web-2"]);
     Ok(())
 }
+
+#[test]
+#[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
+fn the_generator_s_lock_waits_name_their_holders() -> io::Result<()> {
+    let path = corpus().join("log").join(reference());
+    let out = pipeline::run(std::slice::from_ref(&path), &Options::new()).map_err(io_err)?;
+    let report = pgloupe::analyze::report::Report::build(
+        &out,
+        &pgloupe::analyze::report::ReportOptions {
+            by: pgloupe::analyze::report::SortBy::Total,
+            top: 1,
+        },
+    );
+    let pairs = &report.locks.blockers;
+    // lock_wait: three updates held by an open transaction's UPDATE; phases: two statements held
+    // up by LOCK TABLE.
+    let update = pairs
+        .iter()
+        .find(|b| b.blocker_text.starts_with("UPDATE film SET rental_rate"))
+        .expect("the updating holder");
+    assert_eq!(update.count, 3);
+    let lock_table: u64 = pairs
+        .iter()
+        .filter(|b| b.blocker_text.starts_with("LOCK TABLE synth_phase"))
+        .map(|b| b.count)
+        .sum();
+    assert_eq!(lock_table, 2);
+    Ok(())
+}
