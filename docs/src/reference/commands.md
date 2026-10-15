@@ -565,6 +565,12 @@ Options:
       --after-info <AFTER_INFO>
           `pg_stat_statements_info` CSV taken with the newer snapshot
 
+      --before-db <BEFORE_DB>
+          `pg_stat_database` CSV taken with the older snapshot; found beside it when it is named `pg_stat_database_<time>.csv`
+
+      --after-db <AFTER_DB>
+          `pg_stat_database` CSV taken with the newer snapshot
+
       --format <FORMAT>
           Log format of `FILES`; `auto` looks at each file's first line
 

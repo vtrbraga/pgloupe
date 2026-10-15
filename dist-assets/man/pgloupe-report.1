@@ -4,7 +4,7 @@
 .SH NAME
 pgloupe\-report \- One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or text, with the two joined per statement
 .SH SYNOPSIS
-\fBpgloupe report\fR [\fB\-\-store\fR] [\fB\-\-since\fR] [\fB\-\-until\fR] [\fB\-\-before\fR] [\fB\-\-after\fR] [\fB\-\-before\-info\fR] [\fB\-\-after\-info\fR] [\fB\-\-format\fR] [\fB\-\-prefix\fR] [\fB\-\-log\-tz\fR] [\fB\-\-max\-fingerprints\fR] [\fB\-\-threads\fR] [\fB\-\-by\fR] [\fB\-\-top\fR] [\fB\-\-bucket\fR] [\fB\-\-output\fR] [\fB\-\-baseline\fR] [\fB\-\-baseline\-since\fR] [\fB\-\-baseline\-until\fR] [\fB\-\-settings\fR] [\fB\-\-vendor\fR] [\fB\-\-display\-tz\fR] [\fB\-\-out\fR] [\fB\-\-slowest\fR] [\fB\-\-params\fR] [\fB\-\-database\fR] [\fB\-\-user\fR] [\fB\-\-application\fR] [\fB\-\-host\fR] [\fB\-\-exclude\-database\fR] [\fB\-\-exclude\-user\fR] [\fB\-\-exclude\-application\fR] [\fB\-\-exclude\-host\fR] [\fB\-\-include\-query\fR] [\fB\-\-exclude\-query\fR] [\fB\-\-pid\fR] [\fB\-\-exclude\-message\fR] [\fB\-\-between\fR] [\fB\-\-exclude\-hours\fR] [\fB\-\-weekdays\fR] [\fB\-\-tz\fR] [\fB\-\-anonymize\fR] [\fB\-\-anonymize\-key\fR] [\fB\-\-lc\-messages\fR] [\fB\-\-messages\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIFILES\fR] 
+\fBpgloupe report\fR [\fB\-\-store\fR] [\fB\-\-since\fR] [\fB\-\-until\fR] [\fB\-\-before\fR] [\fB\-\-after\fR] [\fB\-\-before\-info\fR] [\fB\-\-after\-info\fR] [\fB\-\-before\-db\fR] [\fB\-\-after\-db\fR] [\fB\-\-format\fR] [\fB\-\-prefix\fR] [\fB\-\-log\-tz\fR] [\fB\-\-max\-fingerprints\fR] [\fB\-\-threads\fR] [\fB\-\-by\fR] [\fB\-\-top\fR] [\fB\-\-bucket\fR] [\fB\-\-output\fR] [\fB\-\-baseline\fR] [\fB\-\-baseline\-since\fR] [\fB\-\-baseline\-until\fR] [\fB\-\-settings\fR] [\fB\-\-vendor\fR] [\fB\-\-display\-tz\fR] [\fB\-\-out\fR] [\fB\-\-slowest\fR] [\fB\-\-params\fR] [\fB\-\-database\fR] [\fB\-\-user\fR] [\fB\-\-application\fR] [\fB\-\-host\fR] [\fB\-\-exclude\-database\fR] [\fB\-\-exclude\-user\fR] [\fB\-\-exclude\-application\fR] [\fB\-\-exclude\-host\fR] [\fB\-\-include\-query\fR] [\fB\-\-exclude\-query\fR] [\fB\-\-pid\fR] [\fB\-\-exclude\-message\fR] [\fB\-\-between\fR] [\fB\-\-exclude\-hours\fR] [\fB\-\-weekdays\fR] [\fB\-\-tz\fR] [\fB\-\-anonymize\fR] [\fB\-\-anonymize\-key\fR] [\fB\-\-lc\-messages\fR] [\fB\-\-messages\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIFILES\fR] 
 .SH DESCRIPTION
 One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or text, with the two joined per statement
 .SH OPTIONS
@@ -29,6 +29,12 @@ Newer snapshot
 .TP
 \fB\-\-after\-info\fR \fI<AFTER_INFO>\fR
 `pg_stat_statements_info` CSV taken with the newer snapshot
+.TP
+\fB\-\-before\-db\fR \fI<BEFORE_DB>\fR
+`pg_stat_database` CSV taken with the older snapshot; found beside it when it is named `pg_stat_database_<time>.csv`
+.TP
+\fB\-\-after\-db\fR \fI<AFTER_DB>\fR
+`pg_stat_database` CSV taken with the newer snapshot
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: auto]
 Log format of `FILES`; `auto` looks at each file\*(Aqs first line
