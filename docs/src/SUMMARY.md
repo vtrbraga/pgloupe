@@ -23,4 +23,3 @@
 - [Command line](reference/cli.md)
 - [Command reference](reference/commands.md)
 - [Supported versions and formats](reference/formats-and-versions.md)
-- [Compared with pgBadger](reference/comparison.md)

@@ -2,11 +2,11 @@
 .el .ds Aq '
 .TH pgloupe-logs-dump 1  "dump " 
 .SH NAME
-pgloupe\-logs\-dump \- Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON
+pgloupe\-logs\-dump \- Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON
 .SH SYNOPSIS
 \fBpgloupe logs dump\fR [\fB\-\-format\fR] [\fB\-\-prefix\fR] [\fB\-\-log\-tz\fR] [\fB\-\-limit\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIFILE\fR> 
 .SH DESCRIPTION
-Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON
+Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON
 .SH OPTIONS
 .TP
 \fB\-\-format\fR \fI<FORMAT>\fR [default: auto]

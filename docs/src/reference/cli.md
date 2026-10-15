@@ -21,8 +21,17 @@ Run any command with `--help`. This page lists what exists; `--help` is always c
 - `--between 09:00-18:00`, `--exclude-hours 5-7`, `--weekdays mon-fri`, `--tz Europe/Paris`, `--pid`, `--exclude-message`, `--include-query`, `--exclude-query`.
 - `--since`, `--until` and `--baseline previous` on a store report.
 - `--anonymize` (with `--anonymize-key` or `PGLOUPE_ANONYMIZE_KEY`).
-- `--top N|all`, `--slowest N`, `--params`.
-- `--format`, `--prefix`, `--log-tz`, `--lc-messages`, `--messages-file`, `--threads`.
+- `--top N|all`, `--by total|calls|p95|max`, `--slowest N`, `--params`, `--bucket 30s|1m|1h`.
+- `--format`, `--prefix`, `--log-tz`, `--lc-messages`, `--messages-file`, `--threads`, `--max-fingerprints`.
+
+## Flags that work on `report` only
+
+- `--before`, `--after`, `--before-info`, `--after-info`, `--before-db`, `--after-db`: the two snapshots and the `pg_stat_statements_info` and `pg_stat_database` files taken with them. The `_db` files are found beside the snapshots when `snap` wrote them.
+- `--settings`: `pg_settings` as CSV, picked up from beside `--after` when `snap` wrote it; `--vendor rds` words the advice for RDS.
+- `--display-tz`: show times in an IANA zone in the HTML report (JSON and text stay UTC).
+- `--output text,json,html,csv` and `--out`. `logs analyze`, `logs report` and `stats diff` write text or JSON only.
+
+## Exit codes
 
 ## Exit codes
 
@@ -36,6 +45,6 @@ Run any command with `--help`. This page lists what exists; `--help` is always c
 
 | Variable | Used for |
 |---|---|
-| `PGLOUPE_DSN` | connection string for `snap`, `doctor`, `export`, `watch` |
+| `PGLOUPE_DSN` | connection string for `snap`, `doctor`, `export`, `watch` and `logs fetch --provider sql` |
 | `PGPASSWORD`, `PGSSLMODE`, `PGSSLROOTCERT`, `PGPASSFILE` | the usual libpq meanings |
 | `PGLOUPE_ANONYMIZE_KEY` | the anonymizing key |

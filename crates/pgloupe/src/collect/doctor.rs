@@ -29,7 +29,7 @@ pub struct Facts {
     pub extension_created: bool,
     /// The role may read other roles' query text.
     pub reads_all_stats: bool,
-    /// Entries evicted so far (`pg_stat_statements_info.dealloc`), on 14+.
+    /// Eviction rounds so far (`pg_stat_statements_info.dealloc`), on 14+.
     pub dealloc: Option<i64>,
     /// The connected role.
     pub role: String,
@@ -242,7 +242,7 @@ pub fn checks(facts: &Facts, vendor: Option<&str>) -> Vec<Check> {
         found.push(check(
             "pgss_evictions",
             "warn",
-            format!("pg_stat_statements has evicted {dealloc} entries (pg_stat_statements.max = {max}): rarely run statements are missing from the statistics. Raise pg_stat_statements.max (needs a restart)."),
+            format!("pg_stat_statements has run {dealloc} eviction rounds (pg_stat_statements.max = {max}): rarely run statements are missing from the statistics. Raise pg_stat_statements.max (needs a restart)."),
         ));
     }
     found

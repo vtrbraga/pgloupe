@@ -342,7 +342,7 @@ fn prefix_rule(logs: &Report, place: &Place, found: &mut Vec<Advice>) {
         .unwrap_or_default();
     let missing: Vec<&str> = [
         ("%a", "the application"),
-        ("%e", "the SQLSTATE"),
+        ("%e", "SQLSTATE"),
         ("%Q", "the query id"),
     ]
     .iter()

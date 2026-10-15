@@ -12,7 +12,7 @@ Usage: pgloupe <COMMAND>
 Commands:
   stats   Work with `pg_stat_statements` snapshots
   logs    Work with Postgres server logs
-  report  One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or text, with the two joined per statement
+  report  One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON, text or CSV, with the two joined per statement
   snap    Take a `pg_stat_statements` snapshot from a live server (read-only; never resets anything)
   doctor  Check what the server and the role lack for a useful report, and how to fix it
   export  Check the server, take a snapshot and fetch logs into one directory; optionally the report
@@ -108,7 +108,7 @@ Work with Postgres server logs
 Usage: pgloupe logs <COMMAND>
 
 Commands:
-  dump     Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON
+  dump     Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON
   analyze  Summarize one or more logs: statements with percentiles, errors, locks, temp files, connections, checkpoints and autovacuum
   ingest   Add logs to a store; files already ingested are skipped and grown ones replace their old version
   report   Report on a time window of a store
@@ -123,7 +123,7 @@ Options:
 ## `pgloupe logs dump`
 
 ```text
-Decode a log (csvlog, jsonlog or stderr; plain or gzip) and print each record as JSON
+Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON
 
 Usage: pgloupe logs dump [OPTIONS] <FILE>
 
@@ -535,7 +535,7 @@ Options:
 ## `pgloupe report`
 
 ```text
-One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON or text, with the two joined per statement
+One report from logs and, optionally, two `pg_stat_statements` snapshots: HTML, JSON, text or CSV, with the two joined per statement
 
 Usage: pgloupe report [OPTIONS] [FILES]...
 

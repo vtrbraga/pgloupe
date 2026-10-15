@@ -11,11 +11,16 @@ Point it at a server's log files and, if you have them, two `pg_stat_statements`
 ## Why this one
 
 - **One file in, one file out.** No agent, no extension, no database to host. The HTML report is a single file that makes no network requests; JSON, text and CSV come from the same run.
-- **Logs and statistics together.** The log shows what happened (errors, locks, slow runs); `pg_stat_statements` counts everything the log never saw. pgloupe joins them per statement and says when they disagree.
+- **Logs and statistics together.** The log shows what happened (errors, locks, slow runs); `pg_stat_statements` counts everything the log never saw, and `pg_stat_database` says how loaded the server was. pgloupe joins them per statement and says when they disagree.
+- **One row per statement.** Statements are grouped by their parse tree, so the same query with different literals is one row, and percentiles are per statement.
 - **Works on managed Postgres.** It only needs `pg_stat_statements`, which Amazon RDS, Cloud SQL, Azure and Aiven already have. It can fetch RDS logs itself.
 - **Tells you why a number is odd.** Resets, evictions, windows that do not match, unreadable query text, logs without durations: each becomes a plain sentence, not a silent zero.
-- **Fast.** On one thread, about 27 times faster than pgBadger on the same 60 MB log, and it uses more cores when it has them.
+- **Fast.** On an 11 GB set of generated PostgreSQL 17 logs it read about 141 MB/s on one thread using about 44 MiB of memory, and about 187 MB/s on 16 threads (452 MiB). Throughput and memory stayed flat from 0.5 GB to 11 GB; memory depends on the number of distinct statements (625 there), not on log size. Figures vary by hardware.
 - **Safe to share.** `--anonymize` rewrites names and literals before anything is counted.
+
+![The Statements view of a pgloupe report](https://raw.githubusercontent.com/vtrbraga/pgloupe/main/assets/dashboard-statements.png)
+
+<sub>The Statements view over the same generated test server.</sub>
 
 ## Try it
 
