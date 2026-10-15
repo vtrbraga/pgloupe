@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::{
     analyze::report::Report,
     collect::doctor::{Facts, checks},
-    stats::delta::Delta,
+    stats::delta::{Delta, Reset},
 };
 
 /// One setting worth changing, and why.
@@ -296,18 +296,32 @@ fn statistics_rules(delta: &Delta, place: &Place, found: &mut Vec<Advice>) {
     } else {
         "it needs a restart"
     };
-    if let Some(evicted) = delta.evictions.filter(|e| *e > 0) {
+    if let Some(rounds) = delta.evictions.filter(|e| *e > 0) {
+        let about = delta
+            .evicted_estimate
+            .map_or_else(String::new, |n| format!(" (about {n} entries)"));
+        let cause = match delta.utility_churn_pct.filter(|p| *p >= 50) {
+            Some(pct) => format!(
+                "{pct}% of the entries that appeared or vanished are utility statements (CREATE, DROP, COPY, ANALYZE and the like), often on object names that differ each time. Set pg_stat_statements.track_utility = off in {} (no {} needed) before raising pg_stat_statements.max: a bigger table only delays the churn.",
+                place.home,
+                if place.rds { "reboot" } else { "restart" }
+            ),
+            None => format!(
+                "The table holds {} entries. Raise pg_stat_statements.max in {} ({restart}) above the number of distinct statements you want to keep.",
+                c.entries, place.home
+            ),
+        };
         push(
             found,
             "pgss_evictions",
             "warn",
             format!(
-                "{evicted} entries were evicted from pg_stat_statements during the window, so the least used statements are incomplete. Raise pg_stat_statements.max in {} ({restart}) to comfortably above the {} distinct statements seen.",
-                place.home, c.entries
+                "pg_stat_statements evicted entries in {rounds} rounds{about} during the window, so the least used statements are incomplete. {cause}"
             ),
         );
     }
-    if c.entries > 100 && (c.new + c.gone) >= c.entries {
+    // After a reset every entry is new by definition; only churn without one is news.
+    if c.entries > 100 && (c.new + c.gone) >= c.entries && delta.reset == Reset::None {
         push(
             found,
             "pgss_churn",
@@ -436,6 +450,74 @@ mod tests {
         let codes: Vec<&str> = advise(&input).iter().map(|a| a.code).collect();
         assert!(codes.contains(&"no_statement_timings"), "{codes:?}");
         assert!(codes.contains(&"no_sessions"), "{codes:?}");
+    }
+
+    fn input_with<'a>(delta: &'a Delta, vendor: Option<&'a str>) -> Input<'a> {
+        Input {
+            logs: None,
+            delta: Some(delta),
+            settings: None,
+            vendor,
+        }
+    }
+
+    #[test]
+    fn evictions_are_counted_in_rounds_and_blamed_on_utility_statements_when_they_are() {
+        let mut d = crate::combined::testkit::delta(&[(
+            crate::testutil::key(1),
+            Some("SELECT 1"),
+            10,
+            1.0,
+        )]);
+        d.evictions = Some(1_251);
+        d.evicted_estimate = Some(312_750);
+        d.utility_churn_pct = Some(76);
+        let advice = advise(&input_with(&d, Some("rds")));
+        let e = advice.iter().find(|a| a.code == "pgss_evictions").unwrap();
+        assert!(e.message.contains("1251 rounds"), "{}", e.message);
+        assert!(e.message.contains("312750 entries"), "{}", e.message);
+        assert!(e.message.contains("track_utility = off"), "{}", e.message);
+        assert!(e.message.contains("DB parameter group"), "{}", e.message);
+        assert!(
+            !e.message.contains("Raise pg_stat_statements.max"),
+            "{}",
+            e.message
+        );
+
+        d.utility_churn_pct = Some(10);
+        let advice = advise(&input_with(&d, None));
+        let e = advice.iter().find(|a| a.code == "pgss_evictions").unwrap();
+        assert!(
+            e.message.contains("Raise pg_stat_statements.max"),
+            "{}",
+            e.message
+        );
+        assert!(!e.message.contains("track_utility"), "{}", e.message);
+    }
+
+    #[test]
+    fn churn_after_a_proven_reset_is_not_news() {
+        let mut d = crate::combined::testkit::delta(&[(
+            crate::testutil::key(1),
+            Some("SELECT 1"),
+            10,
+            1.0,
+        )]);
+        d.counts.entries = 476;
+        d.counts.new = 476;
+        d.counts.gone = 0;
+        d.reset = Reset::Proven;
+        let codes: Vec<&str> = advise(&input_with(&d, None))
+            .iter()
+            .map(|a| a.code)
+            .collect();
+        assert!(!codes.contains(&"pgss_churn"), "{codes:?}");
+        d.reset = Reset::None;
+        let codes: Vec<&str> = advise(&input_with(&d, None))
+            .iter()
+            .map(|a| a.code)
+            .collect();
+        assert!(codes.contains(&"pgss_churn"), "{codes:?}");
     }
 
     #[test]

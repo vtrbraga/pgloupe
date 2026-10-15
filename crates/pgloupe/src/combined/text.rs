@@ -127,9 +127,11 @@ fn stats_line(report: &CombinedReport) -> String {
     let Some(input) = &report.inputs.stats else {
         return "none".to_owned();
     };
-    let evictions = input
-        .evictions
-        .map_or_else(|| "unknown".to_owned(), |n| n.to_string());
+    let evictions = match (input.evictions, input.evicted_estimate) {
+        (Some(rounds), Some(about)) => format!("{rounds} rounds (about {about} entries)"),
+        (Some(rounds), None) => format!("{rounds} rounds"),
+        _ => "unknown".to_owned(),
+    };
     format!(
         "{} -> {} (server {}), reset {}, evictions {evictions}",
         input.before_at,

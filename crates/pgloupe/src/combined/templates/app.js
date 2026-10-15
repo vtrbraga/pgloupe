@@ -268,7 +268,7 @@
     var facts = [
       ['Server', 'PostgreSQL ' + Math.floor(stats.server_version_num / 10000)],
       ['Counters reset', stats.reset],
-      ['Evictions', stats.evictions === null || stats.evictions === undefined ? 'unknown' : L.fmtInt(stats.evictions)],
+      ['Evictions', stats.evictions === null || stats.evictions === undefined ? 'unknown' : L.fmtInt(stats.evictions) + ' rounds' + (stats.evicted_estimate ? ' (about ' + L.fmtInt(stats.evicted_estimate) + ' entries)' : '')],
       ['Entries', L.fmtInt(c.entries)], ['New', L.fmtInt(c['new'])], ['Gone', L.fmtInt(c.gone)], ['Restarted', L.fmtInt(c.restarted)]
     ];
     return panel('pg_stat_statements window', h('dl', { 'class': 'facts' }, facts.map(function (f) { return h('div', null, [h('dt', { text: f[0] }), h('dd', { text: String(f[1]) })]); })));

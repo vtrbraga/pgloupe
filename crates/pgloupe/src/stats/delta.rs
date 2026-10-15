@@ -100,8 +100,16 @@ pub struct Delta {
     pub reset: Reset,
     /// The `stats_reset` time when the reset is proven.
     pub reset_at: Option<Timestamp>,
-    /// Entries evicted in the window; `None` without info files.
+    /// Eviction rounds in the window (the `dealloc` counter); `None` without info files. Each
+    /// round removes about 5% of `pg_stat_statements.max` (at least 10 entries), so this is not
+    /// a count of entries.
     pub evictions: Option<u64>,
+    /// About how many entries the rounds removed. The table is full when it evicts, so its size
+    /// in the `after` snapshot stands in for `pg_stat_statements.max`.
+    pub evicted_estimate: Option<u64>,
+    /// Share (percent) of the entries that appeared or vanished that are utility statements
+    /// (`CREATE`, `COPY`, `ANALYZE`, ...), which often carry a different object name each time.
+    pub utility_churn_pct: Option<u32>,
     /// A reset would go unnoticed: no info files, no `stats_since`, and none detected.
     pub blind_spot: bool,
     pub counts: Counts,
@@ -141,6 +149,9 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Result<Delta, DeltaError> {
         .collect();
     fill_shares(&mut rows);
     let counts = count(before, after, &rows);
+    let evicted_estimate =
+        evictions.map(|rounds| rounds.saturating_mul(round_size(after.entries.len())));
+    let utility_churn_pct = utility_churn(before, &rows);
     Ok(Delta {
         before_at: before.taken_at,
         after_at: after.taken_at,
@@ -148,6 +159,8 @@ pub fn diff(before: &Snapshot, after: &Snapshot) -> Result<Delta, DeltaError> {
         reset,
         reset_at,
         evictions,
+        evicted_estimate,
+        utility_churn_pct,
         blind_spot,
         counts,
         rows,
@@ -323,6 +336,78 @@ fn count_evictions(infos: Option<(Info, Info)>, reset: Reset) -> Option<u64> {
     })
 }
 
+/// Entries one eviction round removes: 5% of the table, at least 10.
+fn round_size(entries: usize) -> u64 {
+    u64::try_from(entries / 20).unwrap_or(u64::MAX).max(10)
+}
+
+/// Whether `query` is a utility statement: the kind `pg_stat_statements.track_utility` governs.
+fn is_utility(query: &str) -> bool {
+    const WORDS: &[&str] = &[
+        "create",
+        "drop",
+        "alter",
+        "copy",
+        "analyze",
+        "vacuum",
+        "declare",
+        "fetch",
+        "close",
+        "begin",
+        "commit",
+        "rollback",
+        "savepoint",
+        "release",
+        "set",
+        "reset",
+        "show",
+        "explain",
+        "lock",
+        "grant",
+        "revoke",
+        "truncate",
+        "listen",
+        "notify",
+        "unlisten",
+        "discard",
+        "deallocate",
+        "prepare",
+        "reindex",
+        "cluster",
+        "comment",
+        "start",
+        "end",
+        "abort",
+    ];
+    let word = query
+        .trim_start()
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    WORDS.contains(&word.as_str())
+}
+
+/// Percent of new and vanished entries that are utility statements, if there are any.
+fn utility_churn(before: &Snapshot, rows: &[Row]) -> Option<u32> {
+    let after_keys: std::collections::HashSet<&Key> = rows.iter().map(|r| &r.key).collect();
+    let mut total = 0_u64;
+    let mut utility = 0_u64;
+    let mut tally = |query: Option<&str>| {
+        total += 1;
+        utility += u64::from(query.is_some_and(is_utility));
+    };
+    for row in rows.iter().filter(|r| r.status == Status::New) {
+        tally(row.query.as_deref());
+    }
+    for (key, entry) in &before.entries {
+        if !after_keys.contains(key) {
+            tally(entry.query.as_deref());
+        }
+    }
+    (total > 0).then(|| u32::try_from(utility * 100 / total).unwrap_or(100))
+}
+
 /// A reset can be seen with info files, or when every shared entry carries `stats_since`.
 fn can_detect_reset(infos: Option<(Info, Info)>, pairs: &[Paired<'_>]) -> bool {
     if infos.is_some() {
@@ -410,6 +495,16 @@ pub(crate) fn to_f64(n: u64) -> f64 {
 mod tests {
     use super::*;
     use crate::testutil::{approx_eq, entry, entry_since, info, snap, ts};
+
+    #[test]
+    fn eviction_rounds_are_turned_into_an_estimate_of_entries() {
+        assert_eq!(round_size(5_000), 250);
+        assert_eq!(round_size(100), 10);
+        assert!(is_utility("  CREATE TEMP TABLE t (x int)"));
+        assert!(is_utility("copy foo from stdin"));
+        assert!(!is_utility("SELECT 1"));
+        assert!(!is_utility("insert into t values ($1)"));
+    }
 
     const T0: &str = "2026-10-14 10:00:00+00";
     const T1: &str = "2026-10-14 10:10:00+00";

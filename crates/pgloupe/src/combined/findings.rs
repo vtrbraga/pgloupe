@@ -181,14 +181,17 @@ fn stats_rules(delta: &Delta, found: &mut Vec<Finding>) {
             ),
         ));
     }
-    if let Some(evicted) = delta.evictions
-        && evicted > 0
+    if let Some(rounds) = delta.evictions
+        && rounds > 0
     {
+        let about = delta
+            .evicted_estimate
+            .map_or_else(String::new, |n| format!(" (about {n} entries)"));
         found.push(finding(
             "stats_evictions",
             "warn",
             format!(
-                "{evicted} entries were evicted from pg_stat_statements during the window, so the least used statements are incomplete; raise pg_stat_statements.max"
+                "pg_stat_statements evicted entries in {rounds} rounds{about} during the window, so the least used statements are incomplete; see the Settings view for the cause and the setting to change"
             ),
         ));
     }
@@ -417,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn evictions_say_what_to_raise() {
+    fn evictions_are_counted_in_rounds_and_estimated_in_entries() {
         let d = delta_with_info(
             &[(key(1), Some(FILM), 10, 100.0)],
             Some((
@@ -427,7 +430,11 @@ mod tests {
         );
         let found = run(Some(&d), Vec::new(), None);
         let f = found.iter().find(|f| f.code == "stats_evictions").unwrap();
-        assert!(f.message.contains("pg_stat_statements.max") && f.message.contains('7'));
+        assert!(
+            f.message.contains("7 rounds") && f.message.contains("entries"),
+            "{}",
+            f.message
+        );
     }
 
     #[test]
