@@ -276,7 +276,16 @@ var PgLib = (function () {
     return Math.max(0, Math.min(1, p));
   }
 
+  /** A selection of `[from, to]` over `length` buckets as an ordered, in-bounds pair; `null` if none of it is in bounds. */
+  function clampRange(from, to, length) {
+    if (!isNum(from) || !isNum(to) || !(length > 0)) { return null; }
+    var a = Math.min(from, to), b = Math.max(from, to), last = length - 1;
+    if (a > last || b < 0) { return null; }
+    return { from: Math.max(0, a), to: Math.min(b, last) };
+  }
+
   var api = {
+    clampRange: clampRange,
     fmtInt: fmtInt, fmtMs: fmtMs, fmtBytes: fmtBytes, fmtPct: fmtPct, fmtCoverage: fmtCoverage, fmtCompact: fmtCompact,
     shortFp: shortFp, fmtTime: fmtTime, compareValues: compareValues, sortRows: sortRows,
     filterStatements: filterStatements, column: column, downsample: downsample, sumRange: sumRange,

@@ -12,7 +12,7 @@
   var stats = D.inputs && D.inputs.stats;
   var rows = D.statements || [];
   var findings = D.findings || [];
-  var byFp = {};
+  var byFp = Object.create(null);
   rows.forEach(function (r) { byFp[r.fingerprint] = r; });
 
   var SERIES = [
@@ -145,6 +145,8 @@
     if (D.windows && D.windows.logs) { subs.push(h('span', { text: 'Logs ' + L.fmtTime(D.windows.logs.from, true) + ' → ' + L.fmtTime(D.windows.logs.to, true) })); }
     if (D.windows && D.windows.stats) { subs.push(h('span', { text: 'Statistics ' + L.fmtTime(D.windows.stats.from, true) + ' → ' + L.fmtTime(D.windows.stats.to, true) })); }
     if (D.windows && D.windows.overlap_pct !== null && D.windows.overlap_pct !== undefined) { subs.push(h('span', { text: 'overlap ' + Math.round(D.windows.overlap_pct) + '%' })); }
+    var filtered = logs && logs.diagnostics ? logs.diagnostics.filtered : 0;
+    if (filtered) { subs.push(badge('filtered: ' + L.fmtInt(filtered) + ' records dropped', 'warn')); }
     var themeName = theme() || 'auto';
     var top = h('div', { 'class': 'topbar' }, [
       h('div', null, [h('h1', { text: (sections.filter(function (s) { return s.id === state.s; })[0] || sections[0]).label }), h('div', { 'class': 'sub' }, subs)]),
@@ -166,10 +168,11 @@
     var blob = new Blob([rawJson], { type: 'application/json' });
     var a = h('a', { href: URL.createObjectURL(blob), download: 'pgloupe-report.json' });
     document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
   }
 
   /* ---------- overview ---------- */
-  function rangeNow() { return state.from !== null && state.to !== null && display.length ? { from: state.from, to: Math.min(state.to, display.length - 1) } : null; }
+  function rangeNow() { return L.clampRange(state.from, state.to, display.length); }
   function viewOverview() {
     var parts = [];
     var range = rangeNow();
@@ -195,8 +198,21 @@
       parts.push(timelinePanel());
       parts.push(h('div', { 'class': 'grid cols-2' }, [kindsPanel(), histogramPanel('Statement durations', logs.histograms.statements, 'var(--c-statements)', logs.overview.records)]));
     }
+    if (logs) { parts.push(diagnosticsPanel()); }
     if (!logs && !stats) { parts.push(emptyNote('Nothing to show.')); }
     return parts;
+  }
+  function diagnosticsPanel() {
+    var d = logs.diagnostics;
+    var body = [facts([['Lines', L.fmtInt(d.lines)], ['Records', L.fmtInt(d.records)], ['Skipped', L.fmtInt(d.skipped)], ['Unparsed statements', L.fmtInt(d.unparsed_statements)], ['Filtered out', L.fmtInt(d.filtered)]])];
+    if (d.filtered) { body.push(h('div', { 'class': 'findings' }, h('div', { 'class': 'finding warn' }, [h('span', { 'class': 'dot' }), h('div', { text: 'Filtered out ' + L.fmtInt(d.filtered) + ' records: this report covers only what the filters kept.' })]))); }
+    (d.warnings || []).forEach(function (w) { body.push(h('p', { 'class': 'muted', text: w })); });
+    if ((d.unmatched_shapes || []).length) {
+      body.push(h('p', { 'class': 'muted', text: 'Most common lines that could not be decoded:' }));
+      d.unmatched_shapes.forEach(function (sh) { body.push(h('div', null, [L.fmtInt(sh.count) + '\u00d7 ', h('code', { text: sh.shape }), ' (first at line ' + sh.first_line + ')'])); });
+    }
+    body.push(h('p', { 'class': 'muted', text: 'Files: ' + (logs.files || []).map(function (f) { return f.path + ' (' + f.format + ', ' + L.fmtBytes(f.bytes) + ')'; }).join('; ') }));
+    return panel('Diagnostics', h('div', { 'class': 'grid' }, body));
   }
   function reasonsText(c) { return c.by_reason.map(function (r) { return r.reason.replace('_', ' ') + ' ' + r.count; }).join(', '); }
   function statsPanel() {
@@ -282,7 +298,13 @@
     { key: 'share', label: 'Share', num: true, cell: function (r) { return L.fmtPct(L.column(r, 'share')); } },
     { key: 'errors', label: 'Errors', num: true, cell: function (r) { var e = L.column(r, 'errors'); return e === null ? '—' : L.fmtInt(e); } }
   ];
-  var hiddenCols = (function () { try { return JSON.parse(store('pgloupe.cols') || 'null') || ['max', 'errors']; } catch (e) { return ['max', 'errors']; } })();
+  var hiddenCols = (function () {
+    var fallback = ['max', 'errors'];
+    try {
+      var saved = JSON.parse(store('pgloupe.cols') || 'null');
+      return Array.isArray(saved) ? saved.filter(function (k) { return typeof k === 'string'; }) : fallback;
+    } catch (e) { return fallback; }
+  })();
   var PAGE = 100;
 
   function viewStatements() {
@@ -402,7 +424,7 @@
 
   /* ---------- drawer ---------- */
   var scrim = h('div', { 'class': 'scrim', onclick: function () { setState({ fp: '' }); } });
-  var drawerNode = h('aside', { 'class': 'drawer', role: 'dialog', 'aria-label': 'Statement details', 'aria-hidden': 'true' });
+  var drawerNode = h('aside', { 'class': 'drawer', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Statement details', 'aria-hidden': 'true' });
   function drawer() {
     var row = state.fp ? byFp[state.fp] : null;
     C.clear(drawerNode);
@@ -602,6 +624,16 @@
   }
 
   document.addEventListener('keydown', function (event) {
+    if (event.key === 'Tab' && state.fp && drawerNode.classList.contains('open')) {
+      var items = drawerNode.querySelectorAll('button, [href], input, [tabindex]:not([tabindex="-1"])');
+      if (items.length) {
+        var first = items[0], last = items[items.length - 1];
+        if (!drawerNode.contains(document.activeElement)) { event.preventDefault(); first.focus(); }
+        else if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+      }
+      return;
+    }
     var tag = (event.target && event.target.tagName) || '';
     var typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
     if (event.key === 'Escape') {
@@ -615,8 +647,9 @@
       if (state.s !== 'statements') { setState({ s: 'statements' }); }
       setTimeout(function () { var s = document.getElementById('stmt-search'); if (s) { s.focus(); s.select(); } }, 0);
     } else if (event.key === 'j' || event.key === 'k') {
-      if (state.s === 'statements' && viewHooks.statements) { viewHooks.statements.move(event.key === 'j' ? 1 : -1); }
+      if (state.s === 'statements' && viewHooks.statements && !state.fp) { viewHooks.statements.move(event.key === 'j' ? 1 : -1); }
     } else if (event.key === 'Enter') {
+      if (tag === 'BUTTON' || tag === 'A') { return; }
       if (state.s === 'statements' && viewHooks.statements && !state.fp) { viewHooks.statements.open(); }
     } else if (/^[1-9]$/.test(event.key)) {
       var target = sections[Number(event.key) - 1];
@@ -630,6 +663,8 @@
   });
   window.addEventListener('hashchange', function () { state = L.parseHash(location.hash); if (!sections.some(function (s) { return s.id === state.s; })) { state.s = 'overview'; } render(); });
 
+  window.addEventListener('beforeprint', function () { document.documentElement.classList.remove('app'); });
+  window.addEventListener('afterprint', function () { document.documentElement.classList.add('app'); });
   document.documentElement.classList.add('app');
   applyTheme();
   document.body.appendChild(scrim);

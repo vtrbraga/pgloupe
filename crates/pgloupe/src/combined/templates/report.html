@@ -55,21 +55,21 @@
 <th class="num">share</th><th class="num">errors</th><th>statement</th>
 </tr></thead>
 <tbody>
-{% for row in report.statements %}
+{% for row in report.statements[:static_limit] %}
 {% set total = row.stats.total_exec_ms if row.stats else (row.log.total_ms if row.log else none) %}
 {% set mean = row.stats.mean_ms if row.stats else (row.log.mean_ms if row.log else none) %}
 {% set share = row.stats.share_pct if row.stats else (row.log.share_pct if row.log else none) %}
-<tr data-text="{{ row.text|lower }}">
+<tr>
 <td><span class="link {{ row.link }}">{{ row.link }}</span></td>
-<td class="num" data-v="{{ row.log.calls if row.log else '' }}">{% if row.log %}{{ row.log.calls|n }}{% else %}—{% endif %}</td>
-<td class="num" data-v="{{ row.stats.calls if row.stats else '' }}">{% if row.stats %}{{ row.stats.calls|n }}{% else %}—{% endif %}</td>
-<td class="num" data-v="{{ row.coverage if row.coverage is not none else '' }}">{{ row.coverage|coverage }}</td>
-<td class="num" data-v="{{ total if total is not none else '' }}">{{ total|ms }}</td>
-<td class="num" data-v="{{ mean if mean is not none else '' }}">{{ mean|ms }}</td>
-<td class="num" data-v="{{ row.log.p95_ms if row.log and row.log.p95_ms is not none else '' }}">{{ (row.log.p95_ms if row.log else none)|ms }}</td>
-<td class="num" data-v="{{ row.log.max_ms if row.log and row.log.max_ms is not none else '' }}">{{ (row.log.max_ms if row.log else none)|ms }}</td>
-<td class="num" data-v="{{ share if share is not none else '' }}">{{ share|pct }}</td>
-<td class="num" data-v="{{ row.log.errors if row.log else '' }}">{% if row.log %}{{ row.log.errors|int }}{% else %}—{% endif %}</td>
+<td class="num">{% if row.log %}{{ row.log.calls|n }}{% else %}—{% endif %}</td>
+<td class="num">{% if row.stats %}{{ row.stats.calls|n }}{% else %}—{% endif %}</td>
+<td class="num">{{ row.coverage|coverage }}</td>
+<td class="num">{{ total|ms }}</td>
+<td class="num">{{ mean|ms }}</td>
+<td class="num">{{ (row.log.p95_ms if row.log else none)|ms }}</td>
+<td class="num">{{ (row.log.max_ms if row.log else none)|ms }}</td>
+<td class="num">{{ share|pct }}</td>
+<td class="num">{% if row.log %}{{ row.log.errors|int }}{% else %}—{% endif %}</td>
 <td><details><summary><code>{{ row.text|cut(110) }}</code></summary>
 <pre>{{ row.text }}</pre>
 <div>fingerprint <code>{{ row.fingerprint|short }}</code>{% if row.stats %} · {{ row.stats.entries }} statistics entr{% if row.stats.entries == 1 %}y{% else %}ies{% endif %}, queryid {% for q in row.stats.queryids %}<code>{{ q }}</code> {% endfor %}{% if row.stats.queryid_count > row.stats.queryids|length %}(+{{ row.stats.queryid_count - row.stats.queryids|length }} more){% endif %}{% endif %}{% if row.query_id_matches is not none %} · logged query_id {% if row.query_id_matches %}matches{% else %}does not match{% endif %}{% endif %}</div>
@@ -80,6 +80,7 @@
 {% endfor %}
 </tbody>
 </table>
+{% if report.statements|length > static_limit %}<p class="none">This view lists the first {{ static_limit }} of {{ report.statements|length }} statements; the dashboard and the embedded JSON have them all.</p>{% endif %}
 {% else %}
 <p class="none">No statements.</p>
 {% endif %}

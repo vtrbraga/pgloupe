@@ -24,6 +24,8 @@ const JS: &str = concat!(
 );
 /// Bars in the timeline chart; longer timelines are merged into this many.
 const MAX_BARS: usize = 240;
+/// Statements listed in the server-rendered view; the dashboard and the JSON hold all of them.
+const STATIC_STATEMENTS: usize = 500;
 
 /// Why the HTML could not be produced.
 #[derive(Debug, Error)]
@@ -64,6 +66,7 @@ pub fn html(report: &CombinedReport) -> Result<String, HtmlError> {
     );
     let page = env.get_template("report.html")?.render(context! {
         report => Value::from(Serde(report)),
+        static_limit => STATIC_STATEMENTS,
         hist_statements => Value::from(Serde(&hist_statements)),
         hist_sessions => Value::from(Serde(&hist_sessions)),
         css => Value::from_safe_string(CSS.to_owned()),
@@ -292,6 +295,19 @@ mod tests {
         ] {
             assert!(!page.contains(forbidden), "the page uses {forbidden}");
         }
+    }
+
+    #[test]
+    fn the_static_view_lists_a_bounded_number_of_statements() {
+        let mut report = fixture_report(SortBy::Total, 20, true, true);
+        let row = report.statements[0].clone();
+        report.statements = vec![row; STATIC_STATEMENTS + 50];
+        let page = html(&report).unwrap();
+        assert!(
+            page.matches("<details>").count() <= STATIC_STATEMENTS,
+            "the static table is bounded"
+        );
+        assert!(page.contains("lists the first 500 of 550 statements"));
     }
 
     #[test]

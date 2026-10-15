@@ -121,3 +121,12 @@ test('log positions stay inside the scale', () => {
   assert.equal(L.logPosition(1000, 1, 100), 1);
   assert.equal(L.logPosition(5, 5, 5), 0);
 });
+
+test('a selection is ordered and kept inside the buckets', () => {
+  assert.deepEqual(L.clampRange(2, 5, 10), { from: 2, to: 5 });
+  assert.deepEqual(L.clampRange(5, 2, 10), { from: 2, to: 5 });
+  assert.deepEqual(L.clampRange(8, 99, 10), { from: 8, to: 9 });
+  assert.equal(L.clampRange(500, 600, 10), null);
+  assert.equal(L.clampRange(null, 3, 10), null);
+  assert.equal(L.clampRange(0, 3, 0), null);
+});

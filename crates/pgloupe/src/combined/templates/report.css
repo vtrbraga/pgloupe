@@ -13,12 +13,12 @@ html:not(.app) .findings{list-style:none;margin:0;padding:0}html:not(.app) .find
 html:not(.app) .finding.warn{background:var(--warnbg);border-color:var(--warn)}html:not(.app) .finding.info{background:var(--infobg);border-color:var(--info)}
 html:not(.app) .finding code{font-weight:600;margin-right:6px}
 html:not(.app) table{border-collapse:collapse;width:100%}html:not(.app) th,html:not(.app) td{padding:4px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-html:not(.app) th{position:sticky;top:0;background:var(--bg);font-weight:600;white-space:nowrap}html:not(.app) th[data-sort]{cursor:pointer}html:not(.app) th[data-sort]:hover{color:var(--accent)}
+html:not(.app) th{position:sticky;top:0;background:var(--bg);font-weight:600;white-space:nowrap}
 html:not(.app) td.num,html:not(.app) th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 html:not(.app) .link{display:inline-block;padding:0 6px;border-radius:10px;font-size:12px;border:1px solid var(--line)}
 html:not(.app) .link.both{background:var(--infobg)}html:not(.app) .link.stats{background:var(--warnbg)}html:not(.app) .link.log{background:var(--card)}
 html:not(.app) summary{cursor:pointer;word-break:break-word}html:not(.app) .flags{color:var(--warn);font-size:12px}
-html:not(.app) .filter{margin:6px 0;padding:4px 8px;width:280px;max-width:100%;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+
 html:not(.app) .none{color:var(--muted)}html:not(.app) svg.timeline{width:100%;height:120px;display:block}html:not(.app) svg .bar{fill:var(--bar)}html:not(.app) svg .err{fill:var(--err)}html:not(.app) svg text{fill:var(--muted);font-size:10px}
 html:not(.app) footer{color:var(--muted);padding:16px;text-align:center;font-size:12px}
-@media print{th{position:static}.filter{display:none}}
+@media print{th{position:static}}

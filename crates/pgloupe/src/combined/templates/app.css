@@ -176,4 +176,4 @@ html.app #app{display:grid;grid-template-columns:232px minmax(0,1fr);min-height:
  .grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.facts{grid-template-columns:1fr}
 }
 @media (prefers-reduced-motion:reduce){.drawer,.scrim{transition:none}}
-@media print{html.app .static,html.app footer.static-footer{display:block}html.app #app{display:none}}
+@media print{.drawer,.scrim,.toast{display:none!important}}
