@@ -1,0 +1,42 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist'
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# Installers to generate for the release
+installers = ["shell", "powershell", "homebrew"]
+# The Homebrew tap that gets the formula
+tap = "vtrbraga/homebrew-tap"
+# Publish the formula to the tap after the GitHub Release is created
+publish-jobs = ["homebrew"]
+# Target platforms to build for. Native builds only: `pg_query` compiles C code.
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+]
+# Archive formats
+unix-archive = ".tar.gz"
+windows-archive = ".zip"
+# A checksum beside every archive, and attestations that tie them to the workflow run
+checksum = "sha256"
+github-attestations = true
+# The installer installs `pgloupe-update` next to the binary; it only runs when asked
+install-updater = true
+# Where the installer puts the binary
+install-path = ["$XDG_BIN_HOME/", "~/.local/bin"]
+# Pull requests only plan; they do not build
+pr-run-mode = "plan"
+# Older glibc on Linux, native arm64 runners, and the libclang `pg_query` needs
+github-build-setup = "build-setup.yml"
+
+[dist.github-custom-runners]
+global = "ubuntu-22.04"
+x86_64-unknown-linux-gnu = "ubuntu-22.04"
+aarch64-unknown-linux-gnu = "ubuntu-22.04-arm"

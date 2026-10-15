@@ -1,0 +1,19 @@
+[book]
+title = "pgloupe"
+description = "A close look at your Postgres logs and query stats."
+authors = ["Vitor Braga"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/vtrbraga/pgloupe"
+edit-url-template = "https://github.com/vtrbraga/pgloupe/edit/main/docs/{path}"
+site-url = "/pgloupe/"
+default-theme = "light"
+preferred-dark-theme = "ayu"
+
+[output.html.search]
+enable = true
