@@ -14,6 +14,8 @@ pgloupe is one binary. Pick the channel that suits you; each channel updates the
 
 Linux and macOS are tested in CI. Windows builds are experimental.
 
+The installer script puts `pgloupe` in `~/.local/bin`. If `pgloupe` is not found afterwards, open a new shell or run `source $HOME/.local/bin/env` (the installer prints this line), so that directory is on your `PATH`.
+
 ## Man pages and completions
 
 The archives carry `dist-assets/man/pgloupe.1` (and one page per command, such as `pgloupe-report.1`) and tab-completion scripts in `dist-assets/completions/` for bash, zsh, fish and PowerShell. Copy them where your system looks, for example `dist-assets/man/*.1` to `~/.local/share/man/man1/` and `dist-assets/completions/pgloupe.bash` to `~/.local/share/bash-completion/completions/pgloupe`. The same text as the man pages is in the [command reference](reference/commands.md).
