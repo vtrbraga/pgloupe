@@ -1,0 +1,22 @@
+# Keep logs and compare periods
+
+A store is one SQLite file that holds the per-hour numbers from your logs. Ingest once, then report on any window without reading the logs again.
+
+```bash
+pgloupe logs ingest --store pg.db /var/log/postgresql/*.log
+pgloupe report --store pg.db --since 2026-10-14T09:00Z --until 2026-10-14T12:00Z --output html --out morning.html
+```
+
+Re-running `ingest` on the same files says "unchanged"; a file that grew is replaced; renames and compression are recognised.
+
+## Filters are applied while ingesting
+
+Filters (`--database`, `--user`, `--application`, `--host`, `--between`, `--exclude-hours`, `--weekdays`, `--include-query`, and so on) shape what goes into the store, not what comes out. A store remembers the filter it was built with and refuses to mix logs ingested with a different one. `report --store` rejects filter flags and tells you to filter at ingest.
+
+## Compare two periods
+
+```bash
+pgloupe report --store pg.db --since 2026-10-14T11:00Z --until 2026-10-14T12:00Z --baseline previous
+```
+
+`--baseline previous` compares the window with the one of the same whole-hour length right before it. For another baseline give `--baseline-since` and `--baseline-until`; they may not overlap the period. The report adds statements that are new, gone, slower or faster, and the change in errors, locks and temp files.

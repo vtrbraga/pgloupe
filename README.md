@@ -14,7 +14,7 @@ tells you **what to fix first**, then shows the numbers behind it: slow statemen
 percentiles, errors, lock waits and who blocked whom, temp files, checkpoints, autovacuum,
 connections. It also tells you which server settings are limiting the report and what to change.
 
-![The overview of a pgloupe report](assets/dashboard-overview.png)
+![The overview of a pgloupe report](https://raw.githubusercontent.com/vtrbraga/pgloupe/main/assets/dashboard-overview.png)
 
 <sub>A report over a generated test server, not real data.</sub>
 
@@ -206,9 +206,9 @@ cargo test -- --ignored
 ```
 
 `scripts/coverage.sh` measures line coverage with `cargo-llvm-cov`. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the layout and the rules, and
-[SECURITY.md](SECURITY.md) to report a vulnerability.
+[CONTRIBUTING.md](https://github.com/vtrbraga/pgloupe/blob/main/CONTRIBUTING.md) for the layout and the rules, and
+[SECURITY.md](https://github.com/vtrbraga/pgloupe/blob/main/SECURITY.md) to report a vulnerability.
 
 ## License
 
-Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+Licensed under either of [MIT](https://github.com/vtrbraga/pgloupe/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/vtrbraga/pgloupe/blob/main/LICENSE-APACHE), at your option.

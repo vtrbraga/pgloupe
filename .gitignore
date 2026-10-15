@@ -15,3 +15,6 @@ CLAUDE.local.md
 .idea/
 .DS_Store
 Thumbs.db
+
+# mdBook output
+/docs/book/
