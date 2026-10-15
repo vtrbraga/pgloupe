@@ -302,6 +302,8 @@ fn a_blank_only_file_is_not_an_error() -> io::Result<()> {
     Ok(())
 }
 
+// `/dev/full` exists on Linux only.
+#[cfg(target_os = "linux")]
 #[test]
 fn unwritable_stdout_names_what_failed() -> io::Result<()> {
     let devfull = fs::OpenOptions::new().write(true).open("/dev/full")?;
@@ -315,6 +317,8 @@ fn unwritable_stdout_names_what_failed() -> io::Result<()> {
     Ok(())
 }
 
+// `/dev/full` exists on Linux only.
+#[cfg(target_os = "linux")]
 #[test]
 fn unwritable_stderr_does_not_panic() -> io::Result<()> {
     let devfull = fs::OpenOptions::new().write(true).open("/dev/full")?;

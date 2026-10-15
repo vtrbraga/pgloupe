@@ -119,7 +119,11 @@ fn the_three_formats_decode_to_the_same_events() -> io::Result<()> {
     }
 
     // stderr carries only what the prefix has: compare those fields with csv.
+    // Temporary-file lines from a parallel worker carry the session's names in csvlog but not
+    // in stderr (the prefix stops at `%q` for them), and which one it is depends on timing.
     let shared = |r: &LogRecord| {
+        let worker = r.message.starts_with("temporary file:");
+        let named = |value: &Option<String>| if worker { None } else { value.clone() };
         format!(
             "{:?} {:?}",
             (
@@ -127,12 +131,12 @@ fn the_three_formats_decode_to_the_same_events() -> io::Result<()> {
                 r.level,
                 &r.message,
                 r.pid,
-                &r.user,
-                &r.database,
-                &r.application,
+                named(&r.user),
+                named(&r.database),
+                named(&r.application),
             ),
             (
-                r.query_id,
+                r.query_id.filter(|_| !worker),
                 &r.detail,
                 &r.hint,
                 &r.context,

@@ -12,3 +12,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # The ref of this action is the toolchain it installs: the MSRV job must stay on 1.88.
+      - dependency-name: dtolnay/rust-toolchain
