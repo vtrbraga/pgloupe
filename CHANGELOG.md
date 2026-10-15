@@ -5,6 +5,23 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-10-15
+
+Report content from a review of two reports, one over a managed-Postgres capture where the logs caught little.
+
+### Report
+
+- **Server load from `pg_stat_database`.** `snap` writes it beside each snapshot; `report` reads two of them (`--before-db`/`--after-db`, or the files next to the snapshots; `watch` and `export` do too). New section and findings: average running, idle-in-transaction and connected sessions, rollback and cache-hit ratios, abandoned sessions, temp files, deadlocks, and how much of the active time `pg_stat_statements` accounts for.
+- **Eviction counts were wrong.** The `dealloc` counter counts eviction rounds (about 5% of `pg_stat_statements.max` each), not entries. The report says rounds and an estimate of entries, names utility statements (`track_utility = off`) when they dominate the churn, and stops calling churn news right after a reset.
+- **Statements** gain cache hit, I/O share of execution time, blocks read, rows per call, blocks read per row and WAL per call, a *Top by* selector, and the report keeps the leaders on each of those axes.
+- Connection attempts rejected before login are a low-priority note, not the only action. The share of each statement kind adds up to 100%. The threshold finding no longer fires when the log recorded no statements.
+
+### Dashboard
+
+- The overview opens with health and load KPIs that say "not logged" instead of 0 when a setting is off, one line per action, a top-five table and a kinds table that filters Statements, and no empty panels.
+- The activity chart has one shared time axis, areas for rates, ticks for events, rows only where there is data, and states what each bar covers.
+- Phone layout: the top bar stacks. Zero Plans and Nested calls facts are hidden.
+
 ## [0.1.0-alpha.1] - 2026-10-15
 
 The first pre-release. It exists to prove the release pipeline (archives, installers, Homebrew, crates.io, Docker) and to get the tool in front of real servers. Formats are not stable: the JSON schema and the store schema can change before 0.1.0.
