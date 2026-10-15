@@ -648,6 +648,9 @@ pub struct WatchArgs {
     once: bool,
 }
 
+/// The shortest `watch` interval.
+const MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Writes the HTML to a file after each good cycle.
 struct Writing<'a> {
     inner: &'a mut dyn Cycle,
@@ -659,7 +662,7 @@ impl Cycle for Writing<'_> {
         let built = self.inner.run()?;
         if let Some(path) = self.out {
             let tmp = path.with_extension("html.part");
-            std::fs::write(&tmp, &built.html)
+            std::fs::write(&tmp, &built.page)
                 .and_then(|()| std::fs::rename(&tmp, path))
                 .map_err(|e| CycleError {
                     step: "write",
@@ -688,6 +691,12 @@ pub fn watch(args: &WatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
     }
     let interval = parse_span(&args.interval).map_err(anyhow::Error::msg)?;
     let window = parse_span(&args.window).map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        interval >= MIN_INTERVAL,
+        "--interval must be at least {} s: each cycle queries the server and the vendor API",
+        MIN_INTERVAL.as_secs()
+    );
+    anyhow::ensure!(!window.is_zero(), "--window must be longer than zero");
     std::fs::create_dir_all(&args.state_dir)
         .with_context(|| format!("creating {}", args.state_dir.display()))?;
     let options = crate::analyze::pipeline::Options {
@@ -734,6 +743,12 @@ pub fn watch(args: &WatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
         };
     }
     let addr = serve::parse_listen(&args.listen, args.allow_remote)?;
+    if args.allow_remote {
+        writeln!(
+            err,
+            "warning: serving on {addr}: anyone who can reach it can read the statements in the report"
+        )?;
+    }
     let server = serve::bind(addr)?;
     writeln!(
         out,

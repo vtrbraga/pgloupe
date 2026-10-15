@@ -284,6 +284,24 @@ var PgLib = (function () {
     return { from: Math.max(0, a), to: Math.min(b, last) };
   }
 
+  /**
+   * The same stretch of time as `range` (indices into `oldDisplay`), as indices into `newDisplay`.
+   * A selection that began before the new data keeps its start at the first bar; one that ended
+   * before it, or that cannot be placed, is dropped (`null`).
+   */
+  function remapRange(oldDisplay, range, newDisplay) {
+    if (!range || !oldDisplay[range.from] || !oldDisplay[range.to] || !newDisplay.length) { return null; }
+    var at = function (b) { return Date.parse(b.start); };
+    var fromT = at(oldDisplay[range.from]), toT = at(oldDisplay[range.to]);
+    if (isNaN(fromT) || isNaN(toT) || toT < at(newDisplay[0])) { return null; }
+    var lastAtOrBefore = function (t) {
+      var found = 0;
+      for (var i = 0; i < newDisplay.length; i++) { if (at(newDisplay[i]) <= t) { found = i; } else { break; } }
+      return found;
+    };
+    return { from: lastAtOrBefore(fromT), to: lastAtOrBefore(toT) };
+  }
+
   /** "just now", "42 s ago", "2 min ago", "3 h ago". */
   function fmtAgo(seconds) {
     if (!isNum(seconds) || seconds < 10) { return 'just now'; }
@@ -308,7 +326,7 @@ var PgLib = (function () {
   }
 
   var api = {
-    fmtAgo: fmtAgo, fmtIn: fmtIn, shouldFetch: shouldFetch,
+    remapRange: remapRange, fmtAgo: fmtAgo, fmtIn: fmtIn, shouldFetch: shouldFetch,
     clampRange: clampRange,
     fmtInt: fmtInt, fmtMs: fmtMs, fmtBytes: fmtBytes, fmtPct: fmtPct, fmtCoverage: fmtCoverage, fmtCompact: fmtCompact,
     shortFp: shortFp, fmtTime: fmtTime, compareValues: compareValues, sortRows: sortRows,

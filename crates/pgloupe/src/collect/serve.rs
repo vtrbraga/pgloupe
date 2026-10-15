@@ -125,9 +125,12 @@ impl Bound {
     /// Serves requests from `shared` on a background thread until the process ends.
     pub fn spawn(&self, shared: Shared) {
         let server = Arc::clone(&self.server);
+        // A loopback server answers only names that mean this machine, so a web page cannot
+        // reach it by pointing its own domain at 127.0.0.1 (DNS rebinding).
+        let local_only = self.addr.ip().is_loopback();
         thread::spawn(move || {
             for request in server.incoming_requests() {
-                handle(request, &shared);
+                handle(request, &shared, local_only);
             }
         });
     }
@@ -138,7 +141,30 @@ impl Bound {
     }
 }
 
-fn handle(request: Request, shared: &Shared) {
+/// Whether a `Host` header names this machine (`localhost`, `127.0.0.1`, `[::1]`, any port).
+fn host_is_local(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().map(|ip| format!("[{ip}]")),
+        None => host.split(':').next().map(str::to_owned),
+    };
+    matches!(
+        name.as_deref().map(str::to_ascii_lowercase).as_deref(),
+        Some("localhost" | "127.0.0.1" | "[::1]")
+    )
+}
+
+fn handle(request: Request, shared: &Shared, local_only: bool) {
+    if local_only {
+        let host = request
+            .headers()
+            .iter()
+            .find(|h| h.field.equiv("Host"))
+            .map(|h| h.value.as_str().to_owned());
+        if host.is_some_and(|h| !host_is_local(&h)) {
+            drop(request.respond(Response::from_string("unknown host").with_status_code(421)));
+            return;
+        }
+    }
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("/").to_owned();
     if method != Method::Get && method != Method::Head {
@@ -205,7 +231,11 @@ fn handle(request: Request, shared: &Shared) {
         }
         "/healthz" if ready => Response::from_string("ok").boxed(),
         "/" | "/index.html" | "/report.json" | "/healthz" => {
-            Response::from_string("the first report is still being built")
+            let why = published
+                .last_error
+                .as_deref()
+                .map_or(String::new(), |e| format!("\nlast error: {e}"));
+            Response::from_string(format!("the first report is still being built{why}"))
                 .with_status_code(503)
                 .boxed()
         }
@@ -219,6 +249,27 @@ fn handle(request: Request, shared: &Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_names_for_this_machine_pass_the_host_check() {
+        for ok in [
+            "localhost:8080",
+            "127.0.0.1:9",
+            "[::1]:80",
+            "LOCALHOST",
+            "[::1]",
+        ] {
+            assert!(host_is_local(ok), "{ok}");
+        }
+        for bad in [
+            "evil.example:8080",
+            "127.0.0.1.evil.example",
+            "localhost.evil.example:1",
+            "",
+        ] {
+            assert!(!host_is_local(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn only_loopback_addresses_are_served_without_permission() {

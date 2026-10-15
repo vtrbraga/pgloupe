@@ -37,8 +37,10 @@ use crate::{
 /// A report ready to publish.
 #[derive(Debug, Clone)]
 pub struct Built {
-    /// The dashboard.
+    /// The dashboard served by `watch`: it polls the server for newer reports.
     pub html: String,
+    /// The same report as a plain file, for `--out`: it never polls.
+    pub page: String,
     /// The report as JSON.
     pub json: String,
     /// Steps that failed but did not stop the report (shown on the page and in the log).
@@ -223,11 +225,7 @@ impl Live {
     fn snapshot(&self) -> Result<(), String> {
         let mut client = self.spec.connect().map_err(|e| e.to_string())?;
         sql::take(&mut client, &self.snapshots_dir()).map_err(|e| e.to_string())?;
-        let files = snapshot_files(&self.snapshots_dir());
-        for old in files.iter().take(files.len().saturating_sub(self.keep)) {
-            drop(fs::remove_file(old));
-            drop(fs::remove_file(info_path(old)));
-        }
+        prune_snapshots(&self.snapshots_dir(), self.keep);
         Ok(())
     }
 
@@ -282,63 +280,107 @@ impl Live {
             by: SortBy::Total,
             top: 100,
         };
-        let store = Store::open_existing(&self.store)
-            .map_err(|e| fail("report", format!("no logs ingested yet ({e})")))?;
         let since = Timestamp::now()
             .checked_sub(jiff::SignedDuration::from_secs(
                 i64::try_from(self.window.as_secs()).unwrap_or(0),
             ))
             .map_err(|e| fail("report", e.to_string()))?;
-        let (report, acc) =
-            store_report::build_parts(&store, &self.store, Some(since), None, &options, 60)
-                .map_err(|e| fail("report", e.to_string()))?;
-        let logs = LogData {
-            rows: all_statements(&acc),
-            inputs: report.files.len(),
-            report,
-            source: "store",
-            store: Some(self.store.display().to_string()),
+        let logs = match Store::open_existing(&self.store) {
+            Ok(store) => {
+                let (report, acc) =
+                    store_report::build_parts(&store, &self.store, Some(since), None, &options, 60)
+                        .map_err(|e| fail("report", e.to_string()))?;
+                Some(LogData {
+                    rows: all_statements(&acc),
+                    inputs: report.files.len(),
+                    report,
+                    source: "store",
+                    store: Some(self.store.display().to_string()),
+                })
+            }
+            Err(e) => {
+                notes.push(format!("logs: nothing ingested yet ({e})"));
+                None
+            }
         };
-        let delta = match self.statistics(since) {
+        let delta = match statistics(&self.snapshots_dir(), since) {
             Ok(delta) => delta,
             Err(note) => {
                 notes.push(note);
                 None
             }
         };
-        let combined = combined::build(Some(logs), delta.as_ref(), &options);
+        if logs.is_none() && delta.is_none() {
+            let why = notes.join("; ");
+            return Err(fail("report", format!("nothing to report yet: {why}")));
+        }
+        let combined = combined::build(logs, delta.as_ref(), &options);
         let html = combined::html_live(&combined, LIVE_POLL_SECS)
             .map_err(|e| fail("report", e.to_string()))?;
+        let page = combined::html(&combined).map_err(|e| fail("report", e.to_string()))?;
         let json = combined
             .to_json()
             .map_err(|e| fail("report", e.to_string()))?;
-        Ok(Built { html, json, notes })
+        Ok(Built {
+            html,
+            page,
+            json,
+            notes,
+        })
     }
+}
 
-    /// The statistics delta between the oldest snapshot inside the window and the newest.
-    fn statistics(&self, since: Timestamp) -> Result<Option<delta::Delta>, String> {
-        let files = snapshot_files(&self.snapshots_dir());
-        let Some(after) = files.last() else {
-            return Ok(None);
-        };
-        let before = files
-            .iter()
-            .find(|p| snapshot_time(p).is_some_and(|t| t >= since))
-            .or_else(|| files.first());
-        let Some(before) = before.filter(|b| *b != after) else {
-            return Ok(None);
-        };
-        let load = |path: &Path| -> Result<Snapshot, String> {
-            let mut snapshot = Snapshot::from_path(path).map_err(|e| e.to_string())?;
-            let info = info_path(path);
-            if info.exists() {
-                snapshot = snapshot.with_info(Info::from_path(&info).map_err(|e| e.to_string())?);
-            }
-            Ok(snapshot)
-        };
-        delta::diff(&load(before)?, &load(after)?)
-            .map(Some)
-            .map_err(|e| format!("statistics: {e}"))
+/// The statistics delta between the oldest snapshot inside the window and the newest.
+fn statistics(dir: &Path, since: Timestamp) -> Result<Option<delta::Delta>, String> {
+    let files = snapshot_files(dir);
+    let Some(after) = files.last() else {
+        return Ok(None);
+    };
+    let before = files
+        .iter()
+        .find(|p| snapshot_time(p).is_some_and(|t| t >= since))
+        .or_else(|| files.first());
+    let Some(before) = before.filter(|b| *b != after) else {
+        return Ok(None);
+    };
+    let load = |path: &Path| -> Result<Snapshot, String> {
+        let mut snapshot = Snapshot::from_path(path).map_err(|e| e.to_string())?;
+        let info = info_path(path);
+        if info.exists() {
+            snapshot = snapshot.with_info(Info::from_path(&info).map_err(|e| e.to_string())?);
+        }
+        Ok(snapshot)
+    };
+    delta::diff(&load(before)?, &load(after)?)
+        .map(Some)
+        .map_err(|e| format!("statistics: {e}"))
+}
+
+/// Deletes the oldest snapshots (and their info files) beyond `keep`.
+fn prune_snapshots(dir: &Path, keep: usize) {
+    let files = snapshot_files(dir);
+    for old in files.iter().take(files.len().saturating_sub(keep)) {
+        drop(fs::remove_file(old));
+        drop(fs::remove_file(info_path(old)));
+    }
+}
+
+/// Deletes fetched log files not written since `cutoff`; the report only reads its window.
+fn prune_logs(dir: &Path, cutoff: std::time::SystemTime) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let hidden = entry.file_name().to_string_lossy().starts_with('.');
+        let old = entry
+            .metadata()
+            .ok()
+            .filter(fs::Metadata::is_file)
+            .and_then(|m| m.modified().ok())
+            .is_some_and(|t| t < cutoff);
+        if old && !hidden {
+            drop(fs::remove_file(entry.path()));
+        }
     }
 }
 
@@ -353,6 +395,11 @@ impl Cycle for Live {
         }
         if let Err(e) = self.ingest() {
             notes.push(format!("ingest: {e}"));
+        }
+        // Keep a margin past the window so a file still being filled is never cut from under it.
+        let keep_for = self.window + std::time::Duration::from_secs(2 * 3600);
+        if let Some(cutoff) = std::time::SystemTime::now().checked_sub(keep_for) {
+            prune_logs(&self.logs_dir(), cutoff);
         }
         self.report(notes)
     }
@@ -411,6 +458,81 @@ mod tests {
     use super::*;
     use crate::collect::serve::Published;
 
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pgloupe-watch-{}-{name}", std::process::id()));
+        drop(fs::remove_dir_all(&dir));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Snapshot files named by time, with fixture contents stamped to match.
+    fn snapshots(dir: &Path) {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/stats");
+        let before = fs::read_to_string(fixtures.join("basic_before.csv")).unwrap();
+        let after = fs::read_to_string(fixtures.join("basic_after.csv")).unwrap();
+        let early = before.replace("2026-10-14 10:00:00", "2026-10-14 09:00:00");
+        fs::write(dir.join("pgss_20261014T090000Z.csv"), early).unwrap();
+        fs::write(dir.join("pgss_20261014T100000Z.csv"), before).unwrap();
+        fs::write(dir.join("pgss_20261014T101000Z.csv"), after).unwrap();
+    }
+
+    #[test]
+    fn the_statistics_start_at_the_oldest_snapshot_inside_the_window() {
+        let dir = scratch("window");
+        snapshots(&dir);
+        let at = |s: &str| s.parse::<Timestamp>().unwrap();
+        let wide = statistics(&dir, at("2026-10-14T08:00:00Z"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(wide.before_at, at("2026-10-14T09:00:00Z"));
+        let narrow = statistics(&dir, at("2026-10-14T09:30:00Z"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(narrow.before_at, at("2026-10-14T10:00:00Z"));
+    }
+
+    #[test]
+    fn one_snapshot_or_none_gives_no_statistics_side() {
+        let dir = scratch("single");
+        assert!(statistics(&dir, Timestamp::UNIX_EPOCH).unwrap().is_none());
+        fs::write(dir.join("pgss_20261014T100000Z.csv"), "x").unwrap();
+        assert!(statistics(&dir, Timestamp::UNIX_EPOCH).unwrap().is_none());
+    }
+
+    #[test]
+    fn only_the_newest_snapshots_are_kept_with_their_info_files() {
+        let dir = scratch("prune");
+        snapshots(&dir);
+        for stamp in ["20261014T090000Z", "20261014T100000Z"] {
+            fs::write(dir.join(format!("pgss_info_{stamp}.csv")), "i").unwrap();
+        }
+        prune_snapshots(&dir, 2);
+        let left: Vec<String> = snapshot_files(&dir)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            left,
+            ["pgss_20261014T100000Z.csv", "pgss_20261014T101000Z.csv"]
+        );
+        assert!(!dir.join("pgss_info_20261014T090000Z.csv").exists());
+        assert!(dir.join("pgss_info_20261014T100000Z.csv").exists());
+    }
+
+    #[test]
+    fn old_log_files_go_but_hidden_state_stays() {
+        let dir = scratch("logs");
+        fs::write(dir.join("a.log"), "x").unwrap();
+        fs::write(dir.join(".fetch.json"), "{}").unwrap();
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        prune_logs(&dir, future);
+        assert!(!dir.join("a.log").exists());
+        assert!(dir.join(".fetch.json").exists());
+        fs::write(dir.join("b.log"), "x").unwrap();
+        prune_logs(&dir, std::time::SystemTime::UNIX_EPOCH);
+        assert!(dir.join("b.log").exists());
+    }
+
     struct Scripted(Vec<Result<Built, CycleError>>);
 
     impl Cycle for Scripted {
@@ -446,6 +568,7 @@ mod tests {
     fn built(tag: &str) -> Built {
         Built {
             html: format!("<html>{tag}</html>"),
+            page: format!("<html>{tag}</html>"),
             json: format!("{{\"tag\":\"{tag}\"}}"),
             notes: Vec::new(),
         }
@@ -543,6 +666,7 @@ mod tests {
         let shared: Shared = Arc::default();
         let mut cycle = Scripted(vec![Ok(Built {
             html: "h".to_owned(),
+            page: "h".to_owned(),
             json: "{}".to_owned(),
             notes: vec!["snapshot: refused".to_owned()],
         })]);

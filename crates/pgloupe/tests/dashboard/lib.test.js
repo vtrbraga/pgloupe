@@ -152,3 +152,17 @@ test('a newer generation is fetched; the same, or none built yet, is not', () =>
   assert.equal(L.shouldFetch(null, 1), false);
   assert.equal(L.shouldFetch({}, 1), false);
 });
+
+test('a time selection follows its time when the window slides', () => {
+  const bar = (m) => ({ start: new Date(Date.UTC(2026, 9, 14, 10, m)).toISOString() });
+  const oldBars = [0, 5, 10, 15, 20, 25].map(bar);
+  const newBars = [10, 15, 20, 25, 30, 35].map(bar);
+  // 15:00-20:00 was bars 3..4; it is bars 1..2 after the window moved.
+  assert.deepEqual(L.remapRange(oldBars, { from: 3, to: 4 }, newBars), { from: 1, to: 2 });
+  // began before the new window: starts at the first bar
+  assert.deepEqual(L.remapRange(oldBars, { from: 0, to: 3 }, newBars), { from: 0, to: 1 });
+  // entirely before the new window: gone
+  assert.equal(L.remapRange(oldBars, { from: 0, to: 1 }, newBars), null);
+  assert.equal(L.remapRange(oldBars, null, newBars), null);
+  assert.equal(L.remapRange(oldBars, { from: 3, to: 4 }, []), null);
+});

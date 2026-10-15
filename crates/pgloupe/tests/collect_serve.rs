@@ -87,6 +87,15 @@ fn the_server_answers_its_routes_and_refuses_the_rest() {
         .send_empty()
         .unwrap();
     assert_eq!(post.status().as_u16(), 405);
+    // A page on another domain pointed at 127.0.0.1 must not read the report (DNS rebinding).
+    let rebound = ureq::get(&format!("{base}/report.json"))
+        .header("Host", "evil.example:8080")
+        .config()
+        .http_status_as_error(false)
+        .build()
+        .call()
+        .unwrap();
+    assert_eq!(rebound.status().as_u16(), 421);
     bound.unblock();
 }
 

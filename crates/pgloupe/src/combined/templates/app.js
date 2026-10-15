@@ -748,7 +748,13 @@
   window.PgApp = {
     update: function (raw) {
       var y = window.scrollY;
+      var oldDisplay = display, held = rangeNow();
       if (!load(raw)) { return false; }
+      // Selections are bar indices, and the bars slide as the window moves: keep the same time.
+      var moved = L.remapRange(oldDisplay, held, display);
+      state.from = moved ? moved.from : null;
+      state.to = moved ? moved.to : null;
+      try { history.replaceState(null, '', L.buildHash(state) || location.pathname + location.search); } catch (e) { /* the hash is a convenience */ }
       render();
       window.scrollTo(0, y);
       return true;

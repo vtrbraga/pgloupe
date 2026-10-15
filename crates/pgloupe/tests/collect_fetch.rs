@@ -426,6 +426,35 @@ fn export_collects_snapshots_and_logs_and_builds_the_report() -> Result<(), Stri
 }
 
 #[test]
+fn watch_refuses_an_interval_that_would_hammer_the_server() {
+    for (interval, window) in [("1s", "24h"), ("0s", "24h"), ("5m", "0s")] {
+        let out = run(
+            &[
+                "watch",
+                "--conn",
+                "postgres://u@127.0.0.1:1/db",
+                "--provider",
+                "aws-rds",
+                "--instance",
+                "x",
+                "--interval",
+                interval,
+                "--window",
+                window,
+                "--once",
+            ],
+            &[],
+        );
+        assert!(!out.status.success(), "{interval} {window}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("--interval") || err.contains("--window"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
 #[ignore = "needs Docker"]
 #[expect(
     clippy::too_many_lines,
@@ -477,7 +506,7 @@ fn watch_serves_a_report_that_gains_its_statistics_side_on_the_second_cycle() ->
             "--listen",
             "127.0.0.1:0",
             "--interval",
-            "2s",
+            "10s",
             "--window",
             "9999d",
             "--state-dir",
