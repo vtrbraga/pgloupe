@@ -179,6 +179,10 @@ pub fn docker<S: AsRef<OsStr>>(args: &[S]) -> anyhow::Result<String> {
         .map(|a| a.as_ref().to_string_lossy())
         .collect::<Vec<_>>()
         .join(" ");
+    let shown = match shown.char_indices().nth(300) {
+        Some((cut, _)) => format!("{}…", &shown[..cut]),
+        None => shown,
+    };
     let output = Command::new("docker")
         .args(args)
         .output()

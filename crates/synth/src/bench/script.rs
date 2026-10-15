@@ -3,19 +3,15 @@
 //! pgbench substitutes `:name` variables into the text in the simple protocol, so each run of
 //! a script sends a different literal. The many shapes (tables × columns × predicates × tails)
 //! give the statement tracker more distinct statements than `pg_stat_statements.max` holds.
+//! pgbench takes at most 128 scripts, so [`GROUP`] shapes share one script and a random pick
+//! chooses among them with `\if`.
 
 use std::{fs, path::Path};
 
 use anyhow::Context as _;
 
-/// One statement shape and the file name it is written to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Shape {
-    /// File name, e.g. `s0007.sql`.
-    pub name: String,
-    /// pgbench script text.
-    pub text: String,
-}
+/// Shapes per script file.
+pub const GROUP: usize = 5;
 
 struct Table {
     name: &'static str,
@@ -54,9 +50,29 @@ const HEADER: &str = "\\set aid random(1, 100000 * :scale)\n\
                       \\set tid random(1, 10 * :scale)\n\
                       \\set delta random(-5000, 5000)\n";
 
+/// A script that runs one of `statements` (at most [`GROUP`]), chosen at random.
+fn script(statements: &[String]) -> String {
+    if let [only] = statements {
+        return format!("{HEADER}{only}\n");
+    }
+    let branches = statements
+        .iter()
+        .enumerate()
+        .map(|(i, statement)| {
+            let keyword = if i == 0 { "\\if" } else { "\\elif" };
+            format!("{keyword} :pick = {i}\n{statement}\n")
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    format!(
+        "{HEADER}\\set pick random(0, {})\n{branches}\\endif\n",
+        statements.len() - 1
+    )
+}
+
 /// Every shape, in a fixed order.
 #[must_use]
-pub fn shapes() -> Vec<Shape> {
+pub fn shapes() -> Vec<String> {
     let mut out = Vec::new();
     for table in TABLES {
         let (k, v, bal) = (table.key, table.var, table.balance);
@@ -84,15 +100,11 @@ pub fn shapes() -> Vec<Shape> {
                 .collect();
             for predicate in &predicates {
                 for tail in &tails {
-                    let text = format!(
-                        "{HEADER}SELECT {} FROM {} WHERE {predicate}{tail};\n",
+                    out.push(format!(
+                        "SELECT {} FROM {} WHERE {predicate}{tail};",
                         columns.join(", "),
                         table.name
-                    );
-                    out.push(Shape {
-                        name: format!("s{:04}.sql", out.len()),
-                        text,
-                    });
+                    ));
                 }
             }
         }
@@ -100,7 +112,7 @@ pub fn shapes() -> Vec<Shape> {
     out
 }
 
-/// Writes every shape into `dir` (created if missing) and returns the file names, sorted.
+/// Writes the scripts into `dir` (created if missing) and returns the file names, sorted.
 ///
 /// # Errors
 ///
@@ -108,10 +120,11 @@ pub fn shapes() -> Vec<Shape> {
 pub fn write_scripts(dir: &Path) -> anyhow::Result<Vec<String>> {
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let mut names = Vec::new();
-    for shape in shapes() {
-        let path = dir.join(&shape.name);
-        fs::write(&path, &shape.text).with_context(|| format!("writing {}", path.display()))?;
-        names.push(shape.name);
+    for (i, group) in shapes().chunks(GROUP).enumerate() {
+        let name = format!("g{i:03}.sql");
+        let path = dir.join(&name);
+        fs::write(&path, script(group)).with_context(|| format!("writing {}", path.display()))?;
+        names.push(name);
     }
     names.sort();
     Ok(names)
@@ -129,24 +142,38 @@ mod tests {
     }
 
     #[test]
-    fn every_shape_is_distinct_and_defines_its_variables() {
+    fn every_shape_is_distinct_and_avoids_the_growing_table() {
         let all = shapes();
-        let texts: HashSet<&str> = all.iter().map(|s| s.text.as_str()).collect();
-        assert_eq!(texts.len(), all.len());
+        let unique: HashSet<&String> = all.iter().collect();
+        assert_eq!(unique.len(), all.len());
         for shape in &all {
-            for var in ["\\set aid", "\\set bid", "\\set tid", "\\set delta"] {
-                assert!(shape.text.contains(var), "{}", shape.name);
-            }
-            assert!(shape.text.ends_with(";\n"), "{}", shape.name);
-            assert!(!shape.text.contains("pgbench_history"), "{}", shape.name);
+            assert!(shape.starts_with("SELECT "), "{shape}");
+            assert!(shape.ends_with(';'), "{shape}");
+            assert!(!shape.contains("pgbench_history"), "{shape}");
         }
     }
 
     #[test]
-    fn scripts_are_written_one_file_per_shape() {
+    fn a_script_picks_one_statement_with_if_branches() {
+        let text = script(&["SELECT 1;".to_owned(), "SELECT 2;".to_owned()]);
+        for var in [
+            "\\set aid",
+            "\\set bid",
+            "\\set tid",
+            "\\set delta",
+            "\\set pick random(0, 1)",
+        ] {
+            assert!(text.contains(var), "{var}");
+        }
+        assert!(text.contains("\\if :pick = 0\nSELECT 1;\n\\elif :pick = 1\nSELECT 2;\n\\endif\n"));
+    }
+
+    #[test]
+    fn scripts_stay_within_the_pgbench_limit() {
         let dir = env::temp_dir().join(format!("synth-script-{}", process::id()));
         let names = write_scripts(&dir).unwrap();
-        assert_eq!(names.len(), shapes().len());
+        assert!(names.len() <= 128, "{}", names.len());
+        assert_eq!(names.len(), shapes().len().div_ceil(GROUP));
         assert!(names.windows(2).all(|w| w[0] < w[1]));
         let first = fs::read_to_string(dir.join(&names[0])).unwrap();
         assert!(first.contains("SELECT"));
