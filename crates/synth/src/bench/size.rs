@@ -1,8 +1,10 @@
 //! Human sizes (`1G`) and the size of a growing log directory.
 
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context as _, bail};
+
+use super::truth::FormatSize;
 
 /// Parses `1G`, `256M`, `512K` or plain bytes; powers of 1024.
 ///
@@ -27,19 +29,18 @@ pub fn parse_size(text: &str) -> anyhow::Result<u64> {
         .with_context(|| format!("{text:?} is too large"))
 }
 
-/// Bytes of the largest log format in `dir`: the sum of `.log`, `.csv` and `.json` files, per
-/// extension, and the maximum of the three. A missing directory is empty.
+/// Files and bytes per log format (`log`, `csv`, `json`) in `dir`. A missing directory is empty.
 ///
 /// # Errors
 ///
 /// Fails if the directory exists but cannot be read.
-pub fn log_bytes(dir: &Path) -> anyhow::Result<u64> {
+pub fn per_format(dir: &Path) -> anyhow::Result<BTreeMap<String, FormatSize>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
     };
-    let mut per_extension: HashMap<String, u64> = HashMap::new();
+    let mut sizes: BTreeMap<String, FormatSize> = BTreeMap::new();
     for entry in entries {
         let entry = entry.with_context(|| format!("reading {}", dir.display()))?;
         let path = entry.path();
@@ -51,10 +52,25 @@ pub fn log_bytes(dir: &Path) -> anyhow::Result<u64> {
                 .metadata()
                 .with_context(|| format!("reading {}", path.display()))?
                 .len();
-            *per_extension.entry(ext.to_owned()).or_default() += len;
+            let slot = sizes.entry(ext.to_owned()).or_default();
+            slot.files += 1;
+            slot.bytes += len;
         }
     }
-    Ok(per_extension.values().copied().max().unwrap_or(0))
+    Ok(sizes)
+}
+
+/// Bytes of the largest log format in `dir`: the sum of its files, maximum over formats.
+///
+/// # Errors
+///
+/// Fails if the directory exists but cannot be read.
+pub fn log_bytes(dir: &Path) -> anyhow::Result<u64> {
+    Ok(per_format(dir)?
+        .values()
+        .map(|f| f.bytes)
+        .max()
+        .unwrap_or(0))
 }
 
 #[cfg(test)]
