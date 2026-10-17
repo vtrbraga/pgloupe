@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::{
     analyze::report::Report,
     collect::doctor::{Facts, checks},
+    log::prefix::RDS_FULL_PREFIX,
     stats::delta::{Delta, Reset},
 };
 
@@ -352,10 +353,14 @@ fn prefix_rule(logs: &Report, place: &Place, found: &mut Vec<Advice>) {
     if missing.is_empty() {
         return;
     }
-    let fix = if place.rds {
-        "RDS fixes log_line_prefix, so these stay empty there."
+    let fix = if place.rds && !(prefix.contains("%a") && prefix.contains("%e")) {
+        format!(
+            "RDS for PostgreSQL 16 allows {RDS_FULL_PREFIX:?}, which adds the application and SQLSTATE (not the query id): if your parameter group allows it, set it there; it applies without a reboot."
+        )
+    } else if place.rds {
+        "The prefixes RDS allows do not carry the query id.".to_owned()
     } else {
-        "A prefix such as '%m [%p] %q%u@%d/%a %e ' carries them."
+        "A prefix such as '%m [%p] %q%u@%d/%a %e ' carries them.".to_owned()
     };
     push(
         found,
@@ -374,7 +379,7 @@ mod tests {
     use crate::analyze::{
         acc::Accumulators,
         pipeline::Output,
-        report::{ReportOptions, SortBy},
+        report::{FileReport, ReportOptions, SortBy},
     };
 
     fn empty_report() -> Report {
@@ -395,6 +400,64 @@ mod tests {
             .iter()
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect()
+    }
+
+    fn prefix_advice(prefix: &str, rds: bool) -> Vec<Advice> {
+        let mut report = empty_report();
+        report.files.push(FileReport {
+            path: "a.log".to_owned(),
+            bytes: 1,
+            format: "stderr".to_owned(),
+            prefix: Some(prefix.to_owned()),
+            prefix_source: "inferred".to_owned(),
+            prefix_match: None,
+            lines: 1,
+            records: 1,
+            skipped: 0,
+            locale: None,
+        });
+        let place = Place {
+            rds,
+            home: "postgresql.conf",
+        };
+        let mut found = Vec::new();
+        prefix_rule(&report, &place, &mut found);
+        found
+    }
+
+    #[test]
+    fn on_rds_the_short_prefix_points_to_the_full_one() {
+        let found = prefix_advice("%t:%r:%u@%d:[%p]:", true);
+        assert_eq!(found.len(), 1);
+        let message = &found[0].message;
+        assert!(message.contains(RDS_FULL_PREFIX), "{message}");
+        assert!(message.contains("parameter group"), "{message}");
+        assert!(message.contains("not the query id"), "{message}");
+        assert_eq!(found[0].severity, "info");
+    }
+
+    #[test]
+    fn on_rds_the_full_prefix_only_lacks_the_query_id() {
+        let found = prefix_advice(RDS_FULL_PREFIX, true);
+        assert_eq!(found.len(), 1);
+        let message = &found[0].message;
+        assert!(message.contains("the query id"), "{message}");
+        assert!(!message.contains("has no the application"), "{message}");
+        assert!(!message.contains("parameter group"), "{message}");
+    }
+
+    #[test]
+    fn off_rds_the_advice_keeps_its_text() {
+        let found = prefix_advice("%m [%p] ", false);
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0]
+                .message
+                .ends_with("A prefix such as '%m [%p] %q%u@%d/%a %e ' carries them."),
+            "{}",
+            found[0].message
+        );
+        assert!(!found[0].message.contains("RDS"));
     }
 
     #[test]

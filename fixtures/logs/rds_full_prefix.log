@@ -1,0 +1,9 @@
+2026-01-01 10:00:00.100 UTC:10.0.0.5(40000):[unknown]@[unknown]:[2001]:1:00000:2026-01-01 10:00:00 UTC::0:6a000001.7d1:[unknown]:LOG:  connection received: host=10.0.0.5 port=40000
+2026-01-01 10:00:00.105 UTC:10.0.0.5(40000):app_user@appdb:[2001]:2:00000:2026-01-01 10:00:00 UTC:30/100:0:6a000001.7d1:[unknown]:LOG:  connection authorized: user=app_user database=appdb SSL enabled (protocol=TLSv1.3, cipher=TLS_AES_256_GCM_SHA384, bits=256)
+2026-01-01 10:00:01.200 UTC:10.0.0.5(40000):app_user@appdb:[2001]:3:00000:2026-01-01 10:00:00 UTC:30/101:0:6a000001.7d1:my-api:LOG:  duration: 1234.567 ms  statement: SELECT * FROM orders WHERE customer_id = 42
+2026-01-01 10:00:02.300 UTC:10.0.0.5(40000):app_user@appdb:[2001]:4:00000:2026-01-01 10:00:00 UTC:30/102:0:6a000001.7d1:my-api:LOG:  duration: 2345.678 ms  execute <unnamed>: SELECT count(*) FROM orders
+2026-01-01 10:00:03.000 UTC::@:[1500]:10:00000:2026-01-01 09:00:00 UTC::0:6a000000.5dc:LOG:  checkpoint starting: time
+2026-01-01 10:00:33.000 UTC::@:[1500]:11:00000:2026-01-01 09:00:00 UTC::0:6a000000.5dc:LOG:  checkpoint complete: wrote 120 buffers (0.1%); 0 WAL file(s) added, 0 removed, 1 recycled; write=29.9 s, sync=0.01 s, total=30.0 s; sync files=10, longest=0.005 s, average=0.001 s; distance=1000 kB, estimate=1000 kB; lsn=0/1000000, redo lsn=0/F00000
+2026-01-01 10:00:04.000 UTC:10.0.0.6(40010):app_user@appdb:[2002]:1:42P01:2026-01-01 10:00:03 UTC:31/50:0:6a000004.7d2:my-api:ERROR:  relation "missing_table" does not exist at character 15
+2026-01-01 10:00:04.000 UTC:10.0.0.6(40010):app_user@appdb:[2002]:2:42P01:2026-01-01 10:00:03 UTC:31/50:0:6a000004.7d2:my-api:STATEMENT:  SELECT * FROM missing_table
+2026-01-01 10:00:05.000 UTC:10.0.0.5(40000):app_user@appdb:[2001]:5:00000:2026-01-01 10:00:00 UTC::0:6a000001.7d1:my-api:LOG:  disconnection: session time: 0:00:05.000 user=app_user database=appdb host=10.0.0.5 port=40000

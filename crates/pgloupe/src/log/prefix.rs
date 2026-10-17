@@ -11,6 +11,12 @@ use super::{
 /// Escapes that produce a value. `%q` and `%%` are handled separately.
 const ESCAPES: &str = "abcdehilmnpPQrstuvx";
 
+/// The second `log_line_prefix` RDS for PostgreSQL allows.
+///
+/// It adds millisecond timestamps, the session line, SQLSTATE, session start, virtual
+/// transaction, session id and application.
+pub const RDS_FULL_PREFIX: &str = "%m:%r:%u@%d:[%p]:%l:%e:%s:%v:%x:%c:%q%a:";
+
 /// A `log_line_prefix` that cannot be used.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum PrefixError {
@@ -581,6 +587,66 @@ mod tests {
         assert_eq!(record.user, None);
         assert_eq!(record.pid, Some(44));
         assert_eq!(text, "checkpoint starting: time");
+    }
+
+    #[test]
+    fn rds_full_prefix_on_a_session_line() {
+        let prefix = Prefix::compile(RDS_FULL_PREFIX).unwrap();
+        let line = "2026-10-14 10:20:09.302 UTC:10.0.0.1(5432):alice@app:[123]:7:42P01:2026-10-14 10:00:00 UTC:3/1234:0:6acf5759.7b:psql:ERROR:  relation \"x\" does not exist";
+        let (record, label, text) = parse(&prefix, line).unwrap();
+        assert_eq!(record.host.as_deref(), Some("10.0.0.1"));
+        assert_eq!(record.port, Some(5432));
+        assert_eq!(record.user.as_deref(), Some("alice"));
+        assert_eq!(record.database.as_deref(), Some("app"));
+        assert_eq!(record.pid, Some(123));
+        assert_eq!(record.session_line, Some(7));
+        assert_eq!(record.sqlstate.as_deref(), Some("42P01"));
+        assert!(record.session_start.is_some());
+        assert_eq!(record.vxid.as_deref(), Some("3/1234"));
+        assert_eq!(record.txid, Some(0));
+        assert_eq!(record.session_id.as_deref(), Some("6acf5759.7b"));
+        assert_eq!(record.application.as_deref(), Some("psql"));
+        assert_eq!(label, Label::Level(Severity::Error));
+        assert_eq!(text, "relation \"x\" does not exist");
+    }
+
+    #[test]
+    fn rds_full_prefix_on_a_background_line() {
+        let prefix = Prefix::compile(RDS_FULL_PREFIX).unwrap();
+        let line = "2026-10-14 10:20:09.302 UTC::@:[44]:1:00000:2026-10-14 10:00:00 UTC::0:6acf5759.2c:LOG:  checkpoint starting: time";
+        let (record, label, text) = parse(&prefix, line).unwrap();
+        assert_eq!(record.pid, Some(44));
+        assert_eq!(
+            (record.host, record.user, record.database),
+            (None, None, None)
+        );
+        assert_eq!(record.vxid, None, "an empty %v");
+        assert_eq!(record.txid, Some(0));
+        assert_eq!(record.session_id.as_deref(), Some("6acf5759.2c"));
+        assert_eq!(record.sqlstate, None, "00000 is not an error");
+        assert_eq!(record.application, None);
+        assert_eq!(label, Label::Level(Severity::Log));
+        assert_eq!(text, "checkpoint starting: time");
+    }
+
+    #[test]
+    fn rds_full_prefix_before_authentication() {
+        let prefix = Prefix::compile(RDS_FULL_PREFIX).unwrap();
+        let line = "2026-10-14 10:20:09.302 UTC:10.0.0.5(40000):[unknown]@[unknown]:[2001]:1:00000:2026-10-14 10:20:09 UTC::0:6a000001.7d1:[unknown]:LOG:  connection received: host=10.0.0.5 port=40000";
+        let (record, _, text) = parse(&prefix, line).unwrap();
+        assert_eq!(record.host.as_deref(), Some("10.0.0.5"));
+        assert_eq!((record.user, record.database), (None, None));
+        assert_eq!(record.application, None);
+        assert_eq!(text, "connection received: host=10.0.0.5 port=40000");
+    }
+
+    #[test]
+    fn an_application_with_colons_under_the_rds_full_prefix() {
+        let prefix = Prefix::compile(RDS_FULL_PREFIX).unwrap();
+        let line = "2026-10-14 10:20:09.302 UTC:10.0.0.1(5432):alice@app:[123]:7:00000:2026-10-14 10:00:00 UTC:3/1234:0:6acf5759.7b:synth:demo:LOG:  hi";
+        let (record, _, text) = parse(&prefix, line).unwrap();
+        assert_eq!(record.application.as_deref(), Some("synth:demo"));
+        assert_eq!(text, "hi");
     }
 
     #[test]
