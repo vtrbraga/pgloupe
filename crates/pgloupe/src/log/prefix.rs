@@ -190,6 +190,13 @@ fn match_tokens(
             }
             Token::Quiet => {}
             Token::Escape(escape) => {
+                if *escape == 'r'
+                    && let Some(len) = ipv6_remote_len(rest)
+                {
+                    apply('r', &rest[..len], record, fallback)?;
+                    pos += len;
+                    continue;
+                }
                 let next_literal = match tokens.get(index + 1) {
                     Some(Token::Literal(text)) => Some(text.as_str()),
                     _ => None,
@@ -416,6 +423,19 @@ fn apply(
         _ => {}
     }
     Ok(())
+}
+
+/// Length of an IPv6 `%r` value (`2600:1f18::1(5432)`) at the start of `rest`, whose colons would
+/// otherwise end the free-text match early. `None` for any other shape.
+fn ipv6_remote_len(rest: &str) -> Option<usize> {
+    let open = rest.find('(')?;
+    let host = &rest[..open];
+    let is_address = host.contains(':')
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '%'));
+    let port = digits(&rest[open + 1..]);
+    (is_address && port > 0 && rest[open + 1 + port..].starts_with(')')).then_some(open + port + 2)
 }
 
 /// `%r` prints `host(port)`, `[local]`, or nothing.
@@ -647,6 +667,40 @@ mod tests {
         let (record, _, text) = parse(&prefix, line).unwrap();
         assert_eq!(record.application.as_deref(), Some("synth:demo"));
         assert_eq!(text, "hi");
+    }
+
+    #[test]
+    fn ipv6_clients_keep_their_address_under_both_rds_prefixes() {
+        let short = Prefix::compile(RDS).unwrap();
+        let full = Prefix::compile("%m:%r:%u@%d:[%p]:%l:%e:%s:%v:%x:%c:%q%a:").unwrap();
+        for address in [
+            "2600:1f18:abcd:1234:5678:9abc:def0:1234",
+            "::1",
+            "fe80::1%eth0",
+            "::ffff:10.0.0.1",
+        ] {
+            let line = format!(
+                "2026-10-14 10:20:09 UTC:{address}(5432):alice@app:[123]:LOG:  connection authorized"
+            );
+            let (record, label, text) = parse(&short, &line).unwrap();
+            assert_eq!(record.host.as_deref(), Some(address), "{line}");
+            assert_eq!(record.port, Some(5432), "{line}");
+            assert_eq!(record.user.as_deref(), Some("alice"), "{line}");
+            assert_eq!(record.database.as_deref(), Some("app"), "{line}");
+            assert_eq!(record.pid, Some(123), "{line}");
+            assert_eq!(label, Label::Level(Severity::Log));
+            assert_eq!(text, "connection authorized");
+
+            let line = format!(
+                "2026-10-14 10:20:09.302 UTC:{address}(5432):alice@app:[123]:7:00000:2026-10-14 10:00:00 UTC:3/1234:0:6acf5759.7b:psql:LOG:  hi"
+            );
+            let (record, _, text) = parse(&full, &line).unwrap();
+            assert_eq!(record.host.as_deref(), Some(address), "{line}");
+            assert_eq!(record.port, Some(5432), "{line}");
+            assert_eq!(record.user.as_deref(), Some("alice"), "{line}");
+            assert_eq!(record.application.as_deref(), Some("psql"), "{line}");
+            assert_eq!(text, "hi");
+        }
     }
 
     #[test]
