@@ -17,6 +17,9 @@ use tokio_postgres_rustls::MakeRustlsConnect;
 
 use super::CollectError;
 
+/// The statement timeout of every collection session.
+pub(super) const STATEMENT_TIMEOUT: &str = "15s";
+
 /// How the connection treats TLS, as libpq's `sslmode` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SslMode {
@@ -226,10 +229,10 @@ impl ConnSpec {
             config.connect(tls).map_err(failed)?
         };
         client
-            .batch_execute(
-                "SET default_transaction_read_only = on; SET statement_timeout = '15s'; \
-                 SET idle_in_transaction_session_timeout = '60s'",
-            )
+            .batch_execute(&format!(
+                "SET default_transaction_read_only = on; SET statement_timeout = '{STATEMENT_TIMEOUT}'; \
+                 SET idle_in_transaction_session_timeout = '60s'"
+            ))
             .map_err(|error| CollectError::Query {
                 step: "making the session read-only",
                 message: self.redact(&error_chain(&error)),

@@ -2,14 +2,14 @@
 
 use std::{
     fs::{self, File},
-    io,
+    io::{self, Read},
     path::{Path, PathBuf},
 };
 
 use jiff::Timestamp;
 use postgres::Client;
 
-use super::CollectError;
+use super::{CollectError, conn::STATEMENT_TIMEOUT};
 
 /// The statistics, with the database and role names the ids stand for.
 pub const PGSS: &str = "COPY (SELECT now() AS snapshot_at, \
@@ -31,6 +31,9 @@ pub const SETTINGS: &str = "COPY (SELECT name, setting, unit, source, pending_re
 /// the time spent active, idle in a transaction and connected.
 pub const DATABASE: &str = "COPY (SELECT now() AS snapshot_at, * FROM pg_stat_database \
     WHERE datname IS NOT NULL ORDER BY datname) TO STDOUT WITH (FORMAT csv, HEADER)";
+
+/// The statement timeout for the `pg_stat_statements` copy, which scales with the view's size.
+const PGSS_TIMEOUT: &str = "10min";
 
 /// Where one snapshot went.
 #[derive(Debug, Clone)]
@@ -70,12 +73,20 @@ fn write_atomically(
         path: path.display().to_string(),
         source,
     };
+    let reader = client.copy_out(sql).map_err(|e| query_error(step, &e))?;
+    stream_to(reader, path).map_err(io_error)
+}
+
+/// Streams `reader` into `path` through a `.part` file, so a reader never sees a partial snapshot.
+fn stream_to(mut reader: impl Read, path: &Path) -> io::Result<()> {
     let tmp = path.with_extension("csv.part");
-    let mut reader = client.copy_out(sql).map_err(|e| query_error(step, &e))?;
-    let mut file = File::create(&tmp).map_err(io_error)?;
-    io::copy(&mut reader, &mut file).map_err(io_error)?;
-    drop(reader);
-    fs::rename(&tmp, path).map_err(io_error)
+    let written = File::create(&tmp)
+        .and_then(|mut file| io::copy(&mut reader, &mut file))
+        .and_then(|_| fs::rename(&tmp, path));
+    if written.is_err() {
+        drop(fs::remove_file(&tmp));
+    }
+    written
 }
 
 /// `pgss_20261014T102009Z.csv`: sortable, and unique per second.
@@ -136,7 +147,17 @@ fn take_in(client: &mut Client, dir: &Path) -> Result<Snapshot, CollectError> {
     };
     let name = stamp(taken_at);
     let pgss = dir.join(format!("pgss_{name}.csv"));
+    // The copy grows with entries × query text, so it gets longer than the session's 15 s.
+    // `SET LOCAL` ends with the transaction, and the reset keeps the later queries at 15 s.
+    client
+        .batch_execute(&format!("SET LOCAL statement_timeout = '{PGSS_TIMEOUT}'"))
+        .map_err(|e| query_error("raising the statement timeout", &e))?;
     write_atomically(client, PGSS, &pgss, "reading pg_stat_statements")?;
+    client
+        .batch_execute(&format!(
+            "SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'"
+        ))
+        .map_err(|e| query_error("restoring the statement timeout", &e))?;
     let info = if version >= 140_000 {
         let path = dir.join(format!("pgss_info_{name}.csv"));
         write_atomically(client, PGSS_INFO, &path, "reading pg_stat_statements_info")?;
@@ -184,6 +205,32 @@ mod tests {
         assert_eq!(stamp(at), "20261014T102009Z");
         let later: Timestamp = "2026-10-14T10:25:09Z".parse().unwrap();
         assert!(stamp(at) < stamp(later));
+    }
+
+    struct FailsAfter(usize);
+
+    impl Read for FailsAfter {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.0 == 0 {
+                return Err(io::Error::other("connection lost"));
+            }
+            let n = self.0.min(buf.len());
+            buf[..n].fill(b'x');
+            self.0 -= n;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_no_part_file() {
+        let dir = std::env::temp_dir().join(format!("pgloupe-sql-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pgss_x.csv");
+        let result = stream_to(FailsAfter(100), &path);
+        let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().collect();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(result.is_err());
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]

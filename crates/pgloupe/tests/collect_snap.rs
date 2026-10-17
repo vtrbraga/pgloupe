@@ -29,6 +29,13 @@ fn snap_on(major: u32) -> Result<(), String> {
     std::thread::sleep(std::time::Duration::from_millis(1_100));
     let second = sql::take(&mut client, &dir).map_err(|e| e.to_string())?;
 
+    // The longer copy timeout ended with the snapshot transaction.
+    let timeout: String = client
+        .query_one("SHOW statement_timeout", &[])
+        .map_err(|e| e.to_string())?
+        .get(0);
+    assert_eq!(timeout, "15s");
+
     // The files read back as snapshots, and the second is newer.
     let before = Snapshot::from_path(&first.pgss).map_err(|e| e.to_string())?;
     let after = Snapshot::from_path(&second.pgss).map_err(|e| e.to_string())?;
