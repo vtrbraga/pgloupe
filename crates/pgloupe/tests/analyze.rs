@@ -734,6 +734,28 @@ fn a_pgbouncer_log_is_detected_and_summarized() -> io::Result<()> {
 }
 
 #[test]
+fn a_log_with_the_second_rds_prefix_is_read_without_a_prefix_argument() -> io::Result<()> {
+    let out = analyze(
+        &["--output", "json"],
+        &[fixtures().join("logs/rds_full_prefix.log")],
+    )?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    let file = &report["files"][0];
+    assert_eq!(file["prefix"], "%m:%r:%u@%d:[%p]:%l:%e:%s:%v:%x:%c:%q%a:");
+    assert_eq!(file["prefix_source"], "inferred");
+    assert_eq!(
+        (file["records"].clone(), file["skipped"].clone()),
+        (8.into(), 0.into())
+    );
+    assert_eq!(report["errors"][0]["sqlstate"], "42P01");
+    assert_eq!(report["checkpoints"].as_array().map(Vec::len), Some(1));
+    assert_eq!(report["overview"]["events"]["statement"], 1);
+    assert_eq!(report["overview"]["events"]["execute"], 1);
+    Ok(())
+}
+
+#[test]
 fn a_log_in_portuguese_is_read_as_if_it_were_english() -> io::Result<()> {
     let log = fixtures().join("logs/pt_br.log");
     let prefix = ["--prefix", "%m [%p] %q%u@%d/%a ", "--output", "json"];

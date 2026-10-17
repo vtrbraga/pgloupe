@@ -3,7 +3,7 @@
 use jiff::{Timestamp, tz::Offset};
 
 use super::{
-    prefix::{Prefix, leading_timestamp_escape},
+    prefix::{Prefix, RDS_FULL_PREFIX, leading_timestamp_escape},
     record::{LogRecord, Severity},
 };
 
@@ -14,8 +14,9 @@ pub const ACCEPT_PERCENT: usize = 95;
 /// Unmatched examples kept for the failure report.
 const MAX_EXAMPLES: usize = 5;
 
-const CANDIDATES: [&str; 9] = [
+const CANDIDATES: [&str; 10] = [
     "%t:%r:%u@%d:[%p]:",
+    RDS_FULL_PREFIX,
     "%m [%p] %q%u@%d/%a %Q ",
     "%m [%p] %q%u@%d ",
     "%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h ",
@@ -177,6 +178,30 @@ mod tests {
         let sample = lines(
             "2026-10-14 10:20:09 UTC:10.0.0.1(5432):alice@app:[123]:LOG:  connection authorized\n\
              2026-10-14 10:20:09 UTC::@:[44]:LOG:  checkpoint starting: time\n",
+        );
+        assert_eq!(
+            infer_prefix(&sample, None).prefix.as_deref(),
+            Some("%t:%r:%u@%d:[%p]:")
+        );
+    }
+
+    #[test]
+    fn recognizes_the_second_rds_prefix() {
+        let sample = lines(
+            "2026-10-14 10:20:09.302 UTC:10.0.0.1(5432):alice@app:[123]:7:42P01:2026-10-14 10:00:00 UTC:3/1234:0:6acf5759.7b:psql:ERROR:  relation \"x\" does not exist\n\
+             2026-10-14 10:20:09.302 UTC::@:[44]:1:00000:2026-10-14 10:00:00 UTC::0:6acf5759.2c:LOG:  checkpoint starting: time\n",
+        );
+        assert_eq!(
+            infer_prefix(&sample, None).prefix.as_deref(),
+            Some(RDS_FULL_PREFIX)
+        );
+    }
+
+    #[test]
+    fn the_short_rds_prefix_wins_when_its_messages_look_like_the_long_one() {
+        let sample = lines(
+            "2026-10-14 10:20:09 UTC:10.0.0.1(5432):alice@app:[123]:LOG:  statement: SELECT ':[1]:2:x:2026-10-14 10:00:00 UTC::0:c:a:LOG:  '\n\
+             2026-10-14 10:20:10 UTC:10.0.0.1(5432):alice@app:[123]:LOG:  statement: SELECT ':[1]:2:x:2026-10-14 10:00:00 UTC::0:c:a:LOG:  '\n",
         );
         assert_eq!(
             infer_prefix(&sample, None).prefix.as_deref(),
