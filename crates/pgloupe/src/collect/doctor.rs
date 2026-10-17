@@ -6,6 +6,7 @@ use postgres::Client;
 use serde::Serialize;
 
 use super::CollectError;
+use crate::log::prefix::RDS_FULL_PREFIX;
 
 /// One thing worth fixing (or knowing).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -206,7 +207,7 @@ pub fn checks(facts: &Facts, vendor: Option<&str>) -> Vec<Check> {
                     "line_prefix",
                     "info",
                     format!(
-                        "RDS fixes log_line_prefix ({prefix:?}), which lacks {}: those columns will be empty in the report.",
+                        "log_line_prefix is {prefix:?}, which lacks {}: those columns will be empty in the report. RDS also allows {RDS_FULL_PREFIX:?} (SQLSTATE, application, session id, millisecond timestamps): set it in the DB parameter group; it applies without a reboot.",
                         missing.join(", ")
                     ),
                 ));
@@ -422,16 +423,21 @@ mod tests {
     }
 
     #[test]
-    fn on_rds_the_line_prefix_is_reported_as_fixed_not_as_something_to_change() {
+    fn on_rds_the_line_prefix_names_the_allowed_full_value() {
         let found = checks(&with("log_line_prefix", "%t:%r:%u@%d:[%p]:"), Some("rds"));
         let prefix = found.iter().find(|c| c.code == "line_prefix").unwrap();
         assert_eq!(prefix.severity, "info");
-        assert!(prefix.message.contains("RDS fixes"), "{}", prefix.message);
         assert!(
-            !prefix.message.contains("parameter group"),
+            prefix.message.contains(RDS_FULL_PREFIX),
             "{}",
             prefix.message
         );
+        assert!(
+            prefix.message.contains("parameter group"),
+            "{}",
+            prefix.message
+        );
+        assert!(!prefix.message.contains("RDS fixes"), "{}", prefix.message);
     }
 
     #[test]
