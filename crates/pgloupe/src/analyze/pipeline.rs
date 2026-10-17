@@ -380,8 +380,11 @@ impl Iterator for Batches {
                 while batch.len() < self.options.batch_size.max(1) {
                     match current.decoder.next_record() {
                         Ok(Some(mut record)) => {
-                            if let Some((_, translator)) = &current.translator {
+                            if let Some((name, translator)) = &current.translator {
                                 translate(translator, &mut record);
+                                if record.level.is_error() && record.sqlstate.is_some() {
+                                    record.locale = Some(name.clone());
+                                }
                             }
                             // Before the filter: a cursor declared by a record the filter drops
                             // still has to be known when its fetches arrive.
