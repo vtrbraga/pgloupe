@@ -9,7 +9,7 @@
 | Experimental | pgBouncer logs; Portuguese (Brazil), Spanish, French, German servers; clouds other than Amazon RDS |
 | Platforms | Linux and macOS tested in CI; Windows experimental |
 
-Multi-line entries, application names with spaces and Amazon RDS truncation markers are handled.
+Multi-line entries, application names with spaces, IPv6 clients in `%r` and Amazon RDS truncation markers are handled. A `log_line_prefix` that puts a colon right after `%h` (for example `%h:%u`) reads an IPv6 client as the text before its first colon, because the address and the next field cannot be told apart; put a space after `%h`.
 
 ## Not read
 
