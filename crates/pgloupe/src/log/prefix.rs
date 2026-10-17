@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn ipv6_clients_keep_their_address_under_both_rds_prefixes() {
         let short = Prefix::compile(RDS).unwrap();
-        let full = Prefix::compile("%m:%r:%u@%d:[%p]:%l:%e:%s:%v:%x:%c:%q%a:").unwrap();
+        let full = Prefix::compile(RDS_FULL_PREFIX).unwrap();
         for address in [
             "2600:1f18:abcd:1234:5678:9abc:def0:1234",
             "::1",
