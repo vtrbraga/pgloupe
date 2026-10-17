@@ -10,7 +10,7 @@ pgloupe recognises a pgBouncer log by its shape (or give `--format pgbouncer`). 
 
 Portuguese (Brazil), Spanish, French and German are read as if they were English: the language is detected, or give `--lc-messages auto|en|pt_BR|es|fr|de`. The translations come from PostgreSQL's own message catalogs. `--messages-file` adds another language from a table of `locale<TAB>english<TAB>translated`.
 
-Limits: autovacuum lines are not translated, error texts stay in their own language, and reading is a few times slower than English because every message is matched against the translations.
+Limits: autovacuum lines are not translated, error texts stay in their own language (an error with a SQLSTATE that appears in several languages in one run is counted as one kind), and reading is a few times slower than English because every message is matched against the translations.
 
 ## Other clouds
 
