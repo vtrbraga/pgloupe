@@ -52,6 +52,7 @@ pub fn build(output: &Output) -> Diagnostics {
     };
     prefix_warnings(&output.files, &mut diagnostics.warnings);
     label_warning(&output.files, &mut diagnostics.warnings);
+    missing_q_warning(&output.files, &mut diagnostics.warnings);
     inferred_prefix_warning(&output.files, &mut diagnostics.warnings);
     // A pooler's log holds none of the server events these warnings look for.
     let pooler_only = !output.files.is_empty()
@@ -91,6 +92,7 @@ pub fn file_warnings(files: &[FileSummary]) -> Vec<String> {
     let mut warnings = Vec::new();
     prefix_warnings(files, &mut warnings);
     label_warning(files, &mut warnings);
+    missing_q_warning(files, &mut warnings);
     inferred_prefix_warning(files, &mut warnings);
     timezone_warning(files, &mut warnings);
     warnings
@@ -216,6 +218,28 @@ fn label_warning(files: &[FileSummary], warnings: &mut Vec<String>) {
     }
 }
 
+fn missing_q_warning(files: &[FileSummary], warnings: &mut Vec<String>) {
+    let lacking: Vec<(&FileSummary, u64)> = files
+        .iter()
+        .filter(|f| f.format == Format::Stderr && f.stats.known_label > 0)
+        .filter(|f| {
+            f.prefix.as_deref().is_some_and(|p| {
+                !p.contains("%q") && ["%u", "%d", "%a", "%r", "%h"].iter().any(|e| p.contains(e))
+            })
+        })
+        .map(|f| (f, f.stats.known_label))
+        .collect();
+    let lines: u64 = lacking.iter().map(|(_, n)| n).sum();
+    let who = match lacking.as_slice() {
+        [] => return,
+        [(file, _)] => format!("{}: ", file.path.display()),
+        many => format!("{} files: ", many.len()),
+    };
+    warnings.push(format!(
+        "{who}{lines} lines have a severity label but do not fit the log_line_prefix, which has session fields and no %q — background processes (checkpointer, autovacuum) print nothing after %q, so put %q before the first field they lack (for example %q%a)"
+    ));
+}
+
 fn absence_warnings(output: &Output, warnings: &mut Vec<String>) {
     let totals = &output.acc.totals;
     let skipped: u64 = output.files.iter().map(|f| f.stats.skipped).sum();
@@ -262,7 +286,8 @@ fn absence_warnings(output: &Output, warnings: &mut Vec<String>) {
     if !(seen("connection_received") || seen("connection_authorized") || seen("disconnection")) {
         missing.push("connections (log_connections / log_disconnections)");
     }
-    if !(seen("checkpoint_start") || seen("checkpoint_done")) {
+    let skipped_checkpoints: u64 = output.files.iter().map(|f| f.stats.checkpoint_lines).sum();
+    if !(seen("checkpoint_start") || seen("checkpoint_done")) && skipped_checkpoints == 0 {
         missing.push("checkpoints (log_checkpoints)");
     }
     if !seen("temp_file") {
@@ -381,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn non_english_labels_are_detected() {
+    fn non_known_labels_are_detected() {
         let stats = DecodeStats {
             lines: 100,
             records: 80,
@@ -406,6 +431,80 @@ mod tests {
             vec![summary(Format::Stderr, Some("%m [%p] "), few)],
         ));
         assert!(!has(&d, "lc_messages"), "{:?}", d.warnings);
+    }
+
+    #[test]
+    fn a_prefix_that_needs_q_says_so() {
+        let stats = DecodeStats {
+            lines: 8,
+            records: 6,
+            skipped: 2,
+            known_label: 2,
+            ..DecodeStats::default()
+        };
+        let d = build(&output(
+            &["statement: SELECT 1"],
+            vec![summary(Format::Stderr, Some("%m:%u@%d:%a:"), stats.clone())],
+        ));
+        assert!(has(&d, "%q"), "{:?}", d.warnings);
+        let d = build(&output(
+            &["statement: SELECT 1"],
+            vec![summary(
+                Format::Stderr,
+                Some("%m:%u@%d:%q%a:"),
+                stats.clone(),
+            )],
+        ));
+        assert!(!has(&d, "put %q"), "{:?}", d.warnings);
+        let d = build(&output(
+            &["statement: SELECT 1"],
+            vec![summary(Format::Stderr, Some("%m [%p] "), stats)],
+        ));
+        assert!(
+            !has(&d, "put %q"),
+            "a prefix without session fields: {:?}",
+            d.warnings
+        );
+    }
+
+    #[test]
+    fn the_q_warning_counts_only_the_files_that_lack_it() {
+        let skipped = |known_label| DecodeStats {
+            lines: 20,
+            records: 10,
+            skipped: 10,
+            known_label,
+            ..DecodeStats::default()
+        };
+        let mut with_q = summary(Format::Stderr, Some("%m:%u@%d:%q%a:"), skipped(7));
+        with_q.path = PathBuf::from("with-q.log");
+        let mut without_q = summary(Format::Stderr, Some("%m:%u@%d:%a:"), skipped(3));
+        without_q.path = PathBuf::from("without-q.log");
+        let d = build(&output(&["statement: SELECT 1"], vec![with_q, without_q]));
+        let q: Vec<_> = d.warnings.iter().filter(|w| w.contains("put %q")).collect();
+        assert_eq!(q.len(), 1, "{:?}", d.warnings);
+        assert!(q[0].starts_with("without-q.log: 3 lines"), "{q:?}");
+    }
+
+    #[test]
+    fn skipped_checkpoint_lines_are_not_reported_as_a_missing_setting() {
+        let stats = DecodeStats {
+            lines: 8,
+            records: 6,
+            skipped: 2,
+            checkpoint_lines: 2,
+            ..DecodeStats::default()
+        };
+        let d = build(&output(
+            &["hello"],
+            vec![summary(Format::Stderr, Some("%m [%p] "), stats)],
+        ));
+        let not_seen = d.warnings.iter().find(|w| w.starts_with("not seen:"));
+        assert!(
+            not_seen.is_some_and(|w| !w.contains("checkpoints")),
+            "{:?}",
+            d.warnings
+        );
     }
 
     #[test]
