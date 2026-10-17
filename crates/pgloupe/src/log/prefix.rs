@@ -433,7 +433,7 @@ fn ipv6_remote_len(rest: &str) -> Option<usize> {
     let is_address = host.contains(':')
         && host
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '%'));
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '.' | '%' | '-' | '_'));
     let port = digits(&rest[open + 1..]);
     (is_address && port > 0 && rest[open + 1 + port..].starts_with(')')).then_some(open + port + 2)
 }
@@ -677,6 +677,7 @@ mod tests {
             "2600:1f18:abcd:1234:5678:9abc:def0:1234",
             "::1",
             "fe80::1%eth0",
+            "fe80::1%en-0",
             "::ffff:10.0.0.1",
         ] {
             let line = format!(
