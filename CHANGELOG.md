@@ -5,6 +5,11 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `snap`, `export` and `watch` no longer fail with a statement timeout on a large `pg_stat_statements`: its copy gets 10 minutes (wall clock, including the time to send it over the network), every other query keeps 15 seconds. A failed copy no longer leaves a `.part` file behind.
+- `doctor` and the settings advice said RDS cannot change `log_line_prefix`. They now recommend the second value RDS allows, which carries the application and SQLSTATE, and pgloupe infers that prefix (a log written with it no longer fails with "could not infer the log_line_prefix").
+
 ## [0.1.0] - 2026-10-15
 
 The first stable release. It gathers the three alphas (entries below) plus the csvlog record cap and overflow checks in release builds.
