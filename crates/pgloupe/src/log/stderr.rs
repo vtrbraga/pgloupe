@@ -19,6 +19,32 @@ use super::{
     record::{LogRecord, Severity},
 };
 
+/// True if `line` holds a known severity label (`LOG:  `, `ERROR:  `, ...) after the prefix, so a
+/// line that does not fit the prefix is not one from an unknown language.
+fn has_known_label(line: &str) -> bool {
+    line.match_indices(":  ").take(8).any(|(at, _)| {
+        let before = &line[..at];
+        let start = before
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !c.is_ascii_uppercase())
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        let boundary = start == 0 || before[..start].ends_with([' ', ':']);
+        boundary && Severity::from_label(&before[start..]).is_some()
+    })
+}
+
+fn is_checkpoint_line(line: &str) -> bool {
+    [
+        "checkpoint starting",
+        "checkpoint complete",
+        "restartpoint starting",
+        "restartpoint complete",
+    ]
+    .iter()
+    .any(|marker| line.contains(marker))
+}
+
 /// Entries held at once before the oldest is emitted.
 const DEFAULT_MAX_OPEN: usize = 10_000;
 
@@ -153,7 +179,12 @@ impl<R: BufRead> StderrDecoder<R> {
     /// lines; otherwise the entry the line may have continued is.
     fn skip_line(&mut self, reason: &str, pid: Option<u32>, text: Option<&str>) {
         self.stats.skip_with(self.line_no, reason, text);
-        if reason.starts_with("no severity label") {
+        if text.is_some_and(has_known_label) {
+            self.stats.known_label += 1;
+            if text.is_some_and(is_checkpoint_line) {
+                self.stats.checkpoint_lines += 1;
+            }
+        } else if reason.starts_with("no severity label") {
             self.stats.no_label += 1;
         }
         let target = match pid {
@@ -917,6 +948,30 @@ mod tests {
         assert_eq!(top.len(), 1);
         assert_eq!(top[0].text, "garbage #");
         assert_eq!(top[0].count, 2);
+    }
+
+    #[test]
+    fn an_known_label_that_misses_the_prefix_is_not_an_unknown_label() {
+        // `%a` takes `LOG` here, the way it does on a background line under a prefix without `%q`.
+        let text = "2026-10-14 10:20:12.500 UTC:LOG:  checkpoint starting: time\n\
+                    2026-10-14 10:20:13.500 UTC:XYZZY:  something\n";
+        let (records, stats) = decode_with("%m:%a:", text);
+        assert_eq!(records.len(), 0);
+        assert_eq!((stats.known_label, stats.no_label), (1, 1));
+        assert_eq!(stats.checkpoint_lines, 1);
+    }
+
+    #[test]
+    fn a_checkpoint_line_that_does_not_match_at_all_is_still_counted() {
+        // The prefix of a server run with `%q`, read without it: no `@` for `%u@%d`.
+        let text = "2026-10-14 10:20:12.500 UTC [44] LOG:  checkpoint starting: time\n\
+                    2026-10-14 10:20:13.500 UTC [44] LOG:  restartpoint complete: wrote 3 buffers\n";
+        let (records, stats) = decode_with("%m [%p] %u@%d ", text);
+        assert_eq!(records.len(), 0);
+        assert_eq!(
+            (stats.known_label, stats.no_label, stats.checkpoint_lines),
+            (2, 0, 2)
+        );
     }
 
     #[test]

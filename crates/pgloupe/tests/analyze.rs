@@ -756,6 +756,39 @@ fn a_log_with_the_second_rds_prefix_is_read_without_a_prefix_argument() -> io::R
 }
 
 #[test]
+fn a_prefix_without_q_is_diagnosed_as_such() -> io::Result<()> {
+    let out = analyze(
+        &[
+            "--prefix",
+            "%m:%r:%u@%d:[%p]:%l:%e:%s:%v:%x:%c:%a:",
+            "--output",
+            "json",
+        ],
+        &[fixtures().join("logs/rds_full_prefix.log")],
+    )?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    let warnings: Vec<&str> = report["diagnostics"]["warnings"]
+        .as_array()
+        .map(|all| all.iter().filter_map(|w| w.as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        warnings.iter().any(|w| w.contains("put %q")),
+        "{warnings:?}"
+    );
+    assert!(
+        !warnings.iter().any(|w| w.contains("lc_messages")),
+        "{warnings:?}"
+    );
+    let not_seen = warnings.iter().find(|w| w.starts_with("not seen:"));
+    assert!(
+        not_seen.is_some_and(|w| !w.contains("checkpoints")),
+        "{warnings:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn a_log_in_portuguese_is_read_as_if_it_were_english() -> io::Result<()> {
     let log = fixtures().join("logs/pt_br.log");
     let prefix = ["--prefix", "%m [%p] %q%u@%d/%a ", "--output", "json"];
