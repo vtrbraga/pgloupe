@@ -66,8 +66,12 @@ pub struct DecodeStats {
     pub records: u64,
     pub skipped: u64,
     pub first_skipped: Option<Skipped>,
-    /// Lines whose prefix matched but whose severity label is unknown (often a localized server).
+    /// Lines whose prefix matched but whose severity label is not an English one (often a localized server).
     pub no_label: u64,
+    /// Skipped lines that carry a known severity label (English or a built-in language).
+    pub known_label: u64,
+    /// Skipped lines that are checkpoint or restartpoint log lines.
+    pub checkpoint_lines: u64,
     /// Entries a server cut short and said so (Amazon RDS does this to very long ones).
     pub truncated: u64,
     /// Skipped lines whose shape was not tracked because `MAX_SHAPES` was reached.
