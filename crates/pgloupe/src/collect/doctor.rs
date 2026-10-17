@@ -207,7 +207,7 @@ pub fn checks(facts: &Facts, vendor: Option<&str>) -> Vec<Check> {
                     "line_prefix",
                     "info",
                     format!(
-                        "log_line_prefix is {prefix:?}, which lacks {}: those columns will be empty in the report. RDS also allows {RDS_FULL_PREFIX:?} (SQLSTATE, application, session id, millisecond timestamps): set it in the DB parameter group; it applies without a reboot.",
+                        "log_line_prefix is {prefix:?}, which lacks {}: those columns will be empty in the report. RDS for PostgreSQL 16 allows {RDS_FULL_PREFIX:?} (SQLSTATE, application, session id, millisecond timestamps): if your parameter group allows it, set it there; it applies without a reboot.",
                         missing.join(", ")
                     ),
                 ));

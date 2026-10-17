@@ -355,7 +355,7 @@ fn prefix_rule(logs: &Report, place: &Place, found: &mut Vec<Advice>) {
     }
     let fix = if place.rds && !(prefix.contains("%a") && prefix.contains("%e")) {
         format!(
-            "RDS also allows {RDS_FULL_PREFIX:?}, which adds the application and SQLSTATE (not the query id): set it in the DB parameter group; it applies without a reboot."
+            "RDS for PostgreSQL 16 allows {RDS_FULL_PREFIX:?}, which adds the application and SQLSTATE (not the query id): if your parameter group allows it, set it there; it applies without a reboot."
         )
     } else if place.rds {
         "The prefixes RDS allows do not carry the query id.".to_owned()
