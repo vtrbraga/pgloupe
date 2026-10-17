@@ -734,6 +734,40 @@ fn a_pgbouncer_log_is_detected_and_summarized() -> io::Result<()> {
 }
 
 #[test]
+fn an_error_logged_in_two_languages_is_one_kind() -> io::Result<()> {
+    let english = scratch(
+        "kinds-en.log",
+        b"2026-10-14 10:00:00.000 UTC [10] app@shop/web 00000 LOG:  duration: 5.000 ms  statement: SELECT 1\n\
+          2026-10-14 10:00:01.000 UTC [10] app@shop/web 23505 ERROR:  duplicate key value violates unique constraint \"users_pkey\"\n",
+    )?;
+    let portuguese = scratch(
+        "kinds-pt.log",
+        "2026-10-14 10:00:00.000 UTC [11] app@shop/web 00000 LOG:  duração: 5.000 ms  comando: SELECT 1\n\
+         2026-10-14 10:00:00.500 UTC [11] app@shop/web 00000 LOG:  duração: 6.000 ms  comando: SELECT 2\n\
+         2026-10-14 10:00:01.000 UTC [11] app@shop/web 00000 LOG:  duração: 7.000 ms  comando: SELECT 3\n\
+         2026-10-14 10:00:02.000 UTC [11] app@shop/web 23505 ERROR:  duplicar valor da chave viola a restrição de unicidade \"users_pkey\"\n"
+            .as_bytes(),
+    )?;
+    let run = |files: &[PathBuf]| -> io::Result<serde_json::Value> {
+        let out = analyze(
+            &["--prefix", "%m [%p] %q%u@%d/%a %e ", "--output", "json"],
+            files,
+        )?;
+        assert!(out.status.success(), "{}", stderr(&out));
+        Ok(serde_json::from_str(&stdout(&out))?)
+    };
+    let both = run(&[english.clone(), portuguese.clone()])?;
+    let kinds = both["errors"].as_array().map_or(0, Vec::len);
+    let count = both["errors"][0]["count"].clone();
+    let alone = run(std::slice::from_ref(&portuguese))?;
+    drop(fs::remove_file(&english));
+    drop(fs::remove_file(&portuguese));
+    assert_eq!((kinds, count), (1, serde_json::json!(2)), "{both}");
+    assert_eq!(alone["errors"][0]["count"], 1);
+    Ok(())
+}
+
+#[test]
 fn a_log_in_portuguese_is_read_as_if_it_were_english() -> io::Result<()> {
     let log = fixtures().join("logs/pt_br.log");
     let prefix = ["--prefix", "%m [%p] %q%u@%d/%a ", "--output", "json"];

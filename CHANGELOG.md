@@ -5,6 +5,10 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The same error (same SQLSTATE) read from logs in different languages in one run is one kind in the report, not one per language. A run in a single language, and English logs, group as before.
+
 ## [0.1.0] - 2026-10-15
 
 The first stable release. It gathers the three alphas (entries below) plus the csvlog record cap and overflow checks in release builds.

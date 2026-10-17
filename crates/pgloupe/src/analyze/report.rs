@@ -862,11 +862,11 @@ fn statement_row(
 fn errors(acc: &Accumulators) -> Vec<ErrorRow> {
     let mut rows: Vec<ErrorRow> = acc
         .totals
-        .errors
-        .iter()
-        .map(|((level, sqlstate, _group), stat)| ErrorRow {
-            level: level.clone(),
-            sqlstate: sqlstate.clone(),
+        .errors_by_kind()
+        .into_iter()
+        .map(|(level, sqlstate, stat)| ErrorRow {
+            level,
+            sqlstate,
             count: stat.count,
             first_message: stat.first_message.clone(),
             detail: stat.first_detail.clone(),
@@ -1576,6 +1576,115 @@ mod tests {
             assert_eq!(same.calls, shown.calls);
             assert!(approx_eq(same.share_pct, shown.share_pct));
         }
+    }
+
+    fn error_rows(records: &[(Option<&str>, &str, &str)]) -> Vec<ErrorRow> {
+        let mut acc = Accumulators::new(100, 60);
+        for (second, (locale, sqlstate, message)) in records.iter().enumerate() {
+            let mut record = LogRecord::new(
+                at(i64::try_from(second).unwrap() + 1),
+                Severity::Error,
+                *message,
+            );
+            record.sqlstate = Some((*sqlstate).to_owned());
+            record.locale = locale.map(str::to_owned);
+            acc.add_record(&record);
+        }
+        Report::build(
+            &Output {
+                acc,
+                files: Vec::new(),
+            },
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        )
+        .errors
+    }
+
+    #[test]
+    fn the_same_error_in_two_languages_is_one_kind() {
+        let rows = error_rows(&[
+            (
+                None,
+                "23505",
+                "duplicate key value violates unique constraint \"users_pkey\"",
+            ),
+            (
+                Some("pt_BR"),
+                "23505",
+                "duplicar valor da chave viola a restrição de unicidade \"users_pkey\"",
+            ),
+        ]);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].count, 2);
+    }
+
+    #[test]
+    fn one_language_keeps_telling_constraints_apart() {
+        let rows = error_rows(&[
+            (
+                Some("pt_BR"),
+                "23503",
+                "inserção na tabela \"a\" viola a restrição \"a_fk\"",
+            ),
+            (
+                Some("pt_BR"),
+                "23503",
+                "inserção na tabela \"b\" viola a restrição \"b_fk\"",
+            ),
+        ]);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+    }
+
+    #[test]
+    fn english_keeps_telling_constraints_apart() {
+        let rows = error_rows(&[
+            (
+                None,
+                "23503",
+                "insert on table \"a\" violates foreign key constraint \"a_fk\"",
+            ),
+            (
+                None,
+                "23503",
+                "insert on table \"b\" violates foreign key constraint \"b_fk\"",
+            ),
+        ]);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+    }
+
+    #[test]
+    fn only_the_sqlstates_seen_in_several_languages_collapse() {
+        let rows = error_rows(&[
+            (
+                None,
+                "23505",
+                "duplicate key value violates unique constraint \"a\"",
+            ),
+            (
+                Some("de"),
+                "23505",
+                "doppelter Schlüsselwert verletzt Unique-Constraint \"a\"",
+            ),
+            (
+                Some("de"),
+                "23503",
+                "Einfügen in Tabelle \"a\" verletzt \"a_fk\"",
+            ),
+            (
+                Some("de"),
+                "23503",
+                "Einfügen in Tabelle \"b\" verletzt \"b_fk\"",
+            ),
+        ]);
+        let of = |state: &str| {
+            rows.iter()
+                .filter(|r| r.sqlstate.as_deref() == Some(state))
+                .count()
+        };
+        assert_eq!((of("23505"), of("23503")), (1, 2), "{rows:?}");
     }
 
     #[test]
