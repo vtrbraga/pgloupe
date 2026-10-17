@@ -163,6 +163,9 @@ pub struct LogRecord {
     /// Lock waits this record settles: its statement, or an earlier one, was holding the lock.
     #[serde(skip)]
     pub blocks: Vec<BlockPair>,
+    /// The language a translator read this record in; set only on errors that carry a SQLSTATE.
+    #[serde(skip)]
+    pub locale: Option<String>,
 }
 
 impl LogRecord {
@@ -197,6 +200,7 @@ impl LogRecord {
             cursor_position: None,
             correlation: None,
             blocks: Vec::new(),
+            locale: None,
         }
     }
 }
