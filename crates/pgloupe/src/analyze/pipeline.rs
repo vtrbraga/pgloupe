@@ -20,7 +20,7 @@ use thiserror::Error;
 
 use super::{
     Merge,
-    acc::Accumulators,
+    acc::{Accumulators, SharedQueries},
     anonymize::{self, Anonymizer},
     correlate::Correlator,
     filter::Filter,
@@ -167,10 +167,13 @@ pub enum AnalyzeError {
 /// Fails when a file cannot be opened or read, is binary, is a stderr log whose prefix cannot be
 /// inferred, or the worker pool cannot start.
 pub fn run(paths: &[PathBuf], options: &Options) -> Result<Output, AnalyzeError> {
+    let shared = SharedQueries::new();
     let (mut acc, files) = run_with(paths, options, || {
         Accumulators::new(worker_limit(options), options.bucket_secs)
             .with_capture(options.slowest, options.params)
+            .with_shared(Arc::clone(&shared))
     })?;
+    acc.absorb_shared();
     acc.recap(options.max_fingerprints);
     Ok(Output { acc, files })
 }
