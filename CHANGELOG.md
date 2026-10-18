@@ -5,6 +5,10 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-18
+
+Speed: `logs analyze` and `logs ingest` use several threads far better, and `logs fetch` from RDS downloads files in parallel. Reports are unchanged.
+
 ### Changed
 
 - Faster log reading. On synthetic stderr logs of 2 GiB (16 logical cores), against 0.1.1:
