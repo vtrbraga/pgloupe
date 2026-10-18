@@ -24,7 +24,7 @@ use super::{
     anonymize::{self, Anonymizer},
     correlate::Correlator,
     filter::Filter,
-    slice::Slices,
+    slice::{SharedHours, Slices},
 };
 use crate::log::{
     BlockPair, DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions,
@@ -192,9 +192,13 @@ pub struct SlicedOutput {
 /// Fails like [`run`].
 pub fn run_sliced(path: &Path, options: &Options) -> Result<SlicedOutput, AnalyzeError> {
     let paths = [path.to_path_buf()];
+    let shared = SharedHours::new();
     let (mut slices, mut files) = run_with(&paths, options, || {
-        Slices::new(worker_limit(options), 60).with_capture(options.slowest, options.params)
+        Slices::new(worker_limit(options), 60)
+            .with_capture(options.slowest, options.params)
+            .with_shared(shared.clone())
     })?;
+    slices.absorb_shared();
     slices.recap(options.max_fingerprints);
     let file = files.pop().ok_or_else(|| AnalyzeError::Open {
         path: path.to_path_buf(),

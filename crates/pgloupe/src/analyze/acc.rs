@@ -1311,7 +1311,9 @@ impl SharedQueries {
     }
 
     fn drain(&self) -> BTreeMap<u64, QueryStats> {
-        let mut all = Vec::new();
+        // Inserted one by one: each shard's nodes are freed as they are emptied, so the
+        // fingerprints are never held twice.
+        let mut all = BTreeMap::new();
         for shard in &self.shards {
             let mut shard = shard
                 .lock()
@@ -1319,7 +1321,7 @@ impl SharedQueries {
             all.extend(std::mem::take(&mut *shard));
         }
         self.count.store(0, Ordering::Relaxed);
-        all.into_iter().collect()
+        all
     }
 }
 
@@ -1363,7 +1365,12 @@ impl Accumulators {
     /// Moves the shared fingerprints into [`Accumulators::queries`].
     pub fn absorb_shared(&mut self) {
         if let Some(shared) = self.shared.0.take() {
-            add_maps(&mut self.queries, shared.drain());
+            let drained = shared.drain();
+            if self.queries.is_empty() {
+                self.queries = drained;
+            } else {
+                add_maps(&mut self.queries, drained);
+            }
             self.cap_queries(self.limit);
         }
     }
