@@ -13,7 +13,6 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    thread,
 };
 
 use rayon::prelude::*;
@@ -322,15 +321,11 @@ fn run_with<S: Fold>(
     options: &Options,
     new: impl Fn() -> S + Sync + Send,
 ) -> Result<(S, Vec<FileSummary>), AnalyzeError> {
-    let threads = options
-        .threads
-        .unwrap_or_else(|| thread::available_parallelism().map_or(1, usize::from))
-        .max(1);
-    let files = Files::new(paths, options, threads);
     let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
+        .num_threads(options.threads.unwrap_or(0))
         .build()
         .map_err(AnalyzeError::Pool)?;
+    let files = Files::new(paths, options, pool.current_num_threads());
     // Called from here, not from inside `install`: a broadcast started on a worker thread can wait
     // for a worker that is waiting for it.
     let parts = pool.broadcast(|_| {
