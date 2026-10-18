@@ -10,7 +10,7 @@ use std::{
     io::{self, BufRead},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -31,8 +31,10 @@ use crate::log::{
     SetupError, Severity, decoder_for,
     infer::{Inference, SAMPLE_LINES, infer_prefix},
     locale::{self, Translator},
+    parallel::BlockFeed,
     prefix::Prefix,
     source,
+    stderr::StderrDecoder,
     tee::{self, Content, TeeHandle},
 };
 
@@ -256,6 +258,7 @@ struct Files<'a> {
     options: &'a Options,
     shared: Arc<Shared>,
     window: usize,
+    parse_ahead: Option<usize>,
     sources: Vec<Mutex<Option<Batches>>>,
     done: Vec<AtomicBool>,
     /// Every file before this one is done.
@@ -267,8 +270,12 @@ impl<'a> Files<'a> {
         Files {
             paths,
             options,
-            shared: Arc::new(Shared::default()),
+            shared: Arc::new(Shared::new(paths.len())),
             window,
+            // A file alone, or a few among many threads, keeps most of them waiting for the
+            // decoder: they parse its lines instead.
+            parse_ahead: (window > 1 && (paths.len() == 1 || paths.len() * 4 <= window))
+                .then_some(window + 2),
             sources: paths.iter().map(|_| Mutex::new(None)).collect(),
             done: paths.iter().map(|_| AtomicBool::new(false)).collect(),
             first: AtomicUsize::new(0),
@@ -286,6 +293,7 @@ impl<'a> Files<'a> {
                 &self.paths[index],
                 self.options,
                 Arc::clone(&self.shared),
+                self.parse_ahead,
             )
         });
         let batch = batches.next();
@@ -315,7 +323,15 @@ impl<'a> Files<'a> {
                     return Some(batch);
                 }
             }
-            // All busy: wait for the earliest file rather than spin.
+            // All busy: parse lines ahead for the files being decoded, and only when there is
+            // nothing to parse wait for the earliest file.
+            if (first..end).any(|index| {
+                self.shared.feeds[index]
+                    .get()
+                    .is_some_and(|feed| feed.help())
+            }) {
+                continue;
+            }
             if let Some(batch) = self.pull(first, &mut lock(&self.sources[first])) {
                 return Some(batch);
             }
@@ -378,6 +394,8 @@ struct Current {
     filtered: u64,
     /// Rewrites another language's messages as English.
     translator: Option<(String, Translator)>,
+    /// Where the file's lines are parsed, when several threads do it.
+    feed: Option<Arc<BlockFeed>>,
 }
 
 /// Records for the workers, and the lock waits the correlator settled while reading them. The
@@ -395,14 +413,17 @@ struct Shared {
     failure: Mutex<Option<(usize, AnalyzeError)>>,
     /// Index of the earliest failed file: later files are not read any further.
     fail_at: AtomicUsize,
+    /// The block feed of each file that is read by several threads, once it is open.
+    feeds: Vec<OnceLock<Arc<BlockFeed>>>,
 }
 
-impl Default for Shared {
-    fn default() -> Self {
+impl Shared {
+    fn new(files: usize) -> Self {
         Shared {
             summaries: Mutex::new(Vec::new()),
             failure: Mutex::new(None),
             fail_at: AtomicUsize::new(usize::MAX),
+            feeds: (0..files).map(|_| OnceLock::new()).collect(),
         }
     }
 }
@@ -418,10 +439,18 @@ struct Batches {
     current: Option<Current>,
     options: Options,
     shared: Arc<Shared>,
+    /// Blocks of lines that may be parsed ahead of the decoder, when several threads parse.
+    parse_ahead: Option<usize>,
 }
 
 impl Batches {
-    fn new(index: usize, path: &Path, options: &Options, shared: Arc<Shared>) -> Self {
+    fn new(
+        index: usize,
+        path: &Path,
+        options: &Options,
+        shared: Arc<Shared>,
+        parse_ahead: Option<usize>,
+    ) -> Self {
         Batches {
             index,
             correlator: Correlator::new(),
@@ -431,6 +460,7 @@ impl Batches {
             current: None,
             options: options.clone(),
             shared,
+            parse_ahead,
         }
     }
 
@@ -471,8 +501,13 @@ impl Batches {
 
     fn open_next(&mut self) -> Option<()> {
         let path = self.pending.pop_front()?;
-        match open_file(&path, self.index, &self.options) {
-            Ok(current) => self.current = Some(current),
+        match open_file(&path, self.index, &self.options, self.parse_ahead) {
+            Ok(current) => {
+                if let Some(feed) = &current.feed {
+                    drop(self.shared.feeds[self.index].set(Arc::clone(feed)));
+                }
+                self.current = Some(current);
+            }
             Err(error) => self.fail(error),
         }
         Some(())
@@ -561,7 +596,12 @@ impl Iterator for Batches {
     }
 }
 
-fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, AnalyzeError> {
+fn open_file(
+    path: &Path,
+    index: usize,
+    options: &Options,
+    parse_ahead: Option<usize>,
+) -> Result<Current, AnalyzeError> {
     let open_err = |source| AnalyzeError::Open {
         path: path.to_path_buf(),
         source,
@@ -619,11 +659,29 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
     } else {
         format
     };
-    let decoder =
-        decoder_for(decode_format, reader, &log_options).map_err(|source| AnalyzeError::Setup {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let setup = |source| AnalyzeError::Setup {
+        path: path.to_path_buf(),
+        source,
+    };
+    let (decoder, feed) = match parse_ahead {
+        Some(ahead) if decode_format == Format::Stderr => {
+            let text = log_options
+                .prefix
+                .as_deref()
+                .ok_or(SetupError::MissingPrefix);
+            let compiled = text
+                .and_then(|text| Prefix::compile(text).map_err(SetupError::from))
+                .map_err(setup)?;
+            let feed = Arc::new(BlockFeed::new(reader, compiled, options.log_tz, ahead));
+            let decoder: Box<dyn Decoder + Send> =
+                Box::new(StderrDecoder::from_blocks(Arc::clone(&feed)));
+            (decoder, Some(feed))
+        }
+        _ => (
+            decoder_for(decode_format, reader, &log_options).map_err(setup)?,
+            None,
+        ),
+    };
     Ok(Current {
         index,
         path: path.to_path_buf(),
@@ -635,6 +693,7 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
         tee,
         filtered: 0,
         translator,
+        feed,
     })
 }
 
@@ -977,6 +1036,35 @@ mod tests {
         for path in &paths[..3] {
             fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn one_stderr_file_gives_the_same_result_whether_threads_parse_its_lines_or_not() {
+        // Large enough for many blocks of lines; one thread reads it alone, more parse ahead.
+        let path = repeated("sample.log", 900);
+        let read = |threads, batch_size| {
+            run(
+                std::slice::from_ref(&path),
+                &Options {
+                    threads: Some(threads),
+                    batch_size,
+                    ..Options::new()
+                },
+            )
+            .unwrap()
+        };
+        let reference = read(1, 4_096);
+        assert!(reference.acc.totals.records > 1_000);
+        assert!(reference.files[0].stats.lines > 10_000);
+        for (threads, batch) in [(2, 7), (4, 100), (16, 4_096)] {
+            let other = read(threads, batch);
+            assert_eq!(other.acc, reference.acc, "threads {threads}, batch {batch}");
+            assert_eq!(
+                other.files[0].stats, reference.files[0].stats,
+                "threads {threads}, batch {batch}"
+            );
+        }
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

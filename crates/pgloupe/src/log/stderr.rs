@@ -5,7 +5,7 @@
 //! even when other backends' lines intervene. At most `max_open` entries are held: past that the
 //! oldest is closed and emitted, which bounds memory when a backend never speaks again.
 
-use std::{collections::VecDeque, io::BufRead};
+use std::{collections::VecDeque, io::BufRead, sync::Arc};
 
 use jiff::{Timestamp, tz::Offset};
 
@@ -14,6 +14,7 @@ use crate::hash::FastMap;
 use super::{
     DecodeError, DecodeStats, Decoder,
     line::{Line, MAX_LINE_BYTES, read_line_capped},
+    parallel::{BlockFeed, Item, Parsed, ParsedBlock},
     prefix::{Label, Prefix},
     record::{LogRecord, Severity},
 };
@@ -104,6 +105,31 @@ pub struct StderrDecoder<R: BufRead> {
     /// A read error found while entries were held: reported after they are emitted.
     deferred: Option<DecodeError>,
     stats: DecodeStats,
+    /// Lines parsed elsewhere, in place of `reader`.
+    blocks: Option<BlockInput>,
+}
+
+/// The parsed blocks of a file and where the decoder is in them.
+#[derive(Debug)]
+struct BlockInput {
+    feed: Arc<BlockFeed>,
+    /// Number of the next block to ask for.
+    next: usize,
+    current: Option<(ParsedBlock, usize)>,
+}
+
+impl StderrDecoder<std::io::Empty> {
+    /// A decoder that takes its lines from `feed`, which parses them on whichever threads are free.
+    #[must_use]
+    pub fn from_blocks(feed: Arc<BlockFeed>) -> Self {
+        let mut decoder = StderrDecoder::new(std::io::empty(), feed.prefix().clone(), None);
+        decoder.blocks = Some(BlockInput {
+            feed,
+            next: 0,
+            current: None,
+        });
+        decoder
+    }
 }
 
 impl<R: BufRead> StderrDecoder<R> {
@@ -135,6 +161,7 @@ impl<R: BufRead> StderrDecoder<R> {
             finished: false,
             deferred: None,
             stats: DecodeStats::default(),
+            blocks: None,
         }
     }
 
@@ -347,6 +374,17 @@ impl<R: BufRead> StderrDecoder<R> {
         self.continuation = Some(seq);
     }
 
+    /// Reads the next line from the reader and handles it; `false` at the end of the input.
+    fn step_reader(&mut self) -> Result<bool, DecodeError> {
+        let Some(line) = self.read_line()? else {
+            return Ok(false);
+        };
+        self.handle_line(&line);
+        // The next line is read into the same allocation.
+        self.buf = line.into_bytes();
+        Ok(true)
+    }
+
     fn handle_line(&mut self, line: &str) {
         if let Some(rest) = line.strip_prefix('\t') {
             self.continue_field(rest, line);
@@ -360,11 +398,77 @@ impl<R: BufRead> StderrDecoder<R> {
             return;
         }
         let mut record = LogRecord::new(Timestamp::UNIX_EPOCH, Severity::Log, String::new());
-        match self.prefix.parse_line(line, &mut record, self.fallback) {
+        let parsed = self
+            .prefix
+            .parse_line(line, &mut record, self.fallback)
+            .map(|(label, text)| (label, line.len() - text.len()));
+        self.dispatch(line, parsed, record);
+    }
+
+    /// Starts an entry, attaches a secondary line or skips the line, as its prefix parse says.
+    /// `parsed` has the label and where the text after it starts in `line`.
+    fn dispatch(&mut self, line: &str, parsed: Result<(Label, usize), String>, record: LogRecord) {
+        match parsed {
             Err(reason) => self.skip_line(&reason, record.pid, Some(line)),
-            Ok((Label::Level(level), text)) => self.start_entry(record, level, text),
-            Ok((label, text)) => self.attach(label, text, record.pid, line),
+            Ok((Label::Level(level), at)) => self.start_entry(record, level, &line[at..]),
+            Ok((label, at)) => self.attach(label, &line[at..], record.pid, line),
         }
+    }
+
+    /// Handles one line a block carries, the way reading and parsing it here would.
+    fn handle_item(&mut self, text: &str, item: &mut Item) {
+        self.line_no += 1;
+        self.stats.lines += 1;
+        let line = &text[item.start..item.end];
+        match &mut item.what {
+            Parsed::Blank => {}
+            Parsed::TooLong => {
+                self.stats
+                    .skip_with(self.line_no, "line longer than 16 MiB", None);
+                self.continuation = None;
+            }
+            Parsed::BadUtf8 { pid } => self.skip_line("line is not valid UTF-8", *pid, None),
+            Parsed::Tab => self.continue_field(&line[1..], line),
+            Parsed::Entry { parsed, record } => {
+                if line.trim() == TRUNCATED {
+                    self.stats.truncated += 1;
+                } else if let Some(record) = record.take() {
+                    let parsed = std::mem::replace(parsed, Err(String::new()));
+                    self.dispatch(line, parsed, record);
+                }
+            }
+        }
+    }
+
+    /// Reads the next line from the blocks and handles it; `false` at the end of the input.
+    fn step_blocks(&mut self) -> Result<bool, DecodeError> {
+        let Some(mut input) = self.blocks.take() else {
+            return Ok(false);
+        };
+        let outcome = loop {
+            let Some((block, cursor)) = input.current.as_mut() else {
+                match input.feed.take(input.next) {
+                    Some(block) => {
+                        input.next += 1;
+                        input.current = Some((block, 0));
+                        continue;
+                    }
+                    None => break Ok(false),
+                }
+            };
+            let ParsedBlock { text, items, .. } = block;
+            if let Some(item) = items.get_mut(*cursor) {
+                *cursor += 1;
+                self.handle_item(text, item);
+                break Ok(true);
+            }
+            let finished = input.current.take();
+            if let Some(error) = finished.and_then(|(block, _)| block.error) {
+                break Err(error);
+            }
+        };
+        self.blocks = Some(input);
+        outcome
     }
 
     /// Closes and emits everything still held, in arrival order.
@@ -407,24 +511,24 @@ impl<R: BufRead> Decoder for StderrDecoder<R> {
             if self.finished {
                 return Ok(None);
             }
-            let line = match self.read_line() {
-                Ok(Some(line)) => line,
-                Ok(None) => {
+            let step = if self.blocks.is_some() {
+                self.step_blocks()
+            } else {
+                self.step_reader()
+            };
+            match step {
+                Ok(true) => {}
+                Ok(false) => {
                     self.finished = true;
                     self.flush_held();
-                    continue;
                 }
                 Err(error) => {
                     // Hand out the complete entries first; the error follows.
                     self.finished = true;
                     self.deferred = Some(error);
                     self.flush_held();
-                    continue;
                 }
-            };
-            self.handle_line(&line);
-            // The next line is read into the same allocation.
-            self.buf = line.into_bytes();
+            }
         }
     }
 
