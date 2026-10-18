@@ -1,6 +1,6 @@
 [package]
 name = "xtask"
-description = "Generates the man pages, shell completions and command reference from the pgloupe command line."
+description = "Generates the man pages, shell completions and command reference, and runs the benchmarks."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

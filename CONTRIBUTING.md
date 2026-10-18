@@ -62,7 +62,12 @@ source -> decoder -> assembler -> classifier -> accumulators -> store -> outputs
 - `crates/synth` generates a corpus from a real PostgreSQL in Docker, and a benchmark load with
   ground truth (`synth bench`).
 - `crates/xtask` generates `docs/src/reference/commands.md` from the CLI definition. CI fails
-  if it is stale; after changing help text run `cargo run -p xtask -- generate`.
+  if it is stale; after changing help text run `cargo run -p xtask -- generate`. It also times
+  the analyzer: `cargo run -p xtask -- bench gen files` writes synthetic stderr logs under
+  `data/bench/` (cases `single`, `files`, `wide`; `--size 500M` for a quick one), and
+  `cargo build --release && cargo run -p xtask -- bench run files` prints seconds, MiB/s, peak
+  memory and a digest of the report at 1, 4, 8 and 16 threads. It fails if the report changes
+  with the thread count.
 - `docs/` is the mdBook behind the published docs (`mdbook build docs`). Everything else that
   a user reads is `README.md` and the help text in `crates/pgloupe/src/cli.rs`.
 
