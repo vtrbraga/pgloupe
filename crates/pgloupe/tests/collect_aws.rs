@@ -256,3 +256,122 @@ fn a_missing_cli_and_expired_credentials_explain_themselves() {
     assert!(err.contains("sign in again"), "{err}");
     assert!(!provider(&fake).experimental());
 }
+
+fn hour_files(count: usize) -> Vec<(String, i64, i64)> {
+    (0..count)
+        .map(|h| {
+            (
+                format!("error/postgresql.log.2026-10-14-{h:02}"),
+                1_000 + i64::try_from(h).unwrap(),
+                8,
+            )
+        })
+        .collect()
+}
+
+fn many_files(label: &str, count: usize) -> FakeCli {
+    let files = hour_files(count);
+    let named: Vec<(&str, i64, i64)> = files.iter().map(|(n, w, s)| (n.as_str(), *w, *s)).collect();
+    let mut fake =
+        FakeCli::new(label).on(&["describe-db-log-files"], vec![Reply::Out(list(&named))]);
+    for h in 0..count {
+        let name = format!("2026-10-14-{h:02} --marker");
+        fake = fake
+            .on(
+                &[&format!("{name} 0 --no-paginate")],
+                vec![Reply::Out(portion(&format!("{h:02}a\n"), "1:4", true))],
+            )
+            .on(
+                &[&format!("{name} 1:4 --no-paginate")],
+                vec![Reply::Out(portion(&format!("{h:02}b\n"), "1:8", false))],
+            );
+    }
+    fake
+}
+
+#[test]
+fn several_files_at_once_give_the_same_result_as_one_at_a_time() {
+    let mut results = Vec::new();
+    for jobs in [1, 4, 16] {
+        let fake = many_files(&format!("aws-jobs-{jobs}"), 9);
+        let mut sink = MemorySink::default();
+        let mut state = ProviderState::new();
+        let summary = provider(&fake)
+            .with_jobs(jobs)
+            .fetch(&request(), &mut sink, &mut state)
+            .unwrap();
+        assert_eq!(summary.bytes, 9 * 8);
+        assert_eq!(summary.files.len(), 9);
+        assert_eq!(summary.files[0], "error_postgresql.log.2026-10-14-00");
+        assert_eq!(summary.files[8], "error_postgresql.log.2026-10-14-08");
+        assert_eq!(
+            sink.files["error_postgresql.log.2026-10-14-05"],
+            b"05a\n05b\n"
+        );
+        results.push((sink.files, state, summary));
+    }
+    assert!(
+        results.windows(2).all(|w| w[0] == w[1]),
+        "jobs changed the outcome"
+    );
+}
+
+#[test]
+fn a_failing_file_reports_the_first_failure_and_keeps_finished_files() {
+    let files = hour_files(3);
+    let named: Vec<(&str, i64, i64)> = files.iter().map(|(n, w, s)| (n.as_str(), *w, *s)).collect();
+    let denied = || Reply::Fail {
+        code: 254,
+        stderr:
+            "An error occurred (AccessDenied) when calling the DownloadDBLogFilePortion operation"
+                .to_owned(),
+    };
+    let fake = FakeCli::new("aws-fail2")
+        .on(&["describe-db-log-files"], vec![Reply::Out(list(&named))])
+        .on(
+            &["2026-10-14-00 --marker 0"],
+            vec![Reply::Out(portion("00\n", "1:3", false))],
+        )
+        .on(&["2026-10-14-01 --marker 0"], vec![denied()])
+        .on(&["2026-10-14-02 --marker 0"], vec![denied()]);
+    let mut sink = MemorySink::default();
+    let mut state = ProviderState::new();
+    let err = provider(&fake)
+        .with_jobs(4)
+        .fetch(&request(), &mut sink, &mut state)
+        .err()
+        .unwrap();
+    assert!(
+        err.to_string().contains("rds:DownloadDBLogFilePortion"),
+        "{err}"
+    );
+    assert_eq!(sink.files["error_postgresql.log.2026-10-14-00"], b"00\n");
+    assert_eq!(state["size:error/postgresql.log.2026-10-14-00"], "8");
+    assert!(!state.contains_key("size:error/postgresql.log.2026-10-14-01"));
+}
+
+#[test]
+fn the_hour_that_ended_before_since_is_not_downloaded() {
+    let fake = FakeCli::new("aws-since")
+        .on(
+            &["describe-db-log-files"],
+            vec![Reply::Out(list(&[
+                ("error/postgresql.log.2026-10-13-23", 1_000, 5),
+                ("error/postgresql.log.2026-10-14-00", 2_000, 5),
+            ]))],
+        )
+        .on(
+            &["2026-10-14-00 --marker 0"],
+            vec![Reply::Out(portion("kept\n", "1:5", false))],
+        );
+    let mut sink = MemorySink::default();
+    provider(&fake)
+        .fetch(&request(), &mut sink, &mut ProviderState::new())
+        .unwrap();
+    assert_eq!(sink.files.len(), 1);
+    assert!(
+        fake.calls().iter().all(|c| !c.contains("2026-10-13-23 ")),
+        "{:?}",
+        fake.calls()
+    );
+}

@@ -4,7 +4,7 @@
 .SH NAME
 pgloupe\-watch \- Keep a report fresh from a live server and serve it locally
 .SH SYNOPSIS
-\fBpgloupe watch\fR [\fB\-\-password\-env\fR] [\fB\-\-sslrootcert\fR] [\fB\-\-instance\fR] [\fB\-\-region\fR] [\fB\-\-profile\fR] [\fB\-\-project\fR] [\fB\-\-resource\-group\fR] [\fB\-\-subscription\fR] [\fB\-\-log\-group\fR] [\fB\-\-bin\fR] [\fB\-\-interval\fR] [\fB\-\-window\fR] [\fB\-\-listen\fR] [\fB\-\-allow\-remote\fR] [\fB\-\-state\-dir\fR] [\fB\-\-keep\-snapshots\fR] [\fB\-\-prefix\fR] [\fB\-\-out\fR] [\fB\-\-once\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-conn\fR> <\fB\-\-provider\fR> 
+\fBpgloupe watch\fR [\fB\-\-password\-env\fR] [\fB\-\-sslrootcert\fR] [\fB\-\-instance\fR] [\fB\-\-region\fR] [\fB\-\-profile\fR] [\fB\-\-project\fR] [\fB\-\-resource\-group\fR] [\fB\-\-subscription\fR] [\fB\-\-log\-group\fR] [\fB\-\-bin\fR] [\fB\-\-jobs\fR] [\fB\-\-interval\fR] [\fB\-\-window\fR] [\fB\-\-listen\fR] [\fB\-\-allow\-remote\fR] [\fB\-\-state\-dir\fR] [\fB\-\-keep\-snapshots\fR] [\fB\-\-prefix\fR] [\fB\-\-out\fR] [\fB\-\-once\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-conn\fR> <\fB\-\-provider\fR> 
 .SH DESCRIPTION
 Keep a report fresh from a live server and serve it locally
 .SH OPTIONS
@@ -64,6 +64,9 @@ Azure subscription (`azure\-flexible`)
 .TP
 \fB\-\-bin\fR \fI<BIN>\fR
 Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)
+.TP
+\fB\-\-jobs\fR \fI<JOBS>\fR [default: 4]
+Files downloaded at the same time (`aws\-rds`; 1 to 16)
 .TP
 \fB\-\-interval\fR \fI<INTERVAL>\fR [default: 5m]
 Time between updates (`30s`, `5m`, `1h`)
