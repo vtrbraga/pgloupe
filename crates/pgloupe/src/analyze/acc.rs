@@ -240,6 +240,10 @@ impl QueryStats {
     /// Offers a spelling of this statement as the representative sample: the one with the smallest
     /// `(timestamp, hash)` wins, wherever and whenever it is seen.
     fn offer(&mut self, ts: Timestamp, sql: &str, query_id: Option<i64>) {
+        // The timestamp decides first, so a later one needs no hash of the text.
+        if self.sample.is_some_and(|current| ts > current.0) {
+            return;
+        }
         let key = (ts, sql_hash(sql), query_id);
         if self.sample.is_none_or(|current| key < current) {
             self.sample = Some(key);

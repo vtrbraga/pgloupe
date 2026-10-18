@@ -4,6 +4,13 @@
 /// Display text longer than this is cut.
 const MAX_DISPLAY_CHARS: usize = 4_096;
 
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, PoisonError, RwLock},
+};
+
+use xxhash_rust::xxh3::{Xxh3DefaultBuilder, xxh3_64};
+
 use super::kind::QueryKind;
 
 /// The grouping key of a statement.
@@ -14,40 +21,69 @@ pub struct Fingerprint {
     pub parsed: bool,
 }
 
-/// Statement shapes remembered per thread. Real workloads repeat a few thousand shapes.
-const CACHE_LIMIT: usize = 65_536;
+/// Statement shapes remembered in all. Real workloads repeat a few thousand shapes; a log of
+/// many tenants' tables can have a hundred thousand.
+const CACHE_LIMIT: usize = 262_144;
 
-thread_local! {
-    static CACHE: std::cell::RefCell<std::collections::HashMap<String, Fingerprint>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
+/// A shape key longer than this is parsed every time rather than kept.
+const MAX_CACHED_KEY: usize = 8 * 1024;
+
+/// The cache is split so that threads rarely wait for each other.
+const SHARDS: usize = 64;
+
+type Shard = RwLock<HashMap<String, Fingerprint, Xxh3DefaultBuilder>>;
+
+static CACHE: LazyLock<Vec<Shard>> = LazyLock::new(|| {
+    (0..SHARDS)
+        .map(|_| RwLock::new(HashMap::with_hasher(Xxh3DefaultBuilder)))
+        .collect()
+});
+
+fn shard(key: &str) -> &'static Shard {
+    let slot = xxh3_64(key.as_bytes()) % (SHARDS as u64);
+    &CACHE[usize::try_from(slot).unwrap_or(0)]
 }
 
 /// Fingerprints `sql`: equal for statements that differ only in literals, case, whitespace or the
 /// length of `IN` lists.
 ///
 /// Parsing is the dominant cost of a run, and nearly every log line repeats a statement shape with
-/// different literals, so a per-thread cache remembers the fingerprint of each
+/// different literals, so a cache shared by all threads remembers the fingerprint of each
 /// `shape_key`. Statements the key cannot describe safely are parsed every time.
 #[must_use]
 pub fn fingerprint(sql: &str) -> Fingerprint {
     let Some(key) = shape_key(sql) else {
         return fingerprint_uncached(sql);
     };
-    if let Some(found) = CACHE.with(|cache| cache.borrow().get(&key).copied()) {
+    let shard = shard(&key);
+    let known = shard
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+        .copied();
+    if let Some(found) = known {
         return found;
     }
     let found = fingerprint_uncached(sql);
     // An unparsed statement's id hashes its literals, so it cannot stand for its shape.
-    if found.parsed {
-        CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if cache.len() >= CACHE_LIMIT {
-                cache.clear();
-            }
-            cache.insert(key, found);
-        });
+    if found.parsed && key.len() <= MAX_CACHED_KEY {
+        let mut shard = shard.write().unwrap_or_else(PoisonError::into_inner);
+        if shard.len() >= CACHE_LIMIT / SHARDS {
+            shard.clear();
+        }
+        shard.insert(key, found);
     }
     found
+}
+
+#[cfg(test)]
+fn is_cached(sql: &str) -> bool {
+    shape_key(sql).is_some_and(|key| {
+        shard(&key)
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(&key)
+    })
 }
 
 /// The fingerprint straight from `pg_query`, the reference the cache must agree with.
@@ -137,13 +173,30 @@ fn shape_key(sql: &str) -> Option<String> {
                 i = end;
             }
             _ => {
-                key.push(b);
-                i += 1;
+                // Everything up to the next byte that needs a decision is copied as it is.
+                let run = bytes[i..]
+                    .iter()
+                    .position(|b| NEEDS_DECISION[usize::from(*b)])
+                    .map_or(bytes.len() - i, |at| at.max(1));
+                key.extend_from_slice(&bytes[i..i + run]);
+                i += run;
             }
         }
     }
     String::from_utf8(key).ok()
 }
+
+/// The bytes `shape_key` treats specially: quotes, comment starts, `$`, digits and `.`.
+const NEEDS_DECISION: [bool; 256] = {
+    let mut table = [false; 256];
+    let special = b"'\"-/$.0123456789";
+    let mut i = 0;
+    while i < special.len() {
+        table[special[i] as usize] = true;
+        i += 1;
+    }
+    table
+};
 
 /// The index just past the quote that closes the one at `start` (a doubled quote is an escape).
 fn skip_quoted(bytes: &[u8], start: usize, quote: u8) -> Option<usize> {
@@ -642,5 +695,19 @@ mod tests {
     fn unparsable_statements_are_not_cached_across_literals() {
         assert_ne!(fingerprint("SELEC 1").id, fingerprint("SELEC 2").id);
         assert_ne!(fingerprint("SELEC 1").id, fingerprint("SELEC 2").id);
+    }
+
+    #[test]
+    fn a_shape_parsed_on_one_thread_is_known_to_the_others() {
+        let sql = "SELECT shared_cache_probe FROM t_probe WHERE id = 41";
+        assert!(!is_cached(sql));
+        let seen = std::thread::spawn(move || fingerprint(sql)).join().unwrap();
+        assert!(is_cached(
+            "SELECT shared_cache_probe FROM t_probe WHERE id = 42"
+        ));
+        assert_eq!(
+            fingerprint("SELECT shared_cache_probe FROM t_probe WHERE id = 43"),
+            seen
+        );
     }
 }
