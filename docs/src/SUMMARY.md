@@ -10,6 +10,7 @@
 - [Amazon RDS](guides/rds.md)
 - [Follow a live server](guides/live.md)
 - [Keep logs and compare periods](guides/store.md)
+- [Large logs and threads](guides/large-logs.md)
 - [Share a report safely](guides/share.md)
 - [pgBouncer, other languages, other clouds](guides/other-servers.md)
 
