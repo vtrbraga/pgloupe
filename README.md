@@ -29,10 +29,9 @@ connections. It also tells you which server settings are limiting the report and
   SQL, Azure and Aiven already have. It can fetch RDS logs itself.
 - **Tells you why a number is odd.** Resets, evictions, windows that do not match, unreadable
   query text, logs without durations: each becomes a plain sentence, not a silent zero.
-- **Fast.** On an 11 GB set of generated PostgreSQL 17 logs it read about 141 MB/s on one
-  thread using about 44 MiB of memory, and about 187 MB/s on 16 threads (452 MiB). Throughput
-  and memory stayed flat from 0.5 GB to 11 GB; memory depends on the number of distinct
-  statements (625 there), not on log size. Figures vary by hardware.
+- **Fast.** On a 10.7 GB set of 40 generated PostgreSQL 17 logs it read about 200 MB/s on one
+  thread using about 46 MiB of memory, and about 1.2 GB/s on 16 threads (512 MiB). Memory
+  depends on the number of distinct statements, not on log size. Figures vary by hardware.
 - **Safe to share.** `--anonymize` rewrites names and literals before anything is counted.
 
 ## Install
