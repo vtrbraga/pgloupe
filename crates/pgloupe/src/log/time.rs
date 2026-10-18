@@ -1,5 +1,7 @@
 //! Parsing of Postgres log timestamps and timezone tokens.
 
+use std::cell::RefCell;
+
 use jiff::{Timestamp, civil::DateTime, tz::Offset};
 
 /// Parses `YYYY-MM-DD HH:MM:SS[.fff] ZONE`, e.g. `2026-10-14 10:20:09.289 UTC`.
@@ -10,6 +12,27 @@ use jiff::{Timestamp, civil::DateTime, tz::Offset};
 ///
 /// Fails if the text is not a date and time followed by a zone, or the zone is unknown.
 pub fn parse_log_time(text: &str, fallback: Option<Offset>) -> Result<Timestamp, String> {
+    if let Some(found) = LAST_SECOND.with(|last| last.borrow().as_ref()?.resolve(text, fallback)) {
+        return Ok(found);
+    }
+    let parsed = parse_uncached(text, fallback)?;
+    if let Some((head, zone)) = split_log_time(text) {
+        // The same second without its fraction: what the next line of this second starts from.
+        if let Ok(base) = parse_uncached(&format!("{head} {zone}"), fallback) {
+            LAST_SECOND.with(|last| {
+                *last.borrow_mut() = Some(Second {
+                    head: head.to_owned(),
+                    zone: zone.to_owned(),
+                    fallback,
+                    base,
+                });
+            });
+        }
+    }
+    Ok(parsed)
+}
+
+fn parse_uncached(text: &str, fallback: Option<Offset>) -> Result<Timestamp, String> {
     let (civil, zone) = text
         .rsplit_once(' ')
         .ok_or_else(|| format!("{text:?} has no timezone"))?;
@@ -20,6 +43,65 @@ pub fn parse_log_time(text: &str, fallback: Option<Offset>) -> Result<Timestamp,
     offset
         .to_timestamp(datetime)
         .map_err(|err| format!("{text:?} is out of range: {err}"))
+}
+
+/// The second the last line was logged in. Lines come in bursts, and most share the second of the
+/// one before, so only the fraction of such a line needs reading.
+struct Second {
+    /// `YYYY-MM-DD HH:MM:SS`
+    head: String,
+    zone: String,
+    fallback: Option<Offset>,
+    /// The instant of `head` in `zone`.
+    base: Timestamp,
+}
+
+thread_local! {
+    static LAST_SECOND: RefCell<Option<Second>> = const { RefCell::new(None) };
+}
+
+/// `text` as (`YYYY-MM-DD HH:MM:SS`, zone) when it has no fraction or a plain one of 1 to 9 digits.
+fn split_log_time(text: &str) -> Option<(&str, &str)> {
+    let bytes = text.as_bytes();
+    let head = text.get(..19)?;
+    let after = match bytes.get(19)? {
+        b' ' => 20,
+        b'.' => {
+            let digits = bytes[20..]
+                .iter()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+            (1..=9).contains(&digits).then_some(())?;
+            if bytes.get(20 + digits) != Some(&b' ') {
+                return None;
+            }
+            21 + digits
+        }
+        _ => return None,
+    };
+    let zone = text.get(after..)?;
+    (!zone.is_empty() && !zone.contains(' ')).then_some((head, zone))
+}
+
+impl Second {
+    fn resolve(&self, text: &str, fallback: Option<Offset>) -> Option<Timestamp> {
+        let (head, zone) = split_log_time(text)?;
+        if head != self.head || zone != self.zone || fallback != self.fallback {
+            return None;
+        }
+        let fraction = text[19..].strip_prefix('.').map_or("", |rest| {
+            &rest[..rest.bytes().take_while(u8::is_ascii_digit).count()]
+        });
+        let mut nanos: i32 = 0;
+        for place in 0..9 {
+            let digit = fraction
+                .as_bytes()
+                .get(place)
+                .map_or(0, |b| i32::from(b - b'0'));
+            nanos = nanos * 10 + digit;
+        }
+        Timestamp::new(self.base.as_second(), nanos).ok()
+    }
 }
 
 /// Parses epoch seconds with an optional fraction, as printed by `%n`.
@@ -220,5 +302,43 @@ mod tests {
         ));
         assert!(!looks_like_log_time("hello"));
         assert!(!looks_like_log_time(""));
+    }
+
+    #[test]
+    fn the_second_cache_agrees_with_a_full_parse() {
+        let zones = ["UTC", "+02", "-0300", "+05:30", "GMT"];
+        let fractions = ["", ".5", ".05", ".123", ".999999999", ".1234567890", ".x"];
+        for fallback in [None, Some(Offset::UTC)] {
+            for zone in zones {
+                for second in [
+                    "2026-10-14 10:20:09",
+                    "2026-10-14 10:20:10",
+                    "2026-12-31 23:59:59",
+                ] {
+                    for fraction in fractions {
+                        for text in [
+                            format!("{second}{fraction} {zone}"),
+                            format!("{second}{fraction} {zone}"),
+                        ] {
+                            assert_eq!(
+                                parse_log_time(&text, fallback),
+                                parse_uncached(&text, fallback),
+                                "{text}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_zone_or_fallback_is_not_served_from_the_last_second() {
+        let utc = parse_log_time("2026-10-14 10:20:09.5 UTC", None).unwrap();
+        let east = parse_log_time("2026-10-14 10:20:09.5 +02", None).unwrap();
+        assert_ne!(utc, east);
+        assert_eq!(east.as_second(), utc.as_second() - 7_200);
+        parse_log_time("2026-10-14 10:20:09.5 CEST", None).unwrap_err();
+        parse_log_time("2026-10-14 10:20:09.5 CEST", Some(Offset::UTC)).unwrap();
     }
 }

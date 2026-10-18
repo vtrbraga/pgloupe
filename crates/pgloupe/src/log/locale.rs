@@ -8,14 +8,12 @@
 //! EXPERIMENTAL: the table covers Portuguese (Brazil), Spanish, French and German; any other
 //! language can be added with a table of the same shape (`--messages-file`).
 
-use std::{
-    collections::HashMap,
-    sync::{LazyLock, RwLock},
-};
+use std::sync::{LazyLock, RwLock};
 
 use regex::Regex;
 
 use super::Severity;
+use crate::hash::FastMap;
 
 /// The translations, one per line: `locale<TAB>english<TAB>translated`.
 const TABLE: &str = include_str!("locales.tsv");
@@ -100,8 +98,8 @@ const SEVERITIES: [(&str, Severity); 8] = [
     ("PANIC", Severity::Panic),
 ];
 
-static SEVERITY_WORDS: LazyLock<HashMap<&'static str, Severity>> = LazyLock::new(|| {
-    let mut words = HashMap::new();
+static SEVERITY_WORDS: LazyLock<FastMap<&'static str, Severity>> = LazyLock::new(|| {
+    let mut words = FastMap::default();
     for entry in BUILT_IN.iter() {
         if let Some((_, severity)) = SEVERITIES.iter().find(|(name, _)| *name == entry.english) {
             words.entry(entry.translated.as_str()).or_insert(*severity);
@@ -149,8 +147,8 @@ const SECONDARY: [&str; 6] = [
     "LOCATION",
 ];
 
-static SECONDARY_WORDS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    let mut words = HashMap::new();
+static SECONDARY_WORDS: LazyLock<FastMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut words = FastMap::default();
     for entry in BUILT_IN.iter() {
         if let Some(name) = SECONDARY
             .iter()
@@ -493,6 +491,8 @@ pub fn detect(sample: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     fn translator(locale: &str) -> Translator {
