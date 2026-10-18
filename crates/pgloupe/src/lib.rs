@@ -9,6 +9,7 @@ pub mod cli;
 pub mod collect;
 pub mod combined;
 pub mod error;
+mod hash;
 pub mod log;
 pub mod stats;
 pub mod store;

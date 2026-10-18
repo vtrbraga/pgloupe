@@ -1,5 +1,8 @@
 //! `cargo xtask generate` writes the man pages, shell completions and command reference;
-//! `cargo xtask check` fails when the files in the repository are out of date.
+//! `cargo xtask check` fails when the files in the repository are out of date;
+//! `cargo xtask bench` writes benchmark logs and times pgloupe on them.
+
+mod bench;
 
 use std::{
     collections::BTreeMap,
@@ -58,7 +61,8 @@ fn run() -> anyhow::Result<()> {
                 )
             }
         }
-        _ => bail!("usage: cargo xtask <generate|check>"),
+        Some("bench") => bench::run(&root, &std::env::args().skip(2).collect::<Vec<_>>()),
+        _ => bail!("usage: cargo xtask <generate|check|bench>"),
     }
 }
 

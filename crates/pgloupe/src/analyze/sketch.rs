@@ -360,4 +360,37 @@ mod tests {
         assert!(sketch.bucket_count() <= 2_048);
         assert!(sketch.quantile(1.0).unwrap() >= 1e29);
     }
+
+    #[test]
+    fn a_stored_sketch_may_list_its_buckets_in_any_order() {
+        let mut sketch = Sketch::new();
+        for v in [1.0, 10.0, 100.0, 100.0] {
+            sketch.add(v);
+        }
+        let json = serde_json::to_value(&sketch).unwrap();
+        let mut shuffled = json.clone();
+        shuffled["buckets"].as_array_mut().unwrap().reverse();
+        assert_eq!(serde_json::from_value::<Sketch>(shuffled).unwrap(), sketch);
+    }
+
+    #[test]
+    fn past_the_bucket_limit_the_lowest_buckets_fold_upwards() {
+        // Values over ~35 decades land in more than MAX_BUCKETS buckets.
+        let values: Vec<f64> = (0..3_000).map(|i| 1.02_f64.powi(i)).collect();
+        let sketch = sketch_of(&values);
+        assert_eq!(sketch.bucket_count(), MAX_BUCKETS);
+        assert_eq!(sketch.count(), 3_000);
+        let top = sketch.quantile(1.0).unwrap();
+        assert!(
+            (top - values[2_999]).abs() <= values[2_999] * 0.011,
+            "{top}"
+        );
+        let merged = {
+            let mut left = sketch_of(&values[..1_500]);
+            left.merge(sketch_of(&values[1_500..]));
+            left
+        };
+        assert_eq!(merged.bucket_count(), MAX_BUCKETS);
+        assert_eq!(merged.count(), 3_000);
+    }
 }

@@ -10,6 +10,7 @@ pub mod infer;
 pub mod jsonlog;
 pub mod line;
 pub mod locale;
+pub mod parallel;
 pub mod pgbouncer;
 pub mod prefix;
 pub mod record;

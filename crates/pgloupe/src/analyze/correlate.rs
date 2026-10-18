@@ -4,12 +4,11 @@
 //! which query it is about. This stage runs once per file, in file order, before records are
 //! split between workers, so the result does not depend on thread count.
 
-use std::collections::HashMap;
-
 use jiff::{SignedDuration, Timestamp};
 
 use crate::{
     analyze::event::{Event, StatementKind, classify},
+    hash::FastMap,
     log::{BlockPair, Correlation, LogRecord, Phase},
 };
 
@@ -20,13 +19,13 @@ const MAX_ENTRIES: usize = 100_000;
 /// Remembers cursors, prepared statements and the last untimed statement of each backend.
 #[derive(Debug, Default)]
 pub struct Correlator {
-    cursors: HashMap<(u32, String), Cursor>,
-    prepared: HashMap<(u32, String), String>,
-    untimed: HashMap<u32, Untimed>,
+    cursors: FastMap<(u32, String), Cursor>,
+    prepared: FastMap<(u32, String), String>,
+    untimed: FastMap<u32, Untimed>,
     /// The statement each backend finished last.
-    last: HashMap<u32, String>,
+    last: FastMap<u32, String>,
     /// Waits blamed on a backend that has not logged a statement since.
-    holding: HashMap<u32, Vec<Hold>>,
+    holding: FastMap<u32, Vec<Hold>>,
 }
 
 /// A declared cursor.

@@ -1,10 +1,13 @@
 //! Accumulators split by UTC hour, the unit the store keeps.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 use super::{
     Merge,
-    acc::{Accumulators, add_maps},
+    acc::{Accumulators, SharedQueries, add_maps},
 };
 use crate::log::{BlockPair, LogRecord};
 
@@ -26,6 +29,39 @@ pub struct Slices {
     params: bool,
     /// Keyed by the hour's start, in Unix seconds.
     pub by_hour: BTreeMap<i64, Accumulators>,
+    shared: SharedHours,
+}
+
+/// The fingerprints of each hour, kept once for all the workers that fold into their own
+/// [`Slices`]. Two values are equal whatever they share.
+#[derive(Debug, Clone, Default)]
+pub struct SharedHours(Option<Arc<Mutex<HourQueries>>>);
+
+type HourQueries = BTreeMap<i64, Arc<SharedQueries>>;
+
+impl SharedHours {
+    /// An empty set of hours.
+    #[must_use]
+    pub fn new() -> Self {
+        SharedHours(Some(Arc::default()))
+    }
+
+    /// The shared fingerprints of the hour starting at `hour`.
+    fn of(&self, hour: i64) -> Option<Arc<SharedQueries>> {
+        let hours = self.0.as_ref()?;
+        let mut hours = hours
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Some(Arc::clone(
+            hours.entry(hour).or_insert_with(SharedQueries::new),
+        ))
+    }
+}
+
+impl PartialEq for SharedHours {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
 }
 
 impl Slices {
@@ -38,6 +74,32 @@ impl Slices {
             slowest: super::slowest::DEFAULT_KEPT,
             params: false,
             by_hour: BTreeMap::new(),
+            shared: SharedHours::default(),
+        }
+    }
+
+    /// Folds the statements of every hour into `shared`, so several `Slices` keep each fingerprint
+    /// once between them. Call [`Slices::absorb_shared`] on the merged result.
+    #[must_use]
+    pub fn with_shared(mut self, shared: SharedHours) -> Self {
+        self.shared = shared;
+        self
+    }
+
+    /// Moves the shared fingerprints into the hours' accumulators.
+    pub fn absorb_shared(&mut self) {
+        for acc in self.by_hour.values_mut() {
+            acc.absorb_shared();
+        }
+    }
+
+    /// A new accumulator for the hour starting at `hour`.
+    fn new_hour(&self, hour: i64) -> Accumulators {
+        let acc =
+            Accumulators::new(self.limit, self.bucket_secs).with_capture(self.slowest, self.params);
+        match self.shared.of(hour) {
+            Some(queries) => acc.with_shared(queries),
+            None => acc,
         }
     }
 
@@ -51,25 +113,27 @@ impl Slices {
 
     /// Folds `record` into its hour.
     pub fn add_record(&mut self, record: &LogRecord) {
-        let (limit, bucket_secs, slowest, params) =
-            (self.limit, self.bucket_secs, self.slowest, self.params);
-        self.by_hour
-            .entry(hour_of(record.ts.as_second()))
-            .or_insert_with(|| Accumulators::new(limit, bucket_secs).with_capture(slowest, params))
-            .add_record(record);
+        let hour = hour_of(record.ts.as_second());
+        if !self.by_hour.contains_key(&hour) {
+            let acc = self.new_hour(hour);
+            self.by_hour.insert(hour, acc);
+        }
+        if let Some(acc) = self.by_hour.get_mut(&hour) {
+            acc.add_record(record);
+        }
     }
 
     /// Folds lock waits into the hour they were logged in.
     pub fn add_blocks(&mut self, blocks: &[BlockPair]) {
-        let (limit, bucket_secs, slowest, params) =
-            (self.limit, self.bucket_secs, self.slowest, self.params);
         for block in blocks {
-            self.by_hour
-                .entry(hour_of(block.at.as_second()))
-                .or_insert_with(|| {
-                    Accumulators::new(limit, bucket_secs).with_capture(slowest, params)
-                })
-                .add_blocks(std::slice::from_ref(block));
+            let hour = hour_of(block.at.as_second());
+            if !self.by_hour.contains_key(&hour) {
+                let acc = self.new_hour(hour);
+                self.by_hour.insert(hour, acc);
+            }
+            if let Some(acc) = self.by_hour.get_mut(&hour) {
+                acc.add_blocks(std::slice::from_ref(block));
+            }
         }
     }
 

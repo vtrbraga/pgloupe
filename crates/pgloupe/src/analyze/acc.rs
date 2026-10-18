@@ -1,6 +1,12 @@
 //! Mergeable accumulators: per-fingerprint statistics and global totals.
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -88,6 +94,35 @@ pub(super) fn add_maps<K: Ord, V: Merge>(into: &mut BTreeMap<K, V>, from: BTreeM
             }
         }
     }
+}
+
+/// Maps under this many entries are merged on one thread.
+const PARALLEL_MERGE_FROM: usize = 16_384;
+
+/// [`add_maps`] for big maps: the key range is cut in two and the halves are merged on different
+/// threads, so folding the maps of many workers does not end on one thread.
+pub(super) fn add_maps_par<K: Ord + Clone + Send, V: Merge + Send>(
+    into: &mut BTreeMap<K, V>,
+    mut from: BTreeMap<K, V>,
+) {
+    let larger = if into.len() >= from.len() {
+        &*into
+    } else {
+        &from
+    };
+    if larger.len() < PARALLEL_MERGE_FROM {
+        return add_maps(into, from);
+    }
+    let Some(pivot) = larger.keys().nth(larger.len() / 2).cloned() else {
+        return add_maps(into, from);
+    };
+    let mut into_high = into.split_off(&pivot);
+    let from_high = from.split_off(&pivot);
+    rayon::join(
+        || add_maps_par(into, from),
+        || add_maps_par(&mut into_high, from_high),
+    );
+    into.append(&mut into_high);
 }
 
 /// Maps with non-string keys travel as a list of `[key, value]` pairs.
@@ -240,6 +275,10 @@ impl QueryStats {
     /// Offers a spelling of this statement as the representative sample: the one with the smallest
     /// `(timestamp, hash)` wins, wherever and whenever it is seen.
     fn offer(&mut self, ts: Timestamp, sql: &str, query_id: Option<i64>) {
+        // The timestamp decides first, so a later one needs no hash of the text.
+        if self.sample.is_some_and(|current| ts > current.0) {
+            return;
+        }
         let key = (ts, sql_hash(sql), query_id);
         if self.sample.is_none_or(|current| key < current) {
             self.sample = Some(key);
@@ -1221,6 +1260,8 @@ impl Merge for Totals {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Accumulators {
     pub totals: Totals,
+    /// Empty while the accumulators share their fingerprints (see [`Accumulators::with_shared`]);
+    /// [`Accumulators::absorb_shared`] moves them here.
     pub queries: BTreeMap<u64, QueryStats>,
     /// Statistics of fingerprints beyond the limit.
     pub overflow: QueryStats,
@@ -1234,6 +1275,65 @@ pub struct Accumulators {
     #[serde(skip)]
     capture_params: bool,
     limit: usize,
+    #[serde(skip)]
+    shared: SharedHandle,
+}
+
+/// The fingerprints of a run, kept once for all its workers.
+///
+/// A worker folding into its own [`Accumulators`] would keep a copy of every fingerprint it met,
+/// and the memory of a log with many distinct statements would grow with the number of threads.
+#[derive(Debug)]
+pub struct SharedQueries {
+    shards: Vec<Mutex<BTreeMap<u64, QueryStats>>>,
+    /// Fingerprints held, against the accumulators' limit.
+    count: AtomicUsize,
+}
+
+/// Shards of [`SharedQueries`]: workers rarely wait for each other.
+const QUERY_SHARDS: usize = 64;
+
+impl SharedQueries {
+    /// An empty set.
+    #[must_use]
+    pub fn new() -> Arc<Self> {
+        Arc::new(SharedQueries {
+            shards: (0..QUERY_SHARDS)
+                .map(|_| Mutex::new(BTreeMap::new()))
+                .collect(),
+            count: AtomicUsize::new(0),
+        })
+    }
+
+    fn shard(&self, id: u64) -> &Mutex<BTreeMap<u64, QueryStats>> {
+        let slot = usize::try_from(id % QUERY_SHARDS as u64).unwrap_or(0);
+        &self.shards[slot]
+    }
+
+    fn drain(&self) -> BTreeMap<u64, QueryStats> {
+        // Inserted one by one: each shard's nodes are freed as they are emptied, so the
+        // fingerprints are never held twice.
+        let mut all = BTreeMap::new();
+        for shard in &self.shards {
+            let mut shard = shard
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            all.extend(std::mem::take(&mut *shard));
+        }
+        self.count.store(0, Ordering::Relaxed);
+        all
+    }
+}
+
+/// A [`SharedQueries`] an accumulator may fold into. Two accumulators are equal whatever they
+/// share: it is a means of working, not a result.
+#[derive(Debug, Clone, Default)]
+struct SharedHandle(Option<Arc<SharedQueries>>);
+
+impl PartialEq for SharedHandle {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
 }
 
 impl Accumulators {
@@ -1249,6 +1349,29 @@ impl Accumulators {
             who: BTreeMap::new(),
             capture_params: false,
             limit: limit.max(1),
+            shared: SharedHandle::default(),
+        }
+    }
+
+    /// Folds statements into `shared` instead of into [`Accumulators::queries`], so several
+    /// accumulators keep each fingerprint once between them. Call [`Accumulators::absorb_shared`]
+    /// on the merged result.
+    #[must_use]
+    pub fn with_shared(mut self, shared: Arc<SharedQueries>) -> Self {
+        self.shared = SharedHandle(Some(shared));
+        self
+    }
+
+    /// Moves the shared fingerprints into [`Accumulators::queries`].
+    pub fn absorb_shared(&mut self) {
+        if let Some(shared) = self.shared.0.take() {
+            let drained = shared.drain();
+            if self.queries.is_empty() {
+                self.queries = drained;
+            } else {
+                add_maps(&mut self.queries, drained);
+            }
+            self.cap_queries(self.limit);
         }
     }
 
@@ -1288,8 +1411,9 @@ impl Accumulators {
                 } else {
                     Phase::Bind
                 };
-                self.query_for(text, ts, record.query_id)
-                    .phase(phase, *ms, ts);
+                self.with_query(text, ts, record.query_id, |query| {
+                    query.phase(phase, *ms, ts);
+                });
             }
             Event::Statement {
                 kind: StatementKind::Statement,
@@ -1301,18 +1425,20 @@ impl Accumulators {
                 .is_some_and(|c| c.phase == Phase::Fetch) =>
             {
                 if let Some(c) = &record.correlation {
-                    self.query_for(&c.sql, ts, record.query_id)
-                        .phase(Phase::Fetch, *ms, ts);
+                    self.with_query(&c.sql, ts, record.query_id, |query| {
+                        query.phase(Phase::Fetch, *ms, ts);
+                    });
                 }
             }
             Event::Duration { duration_ms } => {
                 if let Some(c) = &record.correlation {
-                    let query = self.query_for(&c.sql, ts, record.query_id);
-                    if c.phase == Phase::Fetch {
-                        query.phase(Phase::Fetch, *duration_ms, ts);
-                    } else {
-                        query.time(*duration_ms);
-                    }
+                    self.with_query(&c.sql, ts, record.query_id, |query| {
+                        if c.phase == Phase::Fetch {
+                            query.phase(Phase::Fetch, *duration_ms, ts);
+                        } else {
+                            query.time(*duration_ms);
+                        }
+                    });
                 }
             }
             // A FETCH logged without its duration is not another run of the cursor's query.
@@ -1335,24 +1461,27 @@ impl Accumulators {
             }
             Event::LockWait { .. } => {
                 if let Some(sql) = record.statement.as_deref() {
-                    let query = self.query_for(sql, ts, record.query_id);
-                    query.seen(ts);
-                    query.lock_waits += 1;
+                    self.with_query(sql, ts, record.query_id, |query| {
+                        query.seen(ts);
+                        query.lock_waits += 1;
+                    });
                 }
             }
             Event::LockAcquired { waited_ms, .. } => {
                 if let Some(sql) = record.statement.as_deref() {
-                    let query = self.query_for(sql, ts, record.query_id);
-                    query.seen(ts);
-                    query.lock_wait_us += to_micros(*waited_ms);
+                    self.with_query(sql, ts, record.query_id, |query| {
+                        query.seen(ts);
+                        query.lock_wait_us += to_micros(*waited_ms);
+                    });
                 }
             }
             Event::TempFile { bytes, .. } => {
                 if let Some(sql) = record.statement.as_deref() {
-                    let query = self.query_for(sql, ts, record.query_id);
-                    query.seen(ts);
-                    query.temp_files += 1;
-                    query.temp_bytes += bytes;
+                    self.with_query(sql, ts, record.query_id, |query| {
+                        query.seen(ts);
+                        query.temp_files += 1;
+                        query.temp_bytes += bytes;
+                    });
                 }
             }
             _ => {}
@@ -1360,15 +1489,22 @@ impl Accumulators {
         if record.level.is_error()
             && let Some(sql) = record.statement.as_deref()
         {
-            let cancelled = cancel_reason(record).is_some();
-            let query = self.query_for(sql, ts, record.query_id);
+            self.add_failed_statement(record, sql);
+        }
+    }
+
+    /// Counts a failed statement against its fingerprint and the error it caused.
+    fn add_failed_statement(&mut self, record: &LogRecord, sql: &str) {
+        let ts = record.ts;
+        let cancelled = cancel_reason(record).is_some();
+        let id = self.with_query(sql, ts, record.query_id, |query| {
             query.seen(ts);
             query.errors += 1;
             query.cancelled += u64::from(cancelled);
-            let id = query.id;
-            self.totals.error_statement(record, id);
-            self.totals.cancelled_statement(record, id);
-        }
+            query.id
+        });
+        self.totals.error_statement(record, id);
+        self.totals.cancelled_statement(record, id);
     }
 
     /// Counts a schema-changing statement under its command tag, and temporary tables by
@@ -1395,11 +1531,11 @@ impl Accumulators {
             let blocker = block
                 .blocker
                 .as_deref()
-                .map_or(0, |sql| self.query_for(sql, ts, None).id);
+                .map_or(0, |sql| self.with_query(sql, ts, None, |query| query.id));
             let waiter = block
                 .waiter
                 .as_deref()
-                .map_or(0, |sql| self.query_for(sql, ts, None).id);
+                .map_or(0, |sql| self.with_query(sql, ts, None, |query| query.id));
             let us = to_micros(block.waited_ms);
             let stat = self.totals.blockers.entry((blocker, waiter)).or_default();
             stat.count += 1;
@@ -1419,43 +1555,43 @@ impl Accumulators {
     ) {
         let ts = record.ts;
         let capture_params = self.capture_params;
-        let query = self.query_for(text, ts, record.query_id);
-        query.call(duration_ms, ts, kind);
-        let (fingerprint, parsed, ddl) = (query.id, query.parsed, query.kind == QueryKind::Ddl);
+        let (fingerprint, parsed, ddl, who) = self.with_query(text, ts, record.query_id, |query| {
+            query.call(duration_ms, ts, kind);
+            // The slowest runs of a statement keep who ran them; `Some` when this one was kept.
+            let who = duration_ms.and_then(|ms| {
+                let us = to_micros(ms);
+                let wanted = query.id != 0 && us >= EXAMPLE_MIN_US && query.examples.wants(us);
+                wanted.then(|| {
+                    let who = who_key(
+                        record.database.as_deref(),
+                        record.user.as_deref(),
+                        record.application.as_deref(),
+                        record.host.as_deref(),
+                    );
+                    let params = if capture_params {
+                        parameters(record).map(slowest::cut)
+                    } else {
+                        None
+                    };
+                    query.examples.offer(Example {
+                        ts: record.ts,
+                        duration_us: us,
+                        who,
+                        params,
+                    });
+                    who
+                })
+            });
+            (query.id, query.parsed, query.kind == QueryKind::Ddl, who)
+        });
         if ddl {
             self.add_ddl(record, text, duration_ms);
         }
-        let Some(query) = self
-            .queries
-            .get_mut(&fingerprint)
-            .or(Some(&mut self.overflow))
-        else {
-            return;
-        };
+        if let Some(who) = who {
+            self.remember_who(who, record);
+        }
         if let Some(ms) = duration_ms {
-            let us = to_micros(ms);
-            let wanted = fingerprint != 0 && us >= EXAMPLE_MIN_US && query.examples.wants(us);
-            if wanted {
-                let who = who_key(
-                    record.database.as_deref(),
-                    record.user.as_deref(),
-                    record.application.as_deref(),
-                    record.host.as_deref(),
-                );
-                let params = if capture_params {
-                    parameters(record).map(slowest::cut)
-                } else {
-                    None
-                };
-                query.examples.offer(Example {
-                    ts: record.ts,
-                    duration_us: us,
-                    who,
-                    params,
-                });
-                self.remember_who(who, record);
-            }
-            self.offer_slow(record, (fingerprint, parsed), text, us);
+            self.offer_slow(record, (fingerprint, parsed), text, to_micros(ms));
         }
     }
 
@@ -1521,33 +1657,46 @@ impl Accumulators {
         }
     }
 
-    /// The statistics of `sql`'s fingerprint, creating them (or using the overflow bucket). The
-    /// statement is offered as the representative sample of its fingerprint.
-    fn query_for(&mut self, sql: &str, ts: Timestamp, query_id: Option<i64>) -> &mut QueryStats {
-        self.lookup(sql, ts, query_id, true)
-    }
-
-    /// Like [`Accumulators::query_for`]; `count_unparsed` is false for the parse and bind lines
-    /// of a statement whose execution is counted on its own.
-    fn lookup(
+    /// Runs `f` on the statistics of `sql`'s fingerprint, creating them (or using the overflow
+    /// bucket). The statement is offered as the representative sample of its fingerprint.
+    fn with_query<R>(
         &mut self,
         sql: &str,
         ts: Timestamp,
         query_id: Option<i64>,
-        count_unparsed: bool,
-    ) -> &mut QueryStats {
+        f: impl FnOnce(&mut QueryStats) -> R,
+    ) -> R {
         let found = fingerprint(sql);
-        if !found.parsed && count_unparsed {
+        if !found.parsed {
             self.totals.unparsed_statements += 1;
         }
+        if let Some(shared) = self.shared.0.as_deref() {
+            let mut shard = shared
+                .shard(found.id)
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !shard.contains_key(&found.id) && shared.count.load(Ordering::Relaxed) >= self.limit
+            {
+                drop(shard);
+                return f(&mut self.overflow);
+            }
+            let query = shard.entry(found.id).or_insert_with(|| {
+                shared.count.fetch_add(1, Ordering::Relaxed);
+                QueryStats::new(found.id, found.parsed, String::new(), statement_kind(sql))
+            });
+            // What merging the copies of separate workers would settle.
+            query.parsed &= found.parsed;
+            query.offer(ts, sql, query_id);
+            return f(query);
+        }
         if !self.queries.contains_key(&found.id) && self.queries.len() >= self.limit {
-            return &mut self.overflow;
+            return f(&mut self.overflow);
         }
         let query = self.queries.entry(found.id).or_insert_with(|| {
             QueryStats::new(found.id, found.parsed, String::new(), statement_kind(sql))
         });
         query.offer(ts, sql, query_id);
-        query
+        f(query)
     }
 
     /// Lowers the limit to `limit`, folding the least called fingerprints into the overflow bucket
@@ -1597,7 +1746,7 @@ impl Accumulators {
 impl Merge for Accumulators {
     fn merge(&mut self, other: Self) {
         self.totals.merge(other.totals);
-        add_maps(&mut self.queries, other.queries);
+        add_maps_par(&mut self.queries, other.queries);
         self.overflow.merge(other.overflow);
         self.dims.merge(other.dims);
         self.slowest.merge(other.slowest);
@@ -2361,5 +2510,95 @@ mod tests {
         other.connection("10.0.0.1", 0);
         observed.merge(other);
         assert_eq!(observed.hosts["10.0.0.1"][&0], 3);
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Sum(u64);
+
+    impl Merge for Sum {
+        fn merge(&mut self, other: Self) {
+            self.0 += other.0;
+        }
+    }
+
+    #[test]
+    fn big_maps_merge_the_same_in_parallel() {
+        let left: BTreeMap<u64, Sum> = (0..60_000).map(|k| (k * 3, Sum(k))).collect();
+        let right: BTreeMap<u64, Sum> = (0..50_000).map(|k| (k * 2, Sum(1_000_000 + k))).collect();
+        let mut sequential: BTreeMap<u64, Sum> = (0..60_000).map(|k| (k * 3, Sum(k))).collect();
+        add_maps(
+            &mut sequential,
+            (0..50_000).map(|k| (k * 2, Sum(1_000_000 + k))).collect(),
+        );
+        let mut parallel = left;
+        add_maps_par(&mut parallel, right);
+        assert_eq!(parallel, sequential);
+        // An empty side and a tiny side take the plain path.
+        let mut small: BTreeMap<u64, Sum> = BTreeMap::new();
+        add_maps_par(&mut small, BTreeMap::from([(1, Sum(1))]));
+        assert_eq!(small, BTreeMap::from([(1, Sum(1))]));
+    }
+
+    fn mixed_records() -> Vec<LogRecord> {
+        let mut records = Vec::new();
+        for second in 0..60 {
+            let table = second % 7;
+            records.push(statement(
+                second,
+                1.0 + f64::from(u32::try_from(second).unwrap()),
+                &format!("SELECT * FROM shared_t{table} WHERE id = {second}"),
+            ));
+            if second % 5 == 0 {
+                let mut failed = log(second, "relation \"x\" does not exist");
+                failed.level = Severity::Error;
+                failed.statement = Some(format!("SELECT * FROM shared_t{table} WHERE id = 1"));
+                records.push(failed);
+            }
+        }
+        records
+    }
+
+    #[test]
+    fn accumulators_sharing_their_fingerprints_add_up_to_one_that_does_not() {
+        let records = mixed_records();
+        let mut alone = acc();
+        for record in &records {
+            alone.add_record(record);
+        }
+
+        let shared = SharedQueries::new();
+        let (mut left, mut right) = (
+            acc().with_shared(Arc::clone(&shared)),
+            acc().with_shared(Arc::clone(&shared)),
+        );
+        for (index, record) in records.iter().enumerate() {
+            if index % 2 == 0 {
+                left.add_record(record);
+            } else {
+                right.add_record(record);
+            }
+        }
+        assert!(left.queries.is_empty() && right.queries.is_empty());
+        left.merge(right);
+        left.absorb_shared();
+        assert_eq!(left, alone);
+    }
+
+    #[test]
+    fn shared_fingerprints_past_the_limit_go_to_the_overflow() {
+        let shared = SharedQueries::new();
+        let mut acc = Accumulators::new(2, 60).with_shared(shared);
+        for second in 0..10 {
+            acc.add_record(&statement(
+                second,
+                1.0,
+                &format!("SELECT * FROM limited_t{second}_x"),
+            ));
+        }
+        acc.absorb_shared();
+        let counted: u64 = acc.queries.values().map(|q| q.calls).sum::<u64>() + acc.overflow.calls;
+        assert_eq!(counted, 10);
+        assert!(acc.queries.len() <= 2);
+        assert!(acc.overflow.calls > 0);
     }
 }

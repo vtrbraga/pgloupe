@@ -1,14 +1,18 @@
 //! Reading files, decoding them and folding the records into accumulators in parallel.
 //!
-//! One thread decodes each file in order (stderr entry grouping and csv records need it) and hands
-//! batches to rayon workers through `par_bridge`, which pulls a batch only when a worker is free.
-//! Each worker folds into its own [`Accumulators`]; the partial results are merged at the end.
+//! One thread at a time decodes a given file in order (stderr entry grouping and csv records need
+//! it); each worker takes the next batch of any file nobody else is decoding and folds it into
+//! its own [`Accumulators`], so several files are decoded at once. The partial results are merged
+//! at the end.
 
 use std::{
     collections::VecDeque,
     io::{self, BufRead},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 use rayon::prelude::*;
@@ -16,19 +20,21 @@ use thiserror::Error;
 
 use super::{
     Merge,
-    acc::Accumulators,
+    acc::{Accumulators, SharedQueries},
     anonymize::{self, Anonymizer},
     correlate::Correlator,
     filter::Filter,
-    slice::Slices,
+    slice::{SharedHours, Slices},
 };
 use crate::log::{
     BlockPair, DecodeError, DecodeStats, Decoder, Format, LogRecord, Options as LogOptions,
     SetupError, Severity, decoder_for,
     infer::{Inference, SAMPLE_LINES, infer_prefix},
     locale::{self, Translator},
+    parallel::BlockFeed,
     prefix::Prefix,
     source,
+    stderr::StderrDecoder,
     tee::{self, Content, TeeHandle},
 };
 
@@ -163,10 +169,13 @@ pub enum AnalyzeError {
 /// Fails when a file cannot be opened or read, is binary, is a stderr log whose prefix cannot be
 /// inferred, or the worker pool cannot start.
 pub fn run(paths: &[PathBuf], options: &Options) -> Result<Output, AnalyzeError> {
+    let shared = SharedQueries::new();
     let (mut acc, files) = run_with(paths, options, || {
         Accumulators::new(worker_limit(options), options.bucket_secs)
             .with_capture(options.slowest, options.params)
+            .with_shared(Arc::clone(&shared))
     })?;
+    acc.absorb_shared();
     acc.recap(options.max_fingerprints);
     Ok(Output { acc, files })
 }
@@ -185,9 +194,13 @@ pub struct SlicedOutput {
 /// Fails like [`run`].
 pub fn run_sliced(path: &Path, options: &Options) -> Result<SlicedOutput, AnalyzeError> {
     let paths = [path.to_path_buf()];
+    let shared = SharedHours::new();
     let (mut slices, mut files) = run_with(&paths, options, || {
-        Slices::new(worker_limit(options), 60).with_capture(options.slowest, options.params)
+        Slices::new(worker_limit(options), 60)
+            .with_capture(options.slowest, options.params)
+            .with_shared(shared.clone())
     })?;
+    slices.absorb_shared();
     slices.recap(options.max_fingerprints);
     let file = files.pop().ok_or_else(|| AnalyzeError::Open {
         path: path.to_path_buf(),
@@ -229,48 +242,135 @@ impl Fold for Slices {
     }
 }
 
+fn fold_batch<S: Fold>(mut acc: S, batch: &Batch) -> S {
+    for record in &batch.records {
+        acc.add(record);
+    }
+    acc.add_blocks(&batch.blocks);
+    acc
+}
+
+/// The files of a run. A worker decodes the next batch of any file nobody else is decoding and
+/// folds it itself, so a batch is built, counted and freed on one thread. With one file this is
+/// one decoder at a time; with more, up to `window` files are decoded at once.
+struct Files<'a> {
+    paths: &'a [PathBuf],
+    options: &'a Options,
+    shared: Arc<Shared>,
+    window: usize,
+    parse_ahead: Option<usize>,
+    sources: Vec<Mutex<Option<Batches>>>,
+    done: Vec<AtomicBool>,
+    /// Every file before this one is done.
+    first: AtomicUsize,
+}
+
+impl<'a> Files<'a> {
+    fn new(paths: &'a [PathBuf], options: &'a Options, window: usize) -> Self {
+        Files {
+            paths,
+            options,
+            shared: Arc::new(Shared::new(paths.len())),
+            window,
+            // A file alone, or a few among many threads, keeps most of them waiting for the
+            // decoder: they parse its lines instead.
+            parse_ahead: (window > 1 && (paths.len() == 1 || paths.len() * 4 <= window))
+                .then_some(window + 2),
+            sources: paths.iter().map(|_| Mutex::new(None)).collect(),
+            done: paths.iter().map(|_| AtomicBool::new(false)).collect(),
+            first: AtomicUsize::new(0),
+        }
+    }
+
+    /// The next batch of file `index`, or `None` once the file is finished (or abandoned).
+    fn pull(&self, index: usize, slot: &mut Option<Batches>) -> Option<Batch> {
+        if self.done[index].load(Ordering::Acquire) {
+            return None;
+        }
+        let batches = slot.get_or_insert_with(|| {
+            Batches::new(
+                index,
+                &self.paths[index],
+                self.options,
+                Arc::clone(&self.shared),
+                self.parse_ahead,
+            )
+        });
+        let batch = batches.next();
+        if batch.is_none() {
+            *slot = None;
+            self.done[index].store(true, Ordering::Release);
+        }
+        batch
+    }
+
+    /// The next batch of any file, waiting when every file in the window is being decoded.
+    fn next_batch(&self) -> Option<Batch> {
+        loop {
+            let mut first = self.first.load(Ordering::Relaxed);
+            while first < self.paths.len() && self.done[first].load(Ordering::Acquire) {
+                first += 1;
+            }
+            self.first.fetch_max(first, Ordering::Relaxed);
+            if first >= self.paths.len() {
+                return None;
+            }
+            let end = (first + self.window).min(self.paths.len());
+            for index in first..end {
+                if let Ok(mut slot) = self.sources[index].try_lock()
+                    && let Some(batch) = self.pull(index, &mut slot)
+                {
+                    return Some(batch);
+                }
+            }
+            // All busy: parse lines ahead for the files being decoded, and only when there is
+            // nothing to parse wait for the earliest file.
+            if (first..end).any(|index| {
+                self.shared.feeds[index]
+                    .get()
+                    .is_some_and(|feed| feed.help())
+            }) {
+                continue;
+            }
+            if let Some(batch) = self.pull(first, &mut lock(&self.sources[first])) {
+                return Some(batch);
+            }
+        }
+    }
+}
+
 fn run_with<S: Fold>(
     paths: &[PathBuf],
     options: &Options,
     new: impl Fn() -> S + Sync + Send,
 ) -> Result<(S, Vec<FileSummary>), AnalyzeError> {
-    let summaries = Arc::new(Mutex::new(Vec::new()));
-    let failure = Arc::new(Mutex::new(None));
-    let batches = Batches {
-        correlator: Correlator::new(),
-        filtering: options.filter.narrows(),
-        anonymizer: options.filter.anonymize.as_deref().map(Anonymizer::new),
-        pending: paths.iter().cloned().collect(),
-        current: None,
-        options: options.clone(),
-        summaries: Arc::clone(&summaries),
-        failure: Arc::clone(&failure),
-    };
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(options.threads.unwrap_or(0))
         .build()
         .map_err(AnalyzeError::Pool)?;
-    let acc = pool.install(|| {
-        batches
-            .par_bridge()
-            .fold(&new, |mut acc, batch| {
-                for record in &batch.records {
-                    acc.add(record);
-                }
-                acc.add_blocks(&batch.blocks);
-                acc
-            })
-            .reduce(&new, |mut left, right| {
-                left.merge(right);
-                left
-            })
+    let files = Files::new(paths, options, pool.current_num_threads());
+    // Called from here, not from inside `install`: a broadcast started on a worker thread can wait
+    // for a worker that is waiting for it.
+    let parts = pool.broadcast(|_| {
+        let mut acc = new();
+        while let Some(batch) = files.next_batch() {
+            acc = fold_batch(acc, &batch);
+        }
+        acc
     });
-    if let Some(error) = lock(&failure).take() {
+    let acc = pool.install(|| {
+        parts.into_par_iter().reduce(&new, |mut left, right| {
+            left.merge(right);
+            left
+        })
+    });
+    let shared = &files.shared;
+    if let Some((_, error)) = lock(&shared.failure).take() {
         return Err(error);
     }
-    let mut files = std::mem::take(&mut *lock(&summaries));
-    files.sort_by_key(|file: &(usize, FileSummary)| file.0);
-    Ok((acc, files.into_iter().map(|(_, file)| file).collect()))
+    let mut summaries = std::mem::take(&mut *lock(&shared.summaries));
+    summaries.sort_by_key(|file: &(usize, FileSummary)| file.0);
+    Ok((acc, summaries.into_iter().map(|(_, file)| file).collect()))
 }
 
 /// Locks a mutex, recovering the data if another thread panicked while holding it.
@@ -294,6 +394,8 @@ struct Current {
     filtered: u64,
     /// Rewrites another language's messages as English.
     translator: Option<(String, Translator)>,
+    /// Where the file's lines are parsed, when several threads do it.
+    feed: Option<Arc<BlockFeed>>,
 }
 
 /// Records for the workers, and the lock waits the correlator settled while reading them. The
@@ -303,8 +405,32 @@ struct Batch {
     blocks: Vec<BlockPair>,
 }
 
-/// Yields batches of records, file after file.
+/// What the readers of all files share.
+#[derive(Debug)]
+struct Shared {
+    summaries: Mutex<Vec<(usize, FileSummary)>>,
+    /// The failure of the earliest file that failed, with its index.
+    failure: Mutex<Option<(usize, AnalyzeError)>>,
+    /// Index of the earliest failed file: later files are not read any further.
+    fail_at: AtomicUsize,
+    /// The block feed of each file that is read by several threads, once it is open.
+    feeds: Vec<OnceLock<Arc<BlockFeed>>>,
+}
+
+impl Shared {
+    fn new(files: usize) -> Self {
+        Shared {
+            summaries: Mutex::new(Vec::new()),
+            failure: Mutex::new(None),
+            fail_at: AtomicUsize::new(usize::MAX),
+            feeds: (0..files).map(|_| OnceLock::new()).collect(),
+        }
+    }
+}
+
+/// Yields batches of records from one file.
 struct Batches {
+    index: usize,
     correlator: Correlator,
     /// Whether the filter drops anything; if not, no record is asked.
     filtering: bool,
@@ -312,13 +438,30 @@ struct Batches {
     pending: VecDeque<PathBuf>,
     current: Option<Current>,
     options: Options,
-    summaries: Arc<Mutex<Vec<(usize, FileSummary)>>>,
-    failure: Arc<Mutex<Option<AnalyzeError>>>,
+    shared: Arc<Shared>,
+    /// Blocks of lines that may be parsed ahead of the decoder, when several threads parse.
+    parse_ahead: Option<usize>,
 }
 
 impl Batches {
-    fn opened(&self) -> usize {
-        lock(&self.summaries).len() + usize::from(self.current.is_some())
+    fn new(
+        index: usize,
+        path: &Path,
+        options: &Options,
+        shared: Arc<Shared>,
+        parse_ahead: Option<usize>,
+    ) -> Self {
+        Batches {
+            index,
+            correlator: Correlator::new(),
+            filtering: options.filter.narrows(),
+            anonymizer: options.filter.anonymize.as_deref().map(Anonymizer::new),
+            pending: VecDeque::from([path.to_path_buf()]),
+            current: None,
+            options: options.clone(),
+            shared,
+            parse_ahead,
+        }
     }
 
     fn finish_current(&mut self) {
@@ -327,7 +470,7 @@ impl Batches {
             if self.options.filter.anonymize.is_some() {
                 stats.redact();
             }
-            lock(&self.summaries).push((
+            lock(&self.shared.summaries).push((
                 current.index,
                 FileSummary {
                     path: current.path,
@@ -345,18 +488,26 @@ impl Batches {
     }
 
     fn fail(&mut self, error: AnalyzeError) {
-        *lock(&self.failure) = Some(error);
+        {
+            let mut failure = lock(&self.shared.failure);
+            if failure.as_ref().is_none_or(|(at, _)| self.index < *at) {
+                *failure = Some((self.index, error));
+            }
+        }
+        self.shared.fail_at.fetch_min(self.index, Ordering::Relaxed);
         self.finish_current();
         self.pending.clear();
     }
 
     fn open_next(&mut self) -> Option<()> {
         let path = self.pending.pop_front()?;
-        // Backend process ids mean nothing across files: each starts with a clean slate.
-        self.correlator = Correlator::new();
-        let index = self.opened();
-        match open_file(&path, index, &self.options) {
-            Ok(current) => self.current = Some(current),
+        match open_file(&path, self.index, &self.options, self.parse_ahead) {
+            Ok(current) => {
+                if let Some(feed) = &current.feed {
+                    drop(self.shared.feeds[self.index].set(Arc::clone(feed)));
+                }
+                self.current = Some(current);
+            }
             Err(error) => self.fail(error),
         }
         Some(())
@@ -368,11 +519,14 @@ impl Iterator for Batches {
 
     fn next(&mut self) -> Option<Batch> {
         loop {
+            if self.index > self.shared.fail_at.load(Ordering::Relaxed) {
+                return None;
+            }
             if self.current.is_none() {
                 self.open_next()?;
                 continue;
             }
-            let mut batch = Vec::new();
+            let mut batch = Vec::with_capacity(self.options.batch_size.max(1));
             let mut blocks = Vec::new();
             let mut error = None;
             let mut finished = false;
@@ -442,7 +596,12 @@ impl Iterator for Batches {
     }
 }
 
-fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, AnalyzeError> {
+fn open_file(
+    path: &Path,
+    index: usize,
+    options: &Options,
+    parse_ahead: Option<usize>,
+) -> Result<Current, AnalyzeError> {
     let open_err = |source| AnalyzeError::Open {
         path: path.to_path_buf(),
         source,
@@ -500,11 +659,29 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
     } else {
         format
     };
-    let decoder =
-        decoder_for(decode_format, reader, &log_options).map_err(|source| AnalyzeError::Setup {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    let setup = |source| AnalyzeError::Setup {
+        path: path.to_path_buf(),
+        source,
+    };
+    let (decoder, feed) = match parse_ahead {
+        Some(ahead) if decode_format == Format::Stderr => {
+            let text = log_options
+                .prefix
+                .as_deref()
+                .ok_or(SetupError::MissingPrefix);
+            let compiled = text
+                .and_then(|text| Prefix::compile(text).map_err(SetupError::from))
+                .map_err(setup)?;
+            let feed = Arc::new(BlockFeed::new(reader, compiled, options.log_tz, ahead));
+            let decoder: Box<dyn Decoder + Send> =
+                Box::new(StderrDecoder::from_blocks(Arc::clone(&feed)));
+            (decoder, Some(feed))
+        }
+        _ => (
+            decoder_for(decode_format, reader, &log_options).map_err(setup)?,
+            None,
+        ),
+    };
     Ok(Current {
         index,
         path: path.to_path_buf(),
@@ -516,6 +693,7 @@ fn open_file(path: &Path, index: usize, options: &Options) -> Result<Current, An
         tee,
         filtered: 0,
         translator,
+        feed,
     })
 }
 
@@ -813,6 +991,113 @@ mod tests {
         assert_eq!(output.acc.totals.records, 16);
         assert_eq!(output.files[1].stats.records, 0);
         fs::remove_file(empty).unwrap();
+    }
+
+    #[test]
+    fn many_files_give_the_same_result_at_any_thread_count() {
+        let paths: Vec<PathBuf> = [("sample.json", 30), ("sample.json", 7), ("sample.log", 25)]
+            .into_iter()
+            .map(|(name, times)| repeated(name, times))
+            .chain([fixture("chatter.log"), fixture("sample.csv")])
+            .collect();
+        let read = |threads, batch_size| {
+            run(
+                &paths,
+                &Options {
+                    threads: Some(threads),
+                    batch_size,
+                    ..Options::new()
+                },
+            )
+            .unwrap()
+        };
+        let reference = read(1, 4_096);
+        assert_eq!(reference.files.len(), paths.len());
+        for (threads, batch) in [(2, 1), (3, 7), (5, 100), (16, 4_096)] {
+            let other = read(threads, batch);
+            assert_eq!(other.acc, reference.acc, "threads {threads}, batch {batch}");
+            let order = |output: &Output| -> Vec<PathBuf> {
+                output.files.iter().map(|f| f.path.clone()).collect()
+            };
+            assert_eq!(order(&other), paths, "summaries follow the input order");
+            assert_eq!(
+                other
+                    .files
+                    .iter()
+                    .map(|f| f.stats.records)
+                    .collect::<Vec<_>>(),
+                reference
+                    .files
+                    .iter()
+                    .map(|f| f.stats.records)
+                    .collect::<Vec<_>>()
+            );
+        }
+        for path in &paths[..3] {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn one_stderr_file_gives_the_same_result_whether_threads_parse_its_lines_or_not() {
+        // Large enough for many blocks of lines; one thread reads it alone, more parse ahead.
+        let path = repeated("sample.log", 900);
+        let read = |threads, batch_size| {
+            run(
+                std::slice::from_ref(&path),
+                &Options {
+                    threads: Some(threads),
+                    batch_size,
+                    ..Options::new()
+                },
+            )
+            .unwrap()
+        };
+        let reference = read(1, 4_096);
+        assert!(reference.acc.totals.records > 1_000);
+        assert!(reference.files[0].stats.lines > 10_000);
+        for (threads, batch) in [(2, 7), (4, 100), (16, 4_096)] {
+            let other = read(threads, batch);
+            assert_eq!(other.acc, reference.acc, "threads {threads}, batch {batch}");
+            assert_eq!(
+                other.files[0].stats, reference.files[0].stats,
+                "threads {threads}, batch {batch}"
+            );
+        }
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn the_earliest_failing_file_is_the_one_reported_at_any_thread_count() {
+        let good = fixture("sample.json");
+        let paths = [
+            good.clone(),
+            PathBuf::from("/nonexistent/first.log"),
+            good.clone(),
+            PathBuf::from("/nonexistent/second.log"),
+            good,
+        ];
+        for threads in [1, 2, 8] {
+            let err = run(
+                &paths,
+                &Options {
+                    threads: Some(threads),
+                    ..Options::new()
+                },
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("first.log"),
+                "threads {threads}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn no_files_is_an_empty_result() {
+        let output = run(&[], &Options::new()).unwrap();
+        assert!(output.files.is_empty());
+        assert_eq!(output.acc.totals.records, 0);
     }
 
     #[test]

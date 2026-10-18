@@ -260,7 +260,7 @@ fn match_free_text(
             break;
         }
         *budget -= 1;
-        let Some(found) = rest[from..].find(literal) else {
+        let Some(found) = find_literal(&rest[from..], literal) else {
             break;
         };
         let len = from + found;
@@ -295,6 +295,15 @@ fn match_free_text(
     }))
 }
 
+/// Where `literal` first occurs in `text`. One character is searched for directly: building a
+/// substring searcher costs more than most of the lines it would scan.
+fn find_literal(text: &str, literal: &str) -> Option<usize> {
+    match literal.as_bytes() {
+        [byte] if byte.is_ascii() => text.find(char::from(*byte)),
+        _ => text.find(literal),
+    }
+}
+
 fn push_literal(tokens: &mut Vec<Token>, c: char) {
     if let Some(Token::Literal(text)) = tokens.last_mut() {
         text.push(c);
@@ -322,7 +331,7 @@ fn escape_len(escape: char, rest: &str, next_literal: Option<&str>) -> Option<us
             (n > 0).then_some(sign + n)
         }
         _ => match next_literal {
-            Some(literal) => rest.find(literal),
+            Some(literal) => find_literal(rest, literal),
             None => Some(rest.find(' ').unwrap_or(rest.len())),
         },
     }

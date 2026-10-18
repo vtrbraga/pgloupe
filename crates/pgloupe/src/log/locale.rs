@@ -8,14 +8,15 @@
 //! EXPERIMENTAL: the table covers Portuguese (Brazil), Spanish, French and German; any other
 //! language can be added with a table of the same shape (`--messages-file`).
 
-use std::{
-    collections::HashMap,
-    sync::{LazyLock, RwLock},
+use std::sync::{
+    LazyLock, RwLock,
+    atomic::{AtomicBool, Ordering},
 };
 
 use regex::Regex;
 
 use super::Severity;
+use crate::hash::FastMap;
 
 /// The translations, one per line: `locale<TAB>english<TAB>translated`.
 const TABLE: &str = include_str!("locales.tsv");
@@ -100,8 +101,8 @@ const SEVERITIES: [(&str, Severity); 8] = [
     ("PANIC", Severity::Panic),
 ];
 
-static SEVERITY_WORDS: LazyLock<HashMap<&'static str, Severity>> = LazyLock::new(|| {
-    let mut words = HashMap::new();
+static SEVERITY_WORDS: LazyLock<FastMap<&'static str, Severity>> = LazyLock::new(|| {
+    let mut words = FastMap::default();
     for entry in BUILT_IN.iter() {
         if let Some((_, severity)) = SEVERITIES.iter().find(|(name, _)| *name == entry.english) {
             words.entry(entry.translated.as_str()).or_insert(*severity);
@@ -114,6 +115,10 @@ static SEVERITY_WORDS: LazyLock<HashMap<&'static str, Severity>> = LazyLock::new
 /// translator at hand, so they are kept here for the rest of the run.
 static EXTRA_LABELS: RwLock<Vec<Entry>> = RwLock::new(Vec::new());
 
+/// Whether `EXTRA_LABELS` holds anything: most runs have no extra table, and a failed label lookup
+/// happens for every line that carries session fields.
+static HAS_EXTRA_LABELS: AtomicBool = AtomicBool::new(false);
+
 fn remember_labels(entries: &[Entry]) {
     let mut kept = EXTRA_LABELS
         .write()
@@ -123,6 +128,7 @@ fn remember_labels(entries: &[Entry]) {
             kept.push(entry.clone());
         }
     }
+    HAS_EXTRA_LABELS.store(!kept.is_empty(), Ordering::Release);
 }
 
 /// The severity a translated label stands for (`ERRO`, `FEHLER`, `ATTENTION`, ...).
@@ -130,6 +136,9 @@ fn remember_labels(entries: &[Entry]) {
 pub fn localized_severity(label: &str) -> Option<Severity> {
     if let Some(severity) = SEVERITY_WORDS.get(label) {
         return Some(*severity);
+    }
+    if !HAS_EXTRA_LABELS.load(Ordering::Acquire) {
+        return None;
     }
     let kept = EXTRA_LABELS
         .read()
@@ -149,8 +158,8 @@ const SECONDARY: [&str; 6] = [
     "LOCATION",
 ];
 
-static SECONDARY_WORDS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
-    let mut words = HashMap::new();
+static SECONDARY_WORDS: LazyLock<FastMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let mut words = FastMap::default();
     for entry in BUILT_IN.iter() {
         if let Some(name) = SECONDARY
             .iter()
@@ -169,6 +178,9 @@ static SECONDARY_WORDS: LazyLock<HashMap<&'static str, &'static str>> = LazyLock
 pub fn localized_secondary(label: &str) -> Option<&'static str> {
     if let Some(name) = SECONDARY_WORDS.get(label) {
         return Some(*name);
+    }
+    if !HAS_EXTRA_LABELS.load(Ordering::Acquire) {
+        return None;
     }
     let kept = EXTRA_LABELS
         .read()
@@ -493,6 +505,8 @@ pub fn detect(sample: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
 
     fn translator(locale: &str) -> Translator {
