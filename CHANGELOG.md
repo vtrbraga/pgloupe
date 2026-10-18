@@ -9,7 +9,7 @@ All notable changes are listed here. The format follows
 
 - Faster log reading. On synthetic stderr logs of 2 GiB (16 logical cores), against 0.1.1:
   - 8 files, 16 threads: 11.7 s to 1.9 s. Several files are now read at the same time.
-  - 1 file, 16 threads: 11.8 s to 7.2 s, and one thread 17.5 s to 13.1 s.
+  - 1 file, 16 threads: 11.8 s to 4.4 s, and one thread 17.5 s to 12.3 s. When a stderr log is one file, or a few files among many threads, the idle threads split and parse its lines while one thread groups them into entries in order.
   - 8 files with 100,000 distinct statements, 16 threads: 23.0 s to 3.7 s, and one thread 60 s to 23 s. The statement cache is now shared by all threads and holds 262,144 shapes instead of 65,536 per thread.
 - Memory no longer grows with the number of threads. With 100,000 distinct statements, 16 threads used 2.3 GiB and now use 0.6 GiB (one thread: 0.45 GiB): the workers keep each statement's figures once, together, instead of one copy each.
 - The reports are unchanged, and `--threads 1` still uses one thread. `RAYON_NUM_THREADS` still sets the default number of threads.
