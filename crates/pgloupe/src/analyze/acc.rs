@@ -90,6 +90,35 @@ pub(super) fn add_maps<K: Ord, V: Merge>(into: &mut BTreeMap<K, V>, from: BTreeM
     }
 }
 
+/// Maps under this many entries are merged on one thread.
+const PARALLEL_MERGE_FROM: usize = 16_384;
+
+/// [`add_maps`] for big maps: the key range is cut in two and the halves are merged on different
+/// threads, so folding the maps of many workers does not end on one thread.
+pub(super) fn add_maps_par<K: Ord + Clone + Send, V: Merge + Send>(
+    into: &mut BTreeMap<K, V>,
+    mut from: BTreeMap<K, V>,
+) {
+    let larger = if into.len() >= from.len() {
+        &*into
+    } else {
+        &from
+    };
+    if larger.len() < PARALLEL_MERGE_FROM {
+        return add_maps(into, from);
+    }
+    let Some(pivot) = larger.keys().nth(larger.len() / 2).cloned() else {
+        return add_maps(into, from);
+    };
+    let mut into_high = into.split_off(&pivot);
+    let from_high = from.split_off(&pivot);
+    rayon::join(
+        || add_maps_par(into, from),
+        || add_maps_par(&mut into_high, from_high),
+    );
+    into.append(&mut into_high);
+}
+
 /// Maps with non-string keys travel as a list of `[key, value]` pairs.
 mod pairs {
     use std::collections::BTreeMap;
@@ -1601,7 +1630,7 @@ impl Accumulators {
 impl Merge for Accumulators {
     fn merge(&mut self, other: Self) {
         self.totals.merge(other.totals);
-        add_maps(&mut self.queries, other.queries);
+        add_maps_par(&mut self.queries, other.queries);
         self.overflow.merge(other.overflow);
         self.dims.merge(other.dims);
         self.slowest.merge(other.slowest);
@@ -2365,5 +2394,32 @@ mod tests {
         other.connection("10.0.0.1", 0);
         observed.merge(other);
         assert_eq!(observed.hosts["10.0.0.1"][&0], 3);
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct Sum(u64);
+
+    impl Merge for Sum {
+        fn merge(&mut self, other: Self) {
+            self.0 += other.0;
+        }
+    }
+
+    #[test]
+    fn big_maps_merge_the_same_in_parallel() {
+        let left: BTreeMap<u64, Sum> = (0..60_000).map(|k| (k * 3, Sum(k))).collect();
+        let right: BTreeMap<u64, Sum> = (0..50_000).map(|k| (k * 2, Sum(1_000_000 + k))).collect();
+        let mut sequential: BTreeMap<u64, Sum> = (0..60_000).map(|k| (k * 3, Sum(k))).collect();
+        add_maps(
+            &mut sequential,
+            (0..50_000).map(|k| (k * 2, Sum(1_000_000 + k))).collect(),
+        );
+        let mut parallel = left;
+        add_maps_par(&mut parallel, right);
+        assert_eq!(parallel, sequential);
+        // An empty side and a tiny side take the plain path.
+        let mut small: BTreeMap<u64, Sum> = BTreeMap::new();
+        add_maps_par(&mut small, BTreeMap::from([(1, Sum(1))]));
+        assert_eq!(small, BTreeMap::from([(1, Sum(1))]));
     }
 }
