@@ -5,6 +5,10 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Several log files are now read at the same time: on 8 files of 2 GiB in total, 16 threads take 2.6 s instead of 11.7 s. One file is read as before. The reports are unchanged, and `--threads 1` still uses one thread.
+
 ## [0.1.1] - 2026-10-17
 
 A patch release of fixes found on a real Amazon RDS PostgreSQL 16 server. Two warnings change: the `lc_messages` one fires less, and the new `%q` one has no minimum line count, so it can appear on logs that were silently skipping lines before.
