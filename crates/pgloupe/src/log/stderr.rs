@@ -5,12 +5,11 @@
 //! even when other backends' lines intervene. At most `max_open` entries are held: past that the
 //! oldest is closed and emitted, which bounds memory when a backend never speaks again.
 
-use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
-    io::BufRead,
-};
+use std::{collections::VecDeque, io::BufRead};
 
 use jiff::{Timestamp, tz::Offset};
+
+use crate::hash::FastMap;
 
 use super::{
     DecodeError, DecodeStats, Decoder,
@@ -43,6 +42,11 @@ fn is_checkpoint_line(line: &str) -> bool {
     ]
     .iter()
     .any(|marker| line.contains(marker))
+}
+
+/// The held entry with sequence number `seq`, given the number of the front one.
+fn held_entry(held: &mut VecDeque<Pending>, base: u64, seq: u64) -> Option<&mut Pending> {
+    held.get_mut(usize::try_from(seq.checked_sub(base)?).ok()?)
 }
 
 /// Entries held at once before the oldest is emitted.
@@ -84,10 +88,11 @@ pub struct StderrDecoder<R: BufRead> {
     reader: R,
     prefix: Prefix,
     fallback: Option<Offset>,
-    /// Held entries by arrival sequence number.
-    held: BTreeMap<u64, Pending>,
+    /// Held entries in arrival order; the front one has sequence number `held_base`.
+    held: VecDeque<Pending>,
+    held_base: u64,
     /// The not yet closed entry of each backend.
-    current: HashMap<Key, u64>,
+    current: FastMap<Key, u64>,
     next_seq: u64,
     ready: VecDeque<LogRecord>,
     /// The entry tab-indented lines extend; `None` after a skipped line.
@@ -118,8 +123,9 @@ impl<R: BufRead> StderrDecoder<R> {
             reader,
             prefix,
             fallback,
-            held: BTreeMap::new(),
-            current: HashMap::new(),
+            held: VecDeque::new(),
+            held_base: 0,
+            current: FastMap::default(),
             next_seq: 0,
             ready: VecDeque::new(),
             continuation: None,
@@ -145,7 +151,7 @@ impl<R: BufRead> StderrDecoder<R> {
 
     /// Closes an entry: nothing attaches to it from now on.
     fn close(&mut self, seq: u64) {
-        if let Some(entry) = self.held.get_mut(&seq) {
+        if let Some(entry) = held_entry(&mut self.held, self.held_base, seq) {
             entry.closed = true;
             if self.current.get(&entry.key) == Some(&seq) {
                 self.current.remove(&entry.key);
@@ -156,22 +162,16 @@ impl<R: BufRead> StderrDecoder<R> {
     /// Emits closed entries from the front, force-closing the oldest while too many are held.
     fn settle(&mut self) {
         loop {
-            while self
-                .held
-                .first_key_value()
-                .is_some_and(|(_, entry)| entry.closed)
-            {
-                if let Some((_, entry)) = self.held.pop_first() {
+            while self.held.front().is_some_and(|entry| entry.closed) {
+                if let Some(entry) = self.held.pop_front() {
+                    self.held_base += 1;
                     self.queue(entry.record);
                 }
             }
             if self.held.len() <= self.max_open {
                 break;
             }
-            let Some(&oldest) = self.held.keys().next() else {
-                break;
-            };
-            self.close(oldest);
+            self.close(self.held_base);
         }
     }
 
@@ -191,7 +191,8 @@ impl<R: BufRead> StderrDecoder<R> {
             Some(pid) => self.current.get(&Some(pid)).copied(),
             None => self.continuation,
         };
-        if let Some(entry) = target.and_then(|seq| self.held.get_mut(&seq)) {
+        if let Some(entry) = target.and_then(|seq| held_entry(&mut self.held, self.held_base, seq))
+        {
             entry.field = Field::Dropped;
         }
         self.continuation = None;
@@ -232,6 +233,7 @@ impl<R: BufRead> StderrDecoder<R> {
                 Err(err) => {
                     // The pid usually sits before the broken bytes: use it to close the right entry.
                     let lossy = String::from_utf8_lossy(err.as_bytes()).into_owned();
+                    self.buf = err.into_bytes();
                     let mut record =
                         LogRecord::new(Timestamp::UNIX_EPOCH, Severity::Log, String::new());
                     let _ = self.prefix.parse_line(&lossy, &mut record, self.fallback);
@@ -250,7 +252,7 @@ impl<R: BufRead> StderrDecoder<R> {
             );
             return;
         };
-        let Some(pending) = self.held.get_mut(&seq) else {
+        let Some(pending) = held_entry(&mut self.held, self.held_base, seq) else {
             self.stats.skip_with(
                 self.line_no,
                 "continuation line without a log entry",
@@ -290,15 +292,12 @@ impl<R: BufRead> StderrDecoder<R> {
         let key = record.pid;
         let seq = self.next_seq;
         self.next_seq += 1;
-        self.held.insert(
-            seq,
-            Pending {
-                key,
-                record,
-                field: Field::Message,
-                closed: false,
-            },
-        );
+        self.held.push_back(Pending {
+            key,
+            record,
+            field: Field::Message,
+            closed: false,
+        });
         if let Some(previous) = self.current.insert(key, seq) {
             self.close(previous);
         }
@@ -309,7 +308,9 @@ impl<R: BufRead> StderrDecoder<R> {
     fn attach(&mut self, label: Label, text: &str, pid: Option<u32>, line: &str) {
         let seq = self.current.get(&pid).copied();
         let Some((seq, pending)) = seq
-            .and_then(|seq| self.held.get_mut(&seq).map(|pending| (seq, pending)))
+            .and_then(|seq| {
+                held_entry(&mut self.held, self.held_base, seq).map(|pending| (seq, pending))
+            })
             .filter(|(_, pending)| !matches!(pending.field, Field::Dropped))
         else {
             self.skip_line(
@@ -346,9 +347,29 @@ impl<R: BufRead> StderrDecoder<R> {
         self.continuation = Some(seq);
     }
 
+    fn handle_line(&mut self, line: &str) {
+        if let Some(rest) = line.strip_prefix('\t') {
+            self.continue_field(rest, line);
+            return;
+        }
+        // RDS puts a space in front of it.
+        if line.trim() == TRUNCATED {
+            // Amazon RDS cuts a very long entry and says so on a line of its own; the rest
+            // of the entry (CONTEXT, STATEMENT) still follows.
+            self.stats.truncated += 1;
+            return;
+        }
+        let mut record = LogRecord::new(Timestamp::UNIX_EPOCH, Severity::Log, String::new());
+        match self.prefix.parse_line(line, &mut record, self.fallback) {
+            Err(reason) => self.skip_line(&reason, record.pid, Some(line)),
+            Ok((Label::Level(level), text)) => self.start_entry(record, level, text),
+            Ok((label, text)) => self.attach(label, text, record.pid, line),
+        }
+    }
+
     /// Closes and emits everything still held, in arrival order.
     fn flush_held(&mut self) {
-        let seqs: Vec<u64> = self.held.keys().copied().collect();
+        let seqs = self.held_base..self.held_base + self.held.len() as u64;
         for seq in seqs {
             self.close(seq);
         }
@@ -401,23 +422,9 @@ impl<R: BufRead> Decoder for StderrDecoder<R> {
                     continue;
                 }
             };
-            if let Some(rest) = line.strip_prefix('\t') {
-                self.continue_field(rest, &line);
-                continue;
-            }
-            // RDS puts a space in front of it.
-            if line.trim() == TRUNCATED {
-                // Amazon RDS cuts a very long entry and says so on a line of its own; the rest
-                // of the entry (CONTEXT, STATEMENT) still follows.
-                self.stats.truncated += 1;
-                continue;
-            }
-            let mut record = LogRecord::new(Timestamp::UNIX_EPOCH, Severity::Log, String::new());
-            match self.prefix.parse_line(&line, &mut record, self.fallback) {
-                Err(reason) => self.skip_line(&reason, record.pid, Some(&line)),
-                Ok((Label::Level(level), text)) => self.start_entry(record, level, text),
-                Ok((label, text)) => self.attach(label, text, record.pid, &line),
-            }
+            self.handle_line(&line);
+            // The next line is read into the same allocation.
+            self.buf = line.into_bytes();
         }
     }
 
