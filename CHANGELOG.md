@@ -15,7 +15,6 @@ All notable changes are listed here. The format follows
 - New guide, "Large logs and threads": on the 10.7 GB corpus 4 threads take 16.8 s against 53.4 s for 0.1.1, and `--threads 4` is the recommended setting. It becomes the default in 0.2.0; 0.1.x keeps using every core.
 - `logs fetch --provider aws-rds` downloads up to 4 files at the same time (`--jobs`, 1 to 16) and prints a line as each file finishes (`--quiet` hides them). RDS returns about 760 KB per call and each call took 5 to 7 s, one file after the other, so a day of busy logs took close to an hour. A failed file stops the ones after it; the error shown is the first in the list, and the files that finished stay saved.
 - `logs fetch --provider aws-rds --since` no longer downloads the hourly file that ended before that time.
-- New guide, "Large logs and threads": on the 10.7 GB corpus 4 threads take 16.8 s against 53.4 s for 0.1.1, and `--threads 4` is the recommended setting. It becomes the default in 0.2.0; 0.1.x keeps using every core.
 - The reports are unchanged, and `--threads 1` still uses one thread. `RAYON_NUM_THREADS` still sets the default number of threads.
 
 ## [0.1.1] - 2026-10-17
