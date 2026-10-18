@@ -509,6 +509,11 @@ Options:
       --bin <BIN>
           Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)
 
+      --jobs <JOBS>
+          Files downloaded at the same time (`aws-rds`; 1 to 16)
+          
+          [default: 4]
+
       --conn <CONN>
           Connection for `--provider sql`
           
@@ -527,6 +532,9 @@ Options:
 
       --out <OUT>
           Directory the files go to (created if missing); a rerun continues where this stopped
+
+      --quiet
+          Do not print a line for each finished file
 
   -h, --help
           Print help (see a summary with '-h')
@@ -846,6 +854,11 @@ Options:
       --bin <BIN>
           Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)
 
+      --jobs <JOBS>
+          Files downloaded at the same time (`aws-rds`; 1 to 16)
+          
+          [default: 4]
+
       --since <SINCE>
           How far back to fetch logs (see `logs fetch --since`)
           
@@ -918,6 +931,11 @@ Options:
 
       --bin <BIN>
           Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)
+
+      --jobs <JOBS>
+          Files downloaded at the same time (`aws-rds`; 1 to 16)
+          
+          [default: 4]
 
       --interval <INTERVAL>
           Time between updates (`30s`, `5m`, `1h`)

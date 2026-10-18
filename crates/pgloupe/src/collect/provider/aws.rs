@@ -2,7 +2,16 @@
 //!
 //! Supported: this is the connector tested against a real account.
 
-use std::{path::PathBuf, thread, time::Duration};
+use std::{
+    io::Write as _,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc::{self, SyncSender},
+    },
+    thread,
+    time::{Duration, Instant},
+};
 
 use jiff::Timestamp;
 use serde::Deserialize;
@@ -16,6 +25,11 @@ use super::{
 const RETRIES: u32 = 4;
 /// Portions fetched for one file before giving up (a guard against a marker that never ends).
 const MAX_PORTIONS: u32 = 1_000_000;
+
+/// Files downloaded at the same time unless told otherwise.
+pub const DEFAULT_JOBS: usize = 4;
+/// The most files downloaded at the same time.
+pub const MAX_JOBS: usize = 16;
 
 const INSTALL_HINT: &str =
     "install the AWS CLI (https://docs.aws.amazon.com/cli/) or pass its path with --bin";
@@ -203,6 +217,47 @@ impl AwsCli {
 pub struct AwsRds {
     cli: AwsCli,
     instance: String,
+    jobs: usize,
+    progress: bool,
+}
+
+/// One file to download, after the checks that need the sink and the saved state.
+#[derive(Debug)]
+struct Job {
+    name: String,
+    local: String,
+    size: u64,
+    marker: String,
+}
+
+/// Tells workers to stop: everything after a failed file, or everything once the sink fails.
+/// Files before the failed one keep going so the error reported is the first in the list.
+struct Halt<'a> {
+    stop: &'a AtomicBool,
+    failed: &'a AtomicUsize,
+}
+
+impl Halt<'_> {
+    fn stops(&self, job: usize) -> bool {
+        self.stop.load(Ordering::Relaxed) || job > self.failed.load(Ordering::Relaxed)
+    }
+}
+
+/// What a download worker tells the thread that owns the sink.
+enum Event {
+    Data {
+        job: usize,
+        text: String,
+        marker: String,
+    },
+    Done {
+        job: usize,
+        took: Duration,
+    },
+    Failed {
+        job: usize,
+        error: FetchError,
+    },
 }
 
 impl AwsRds {
@@ -217,7 +272,23 @@ impl AwsRds {
         AwsRds {
             cli: AwsCli::new(program, region, profile),
             instance,
+            jobs: DEFAULT_JOBS,
+            progress: false,
         }
+    }
+
+    /// Downloads up to `jobs` files at the same time (at least 1, at most [`MAX_JOBS`]).
+    #[must_use]
+    pub fn with_jobs(mut self, jobs: usize) -> Self {
+        self.jobs = jobs.clamp(1, MAX_JOBS);
+        self
+    }
+
+    /// Prints one line on stderr as each file finishes.
+    #[must_use]
+    pub fn with_progress(mut self, progress: bool) -> Self {
+        self.progress = progress;
+        self
     }
 
     /// Waits this long (doubling) before retrying a throttled call.
@@ -307,7 +378,26 @@ impl LogProvider for AwsRds {
         state: &mut ProviderState,
     ) -> Result<Summary, FetchError> {
         let mut summary = Summary::default();
+        let jobs = self.plan(request, sink, state, &mut summary)?;
+        self.run(&jobs, sink, state, &mut summary)?;
+        Ok(summary)
+    }
+}
+
+impl AwsRds {
+    /// The files that still need bytes, in the order RDS wrote them.
+    fn plan(
+        &self,
+        request: &Request,
+        sink: &mut dyn LogSink,
+        state: &mut ProviderState,
+        summary: &mut Summary,
+    ) -> Result<Vec<Job>, FetchError> {
+        let mut jobs = Vec::new();
         for file in self.list(request.since)? {
+            if ends_before(&file.name, request.since) {
+                continue;
+            }
             let local = safe_name(&file.name);
             let key = format!("marker:{}", file.name);
             let size = u64::try_from(file.size).unwrap_or(0);
@@ -326,39 +416,218 @@ impl LogProvider for AwsRds {
             if !shrunk && last_size == Some(size) && state.contains_key(&key) {
                 continue;
             }
-            let mut marker = state.get(&key).cloned().unwrap_or_else(|| "0".to_owned());
-            let mut wrote = false;
-            for _ in 0..MAX_PORTIONS {
-                let portion = self.portion(&file.name, &marker)?;
-                let data = portion.log_file_data.unwrap_or_default();
-                let next = portion.marker.unwrap_or_else(|| marker.clone());
-                if portion.additional_data_pending && next == marker {
-                    // More data is promised but the marker stands still: stop before repeating text.
-                    return Err(FetchError::Output {
-                        provider: "aws-rds",
-                        what: "download-db-log-file-portion",
-                        detail: format!("the marker {marker:?} does not advance for {}", file.name),
-                    });
-                }
-                if !data.is_empty() {
-                    sink.append(&local, data.as_bytes())?;
-                    summary.bytes += data.len() as u64;
-                    wrote = true;
-                }
-                marker = next;
-                state.insert(key.clone(), marker.clone());
-                if !portion.additional_data_pending {
-                    break;
-                }
-            }
-            if wrote && !summary.files.contains(&local) {
-                summary.files.push(local);
-            }
-            state.insert(size_key, size.to_string());
-            sink.checkpoint(state)?;
+            let marker = state.get(&key).cloned().unwrap_or_else(|| "0".to_owned());
+            jobs.push(Job {
+                name: file.name,
+                local,
+                size,
+                marker,
+            });
         }
-        Ok(summary)
+        Ok(jobs)
     }
+
+    /// Downloads `jobs` on up to `self.jobs` threads. The calling thread alone writes to the sink
+    /// and the state, so a checkpoint always matches the bytes on disk.
+    fn run(
+        &self,
+        jobs: &[Job],
+        sink: &mut dyn LogSink,
+        state: &mut ProviderState,
+        summary: &mut Summary,
+    ) -> Result<(), FetchError> {
+        let workers = self.jobs.clamp(1, jobs.len().max(1));
+        let next = AtomicUsize::new(0);
+        let stop = AtomicBool::new(false);
+        let failed = AtomicUsize::new(usize::MAX);
+        let (tx, rx) = mpsc::sync_channel::<Event>(workers * 2);
+        let mut wrote = vec![false; jobs.len()];
+        let mut finished = 0;
+        let mut sink_failed = false;
+        let mut failure: Option<(usize, FetchError)> = None;
+        thread::scope(|scope| {
+            for _ in 0..workers {
+                let tx = tx.clone();
+                let (next, stop, failed) = (&next, &stop, &failed);
+                scope.spawn(move || {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(job) = jobs.get(index) else { break };
+                        let halt = Halt { stop, failed };
+                        if halt.stops(index) {
+                            break;
+                        }
+                        let started = Instant::now();
+                        match self.download(index, job, &tx, &halt) {
+                            Ok(true) => {
+                                let took = started.elapsed();
+                                if tx.send(Event::Done { job: index, took }).is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(false) => break,
+                            Err(error) => {
+                                failed.fetch_min(index, Ordering::Relaxed);
+                                drop(tx.send(Event::Failed { job: index, error }));
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+            drop(tx);
+            for event in rx {
+                match event {
+                    Event::Data { job, text, marker } => {
+                        if sink_failed {
+                            continue;
+                        }
+                        let spec = &jobs[job];
+                        if !text.is_empty() {
+                            if let Err(error) = sink.append(&spec.local, text.as_bytes()) {
+                                stop.store(true, Ordering::Relaxed);
+                                sink_failed = true;
+                                keep_first(&mut failure, job, error);
+                                continue;
+                            }
+                            summary.bytes += text.len() as u64;
+                            wrote[job] = true;
+                        }
+                        state.insert(format!("marker:{}", spec.name), marker);
+                    }
+                    Event::Done { job, took } => {
+                        let spec = &jobs[job];
+                        state.insert(format!("size:{}", spec.name), spec.size.to_string());
+                        if sink_failed {
+                            continue;
+                        }
+                        if let Err(error) = sink.checkpoint(state) {
+                            stop.store(true, Ordering::Relaxed);
+                            sink_failed = true;
+                            keep_first(&mut failure, job, error);
+                            continue;
+                        }
+                        finished += 1;
+                        if self.progress {
+                            say(&format!(
+                                "[{finished}/{}] {}  {}  {}",
+                                jobs.len(),
+                                spec.name,
+                                human_bytes(spec.size),
+                                human_time(took)
+                            ));
+                        }
+                    }
+                    Event::Failed { job, error } => keep_first(&mut failure, job, error),
+                }
+            }
+        });
+        for (job, wrote) in jobs.iter().zip(wrote) {
+            if wrote && !summary.files.contains(&job.local) {
+                summary.files.push(job.local.clone());
+            }
+        }
+        failure.map_or(Ok(()), |(_, error)| Err(error))
+    }
+
+    /// Downloads one file portion by portion. `Ok(false)` means it stopped early because another
+    /// file failed.
+    fn download(
+        &self,
+        index: usize,
+        job: &Job,
+        tx: &SyncSender<Event>,
+        halt: &Halt<'_>,
+    ) -> Result<bool, FetchError> {
+        let mut marker = job.marker.clone();
+        for _ in 0..MAX_PORTIONS {
+            if halt.stops(index) {
+                return Ok(false);
+            }
+            let portion = self.portion(&job.name, &marker)?;
+            let text = portion.log_file_data.unwrap_or_default();
+            let next = portion.marker.unwrap_or_else(|| marker.clone());
+            if portion.additional_data_pending && next == marker {
+                // More data is promised but the marker stands still: stop before repeating text.
+                return Err(FetchError::Output {
+                    provider: "aws-rds",
+                    what: "download-db-log-file-portion",
+                    detail: format!("the marker {marker:?} does not advance for {}", job.name),
+                });
+            }
+            marker = next;
+            let event = Event::Data {
+                job: index,
+                text,
+                marker: marker.clone(),
+            };
+            if tx.send(event).is_err() {
+                return Ok(false);
+            }
+            if !portion.additional_data_pending {
+                break;
+            }
+        }
+        Ok(true)
+    }
+}
+
+/// Keeps the failure of the file that comes first in the list.
+fn keep_first(slot: &mut Option<(usize, FetchError)>, job: usize, error: FetchError) {
+    if slot.as_ref().is_none_or(|(first, _)| job < *first) {
+        *slot = Some((job, error));
+    }
+}
+
+/// A line of progress on stderr; there is nowhere to report a failure to write it.
+fn say(line: &str) {
+    drop(writeln!(std::io::stderr(), "{line}"));
+}
+
+#[expect(clippy::cast_precision_loss, reason = "a display figure")]
+fn human_bytes(bytes: u64) -> String {
+    if bytes >= 1 << 20 {
+        format!("{:.1} MB", bytes as f64 / f64::from(1_u32 << 20))
+    } else {
+        format!("{:.0} KB", bytes as f64 / 1024.0)
+    }
+}
+
+fn human_time(took: Duration) -> String {
+    let secs = took.as_secs();
+    if secs >= 60 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Whether the hour in a name like `error/postgresql.log.2026-10-16-20` ended at or before
+/// `since`. RDS closes a file when the hour turns, so its `LastWritten` falls just after the end
+/// of that hour and the file would be listed although it holds only older lines. A name without
+/// an hour is never skipped here.
+fn ends_before(name: &str, since: Timestamp) -> bool {
+    let Some((_, stamp)) = name.rsplit_once('.') else {
+        return false;
+    };
+    let mut parts = stamp.split('-');
+    let (Some(y), Some(mo), Some(d), Some(h), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return false;
+    };
+    if y.len() != 4 || [mo, d, h].iter().any(|p| p.len() != 2) {
+        return false;
+    }
+    format!("{y}-{mo}-{d}T{h}:00:00Z")
+        .parse::<Timestamp>()
+        .ok()
+        .and_then(|start| start.checked_add(jiff::SignedDuration::from_hours(1)).ok())
+        .is_some_and(|end| end <= since)
 }
 
 #[cfg(test)]
@@ -387,5 +656,19 @@ mod tests {
         assert!(is_throttle(
             "An error occurred (Throttling) when calling the X operation: Rate exceeded"
         ));
+    }
+
+    #[test]
+    fn a_file_whose_hour_ended_before_since_is_skipped() {
+        let since = "2026-10-16T21:00:00Z".parse::<Timestamp>().unwrap();
+        assert!(ends_before("error/postgresql.log.2026-10-16-20", since));
+        assert!(ends_before("error/postgresql.log.2026-10-15-23", since));
+        assert!(!ends_before("error/postgresql.log.2026-10-16-21", since));
+        let mid = "2026-10-16T21:30:00Z".parse::<Timestamp>().unwrap();
+        assert!(!ends_before("error/postgresql.log.2026-10-16-21", mid));
+        assert!(!ends_before("error/postgresql.log", since));
+        assert!(!ends_before("error/postgresql.log.2026-10-16", since));
+        assert!(!ends_before("error/postgresql.log.20261016-20", since));
+        assert!(!ends_before("error/postgresql.log.2026-13-16-20", since));
     }
 }

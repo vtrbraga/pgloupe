@@ -168,11 +168,13 @@ complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_su
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l subscription -d 'Azure subscription (`azure-flexible`)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l log-group -d '`CloudWatch` log group (`aws-cloudwatch`); default `/aws/rds/instance/<instance>/postgresql`' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l bin -d 'Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)' -r -F
+complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l jobs -d 'Files downloaded at the same time (`aws-rds`; 1 to 16)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l conn -d 'Connection for `--provider sql`' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l password-env -d 'Environment variable that holds the password (default `PGPASSWORD`)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l sslrootcert -d 'CA certificate (PEM) to trust' -r -F
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l since -d 'Start: `30m`, `24h`, `7d`, `2w` back from now, or an RFC 3339 time or `YYYY-MM-DD` (UTC)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l out -d 'Directory the files go to (created if missing); a rerun continues where this stopped' -r -F
+complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l quiet -d 'Do not print a line for each finished file'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from help" -f -a "dump" -d 'Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from help" -f -a "analyze" -d 'Summarize one or more logs: statements with percentiles, errors, locks, temp files, connections, checkpoints and autovacuum'
@@ -268,6 +270,7 @@ complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l resource-grou
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l subscription -d 'Azure subscription (`azure-flexible`)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l log-group -d '`CloudWatch` log group (`aws-cloudwatch`); default `/aws/rds/instance/<instance>/postgresql`' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l bin -d 'Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)' -r -F
+complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l jobs -d 'Files downloaded at the same time (`aws-rds`; 1 to 16)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l since -d 'How far back to fetch logs (see `logs fetch --since`)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l out -d 'Directory for everything: `snapshots/`, `logs/` and the fetch state' -r -F
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l report -d 'Also write the report here (HTML) from the logs and the two newest snapshots' -r -F
@@ -291,6 +294,7 @@ complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l resource-group
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l subscription -d 'Azure subscription (`azure-flexible`)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l log-group -d '`CloudWatch` log group (`aws-cloudwatch`); default `/aws/rds/instance/<instance>/postgresql`' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l bin -d 'Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)' -r -F
+complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l jobs -d 'Files downloaded at the same time (`aws-rds`; 1 to 16)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l interval -d 'Time between updates (`30s`, `5m`, `1h`)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l window -d 'How far back the report looks (`24h`, `7d`)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l listen -d 'Address to serve the dashboard on (loopback only unless `--allow-remote`)' -r

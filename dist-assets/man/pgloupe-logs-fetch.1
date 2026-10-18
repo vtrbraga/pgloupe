@@ -4,7 +4,7 @@
 .SH NAME
 pgloupe\-logs\-fetch \- Download a time range of log files from a managed service or server (resumable)
 .SH SYNOPSIS
-\fBpgloupe logs fetch\fR [\fB\-\-instance\fR] [\fB\-\-region\fR] [\fB\-\-profile\fR] [\fB\-\-project\fR] [\fB\-\-resource\-group\fR] [\fB\-\-subscription\fR] [\fB\-\-log\-group\fR] [\fB\-\-bin\fR] [\fB\-\-conn\fR] [\fB\-\-password\-env\fR] [\fB\-\-sslrootcert\fR] [\fB\-\-since\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-provider\fR> <\fB\-\-out\fR> 
+\fBpgloupe logs fetch\fR [\fB\-\-instance\fR] [\fB\-\-region\fR] [\fB\-\-profile\fR] [\fB\-\-project\fR] [\fB\-\-resource\-group\fR] [\fB\-\-subscription\fR] [\fB\-\-log\-group\fR] [\fB\-\-bin\fR] [\fB\-\-jobs\fR] [\fB\-\-conn\fR] [\fB\-\-password\-env\fR] [\fB\-\-sslrootcert\fR] [\fB\-\-since\fR] [\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-provider\fR> <\fB\-\-out\fR> 
 .SH DESCRIPTION
 Download a time range of log files from a managed service or server (resumable)
 .SH OPTIONS
@@ -56,6 +56,9 @@ Azure subscription (`azure\-flexible`)
 \fB\-\-bin\fR \fI<BIN>\fR
 Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)
 .TP
+\fB\-\-jobs\fR \fI<JOBS>\fR [default: 4]
+Files downloaded at the same time (`aws\-rds`; 1 to 16)
+.TP
 \fB\-\-conn\fR \fI<CONN>\fR
 Connection for `\-\-provider sql`
 .TP
@@ -70,6 +73,9 @@ Start: `30m`, `24h`, `7d`, `2w` back from now, or an RFC 3339 time or `YYYY\-MM\
 .TP
 \fB\-\-out\fR \fI<OUT>\fR
 Directory the files go to (created if missing); a rerun continues where this stopped
+.TP
+\fB\-\-quiet\fR
+Do not print a line for each finished file
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)

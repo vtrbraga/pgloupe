@@ -257,6 +257,9 @@ pub struct TargetArgs {
     /// Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`).
     #[arg(long)]
     bin: Option<PathBuf>,
+    /// Files downloaded at the same time (`aws-rds`; 1 to 16).
+    #[arg(long, default_value = "4", value_parser = clap::value_parser!(u8).range(1..=16))]
+    jobs: u8,
 }
 
 /// `logs fetch`: download a time range of log files.
@@ -279,6 +282,9 @@ pub struct FetchArgs {
     /// Directory the files go to (created if missing); a rerun continues where this stopped.
     #[arg(long)]
     out: PathBuf,
+    /// Do not print a line for each finished file.
+    #[arg(long)]
+    quiet: bool,
 }
 
 /// A point in time: a span back from `now` (`24h`) or an absolute time.
@@ -318,6 +324,7 @@ pub fn parse_since(text: &str, now: jiff::Timestamp) -> Result<jiff::Timestamp, 
 pub fn build_provider(
     args: &TargetArgs,
     conn: Option<ConnSpec>,
+    progress: bool,
 ) -> anyhow::Result<Box<dyn LogProvider>> {
     // Values go to the vendor's CLI as separate arguments: one that starts with `-` would be read
     // as an option there.
@@ -341,16 +348,20 @@ pub fn build_provider(
     };
     let program = |default: &str| args.bin.clone().unwrap_or_else(|| PathBuf::from(default));
     Ok(match args.provider {
-        ProviderKind::AwsRds => Box::new(AwsRds::new(
-            program("aws"),
-            need(
-                &args.instance,
-                "--instance (the DB instance identifier)",
-                "aws-rds",
-            )?,
-            args.region.clone(),
-            args.profile.clone(),
-        )),
+        ProviderKind::AwsRds => Box::new(
+            AwsRds::new(
+                program("aws"),
+                need(
+                    &args.instance,
+                    "--instance (the DB instance identifier)",
+                    "aws-rds",
+                )?,
+                args.region.clone(),
+                args.profile.clone(),
+            )
+            .with_jobs(usize::from(args.jobs))
+            .with_progress(progress),
+        ),
         ProviderKind::AwsCloudwatch => {
             let group = match (&args.log_group, &args.instance) {
                 (Some(group), _) => group.clone(),
@@ -408,7 +419,7 @@ pub fn fetch(args: &FetchArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyh
         .as_deref()
         .map(|dsn| ConnSpec::parse(dsn, args.password_env.as_deref(), args.sslrootcert.clone()))
         .transpose()?;
-    let provider = build_provider(&args.target, conn)?;
+    let provider = build_provider(&args.target, conn, !args.quiet)?;
     let since = parse_since(&args.since, jiff::Timestamp::now()).map_err(anyhow::Error::msg)?;
     fetch_with(provider.as_ref(), &args.out, since, out, err)
 }
@@ -531,7 +542,7 @@ pub fn export(args: &ExportArgs, out: &mut dyn Write, err: &mut dyn Write) -> an
     drop(client);
 
     writeln!(err, "3/4 fetching logs")?;
-    let provider = build_provider(&args.target, Some(spec))?;
+    let provider = build_provider(&args.target, Some(spec), false)?;
     let since = parse_since(&args.since, jiff::Timestamp::now()).map_err(anyhow::Error::msg)?;
     let logs = args.out.join("logs");
     fetch_with(provider.as_ref(), &logs, since, out, err).context("step 3 (logs)")?;
@@ -717,7 +728,7 @@ impl Cycle for Writing<'_> {
 /// fails; the loop itself keeps going through failed cycles.
 pub fn watch(args: &WatchArgs, out: &mut dyn Write, err: &mut dyn Write) -> anyhow::Result<Exit> {
     let spec = args.conn.spec()?;
-    let provider = build_provider(&args.target, Some(spec.clone()))?;
+    let provider = build_provider(&args.target, Some(spec.clone()), false)?;
     if provider.experimental() {
         writeln!(
             err,

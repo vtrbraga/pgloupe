@@ -235,11 +235,13 @@ sql\:"The server'\''s own log directory over SQL (EXPERIMENTAL)"))' \
 '--subscription=[Azure subscription (\`azure-flexible\`)]:SUBSCRIPTION:_default' \
 '--log-group=[\`CloudWatch\` log group (\`aws-cloudwatch\`); default \`/aws/rds/instance/<instance>/postgresql\`]:LOG_GROUP:_default' \
 '--bin=[Path of the vendor CLI executable (default\: \`aws\`, \`az\`, \`gcloud\`, \`avn\` or \`heroku\`)]:BIN:_files' \
+'--jobs=[Files downloaded at the same time (\`aws-rds\`; 1 to 16)]:JOBS:_default' \
 '--conn=[Connection for \`--provider sql\`]:CONN:_default' \
 '--password-env=[Environment variable that holds the password (default \`PGPASSWORD\`)]:PASSWORD_ENV:_default' \
 '--sslrootcert=[CA certificate (PEM) to trust]:SSLROOTCERT:_files' \
 '--since=[Start\: \`30m\`, \`24h\`, \`7d\`, \`2w\` back from now, or an RFC 3339 time or \`YYYY-MM-DD\` (UTC)]:SINCE:_default' \
 '--out=[Directory the files go to (created if missing); a rerun continues where this stopped]:OUT:_files' \
+'--quiet[Do not print a line for each finished file]' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 && ret=0
@@ -394,6 +396,7 @@ sql\:"The server'\''s own log directory over SQL (EXPERIMENTAL)"))' \
 '--subscription=[Azure subscription (\`azure-flexible\`)]:SUBSCRIPTION:_default' \
 '--log-group=[\`CloudWatch\` log group (\`aws-cloudwatch\`); default \`/aws/rds/instance/<instance>/postgresql\`]:LOG_GROUP:_default' \
 '--bin=[Path of the vendor CLI executable (default\: \`aws\`, \`az\`, \`gcloud\`, \`avn\` or \`heroku\`)]:BIN:_files' \
+'--jobs=[Files downloaded at the same time (\`aws-rds\`; 1 to 16)]:JOBS:_default' \
 '--since=[How far back to fetch logs (see \`logs fetch --since\`)]:SINCE:_default' \
 '--out=[Directory for everything\: \`snapshots/\`, \`logs/\` and the fetch state]:OUT:_files' \
 '--report=[Also write the report here (HTML) from the logs and the two newest snapshots]:REPORT:_files' \
@@ -422,6 +425,7 @@ sql\:"The server'\''s own log directory over SQL (EXPERIMENTAL)"))' \
 '--subscription=[Azure subscription (\`azure-flexible\`)]:SUBSCRIPTION:_default' \
 '--log-group=[\`CloudWatch\` log group (\`aws-cloudwatch\`); default \`/aws/rds/instance/<instance>/postgresql\`]:LOG_GROUP:_default' \
 '--bin=[Path of the vendor CLI executable (default\: \`aws\`, \`az\`, \`gcloud\`, \`avn\` or \`heroku\`)]:BIN:_files' \
+'--jobs=[Files downloaded at the same time (\`aws-rds\`; 1 to 16)]:JOBS:_default' \
 '--interval=[Time between updates (\`30s\`, \`5m\`, \`1h\`)]:INTERVAL:_default' \
 '--window=[How far back the report looks (\`24h\`, \`7d\`)]:WINDOW:_default' \
 '--listen=[Address to serve the dashboard on (loopback only unless \`--allow-remote\`)]:LISTEN:_default' \

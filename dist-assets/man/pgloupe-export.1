@@ -4,7 +4,7 @@
 .SH NAME
 pgloupe\-export \- Check the server, take a snapshot and fetch logs into one directory; optionally the report
 .SH SYNOPSIS
-\fBpgloupe export\fR [\fB\-\-password\-env\fR] [\fB\-\-sslrootcert\fR] [\fB\-\-instance\fR] [\fB\-\-region\fR] [\fB\-\-profile\fR] [\fB\-\-project\fR] [\fB\-\-resource\-group\fR] [\fB\-\-subscription\fR] [\fB\-\-log\-group\fR] [\fB\-\-bin\fR] [\fB\-\-since\fR] [\fB\-\-report\fR] [\fB\-\-prefix\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-conn\fR> <\fB\-\-provider\fR> <\fB\-\-out\fR> 
+\fBpgloupe export\fR [\fB\-\-password\-env\fR] [\fB\-\-sslrootcert\fR] [\fB\-\-instance\fR] [\fB\-\-region\fR] [\fB\-\-profile\fR] [\fB\-\-project\fR] [\fB\-\-resource\-group\fR] [\fB\-\-subscription\fR] [\fB\-\-log\-group\fR] [\fB\-\-bin\fR] [\fB\-\-jobs\fR] [\fB\-\-since\fR] [\fB\-\-report\fR] [\fB\-\-prefix\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fB\-\-conn\fR> <\fB\-\-provider\fR> <\fB\-\-out\fR> 
 .SH DESCRIPTION
 Check the server, take a snapshot and fetch logs into one directory; optionally the report
 .SH OPTIONS
@@ -64,6 +64,9 @@ Azure subscription (`azure\-flexible`)
 .TP
 \fB\-\-bin\fR \fI<BIN>\fR
 Path of the vendor CLI executable (default: `aws`, `az`, `gcloud`, `avn` or `heroku`)
+.TP
+\fB\-\-jobs\fR \fI<JOBS>\fR [default: 4]
+Files downloaded at the same time (`aws\-rds`; 1 to 16)
 .TP
 \fB\-\-since\fR \fI<SINCE>\fR [default: 24h]
 How far back to fetch logs (see `logs fetch \-\-since`)
