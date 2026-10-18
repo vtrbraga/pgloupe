@@ -331,16 +331,17 @@ fn run_with<S: Fold>(
         .num_threads(threads)
         .build()
         .map_err(AnalyzeError::Pool)?;
+    // Called from here, not from inside `install`: a broadcast started on a worker thread can wait
+    // for a worker that is waiting for it.
+    let parts = pool.broadcast(|_| {
+        let mut acc = new();
+        while let Some(batch) = files.next_batch() {
+            acc = fold_batch(acc, &batch);
+        }
+        acc
+    });
     let acc = pool.install(|| {
-        pool.broadcast(|_| {
-            let mut acc = new();
-            while let Some(batch) = files.next_batch() {
-                acc = fold_batch(acc, &batch);
-            }
-            acc
-        })
-        .into_par_iter()
-        .reduce(&new, |mut left, right| {
+        parts.into_par_iter().reduce(&new, |mut left, right| {
             left.merge(right);
             left
         })
@@ -488,7 +489,7 @@ impl Iterator for Batches {
                 self.open_next()?;
                 continue;
             }
-            let mut batch = Vec::new();
+            let mut batch = Vec::with_capacity(self.options.batch_size.max(1));
             let mut blocks = Vec::new();
             let mut error = None;
             let mut finished = false;
