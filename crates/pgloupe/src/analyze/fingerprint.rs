@@ -6,7 +6,7 @@ const MAX_DISPLAY_CHARS: usize = 4_096;
 
 use std::{
     collections::HashMap,
-    sync::{LazyLock, PoisonError, RwLock},
+    sync::{LazyLock, OnceLock, PoisonError, RwLock},
 };
 
 use xxhash_rust::xxh3::{Xxh3DefaultBuilder, xxh3_64};
@@ -31,7 +31,14 @@ const MAX_CACHED_KEY: usize = 8 * 1024;
 /// The cache is split so that threads rarely wait for each other.
 const SHARDS: usize = 64;
 
-type Shard = RwLock<HashMap<String, Fingerprint, Xxh3DefaultBuilder>>;
+/// What is remembered about a statement shape.
+struct Known {
+    fingerprint: Fingerprint,
+    /// The normalized text, worked out the first time it is asked for.
+    text: OnceLock<String>,
+}
+
+type Shard = RwLock<HashMap<String, Known, Xxh3DefaultBuilder>>;
 
 static CACHE: LazyLock<Vec<Shard>> = LazyLock::new(|| {
     (0..SHARDS)
@@ -60,7 +67,7 @@ pub fn fingerprint(sql: &str) -> Fingerprint {
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .get(&key)
-        .copied();
+        .map(|known| known.fingerprint);
     if let Some(found) = known {
         return found;
     }
@@ -71,7 +78,13 @@ pub fn fingerprint(sql: &str) -> Fingerprint {
         if shard.len() >= CACHE_LIMIT / SHARDS {
             shard.clear();
         }
-        shard.insert(key, found);
+        shard.insert(
+            key,
+            Known {
+                fingerprint: found,
+                text: OnceLock::new(),
+            },
+        );
     }
     found
 }
@@ -402,6 +415,23 @@ fn parsed_kind(sql: &str) -> QueryKind {
 /// statement parsed, else its whitespace-collapsed text.
 #[must_use]
 pub fn display_text(sql: &str, parsed: bool) -> String {
+    if parsed && let Some(key) = shape_key(sql) {
+        // Statements with one shape key differ only in their literals, which all become
+        // placeholders, so they share a normalized text: it is worked out once for all threads.
+        let known = shard(&key).read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(known) = known.get(&key) {
+            return known
+                .text
+                .get_or_init(|| display_text_uncached(sql, parsed))
+                .clone();
+        }
+    }
+    display_text_uncached(sql, parsed)
+}
+
+/// The text straight from `pg_query`, the reference the cache must agree with.
+#[must_use]
+pub fn display_text_uncached(sql: &str, parsed: bool) -> String {
     if parsed && let Ok(normalized) = pg_query::normalize(sql) {
         return cut(normalized);
     }
@@ -709,5 +739,35 @@ mod tests {
             fingerprint("SELECT shared_cache_probe FROM t_probe WHERE id = 43"),
             seen
         );
+    }
+
+    #[test]
+    fn the_cached_display_text_equals_the_uncached_one() {
+        let statements = [
+            "SELECT a, b FROM t_cached_text WHERE id = 1 AND name = 'x' AND score > 2.5",
+            "SELECT a, b FROM t_cached_text WHERE id = 22 AND name = 'yy' AND score > 7.25",
+            "select a,   b from t_cached_text where id = 3",
+            "SELECT * FROM t_cached_text WHERE k IN (1, 2, 3)",
+            "SELECT * FROM t_cached_text WHERE k IN (4, 5, 6, 7)",
+            "INSERT INTO t_cached_text (id, v) VALUES (1, 'a'), (2, 'b')",
+            "UPDATE t_cached_text SET v = -5, w = v - 5 WHERE id = $1",
+            "SELECT 1 + 1, 'a' || 'b'",
+            "SELECT x FROM t_cached_text WHERE id = -9",
+        ];
+        for sql in statements {
+            // The first call may fill the cache, the second reads it.
+            assert!(fingerprint(sql).parsed, "{sql}");
+            for _ in 0..2 {
+                assert_eq!(
+                    display_text(sql, true),
+                    display_text_uncached(sql, true),
+                    "{sql}"
+                );
+            }
+        }
+        let a = "SELECT a FROM t_cached_text WHERE id = 100 AND n = 'p'";
+        let b = "SELECT a FROM t_cached_text WHERE id = 200 AND n = 'qq'";
+        assert!(fingerprint(a).parsed);
+        assert_eq!(display_text(b, true), display_text_uncached(b, true));
     }
 }
