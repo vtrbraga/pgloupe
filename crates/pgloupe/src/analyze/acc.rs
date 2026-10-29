@@ -52,6 +52,10 @@ fn execution(
 /// Slowest executions kept per statement, for "who ran this". One keeps the per-hour, per-worker
 /// footprint of a fingerprint small; the global slowest list has more.
 const EXAMPLES_PER_STATEMENT: usize = 1;
+/// Who-entries kept per statement in [`QueryStats::spilled_by`]; the rest fold into [`OTHER_WHO`].
+const SPILLERS_KEPT: usize = 5;
+/// The key of the folded-away spillers in [`QueryStats::spilled_by`].
+pub const OTHER_WHO: u64 = 0;
 /// Runs faster than this are not worth an example (and would cost memory for every fast
 /// statement of a wide log).
 const EXAMPLE_MIN_US: u64 = 10_000;
@@ -237,6 +241,18 @@ pub struct QueryStats {
     pub lock_wait_us: u64,
     pub temp_files: u64,
     pub temp_bytes: u64,
+    /// Temp files by [`who_key`] of the record that logged them, trimmed by
+    /// [`QueryStats::recap_spills`] when a run ends.
+    #[serde(default)]
+    pub spilled_by: BTreeMap<u64, Spill>,
+    /// When the statement first and last wrote a temp file.
+    #[serde(default)]
+    pub spill_first: Option<Timestamp>,
+    #[serde(default)]
+    pub spill_last: Option<Timestamp>,
+    /// A spill was logged under a cursor `FETCH` whose `DECLARE` is not in the log.
+    #[serde(default)]
+    pub cursor_unresolved: bool,
     /// Parse, bind and fetch time.
     #[serde(default)]
     pub phases: Phases,
@@ -268,7 +284,42 @@ impl QueryStats {
             lock_wait_us: 0,
             temp_files: 0,
             temp_bytes: 0,
+            spilled_by: BTreeMap::new(),
+            spill_first: None,
+            spill_last: None,
+            cursor_unresolved: false,
             phases: Phases::default(),
+        }
+    }
+
+    /// Counts one temp file of `bytes` written at `ts` by `who`.
+    fn spilled(&mut self, ts: Timestamp, who: u64, bytes: u64) {
+        self.temp_files += 1;
+        self.temp_bytes += bytes;
+        let slot = self.spilled_by.entry(who).or_default();
+        slot.files += 1;
+        slot.bytes += bytes;
+        self.spill_first = earliest(self.spill_first, Some(ts));
+        self.spill_last = latest(self.spill_last, Some(ts));
+    }
+
+    /// Keeps the [`SPILLERS_KEPT`] biggest spillers (ties: the larger key goes first) and folds
+    /// the rest into [`OTHER_WHO`].
+    fn recap_spills(&mut self) {
+        let mut ranked: Vec<(u64, u64)> = self
+            .spilled_by
+            .iter()
+            .filter(|(key, _)| **key != OTHER_WHO)
+            .map(|(key, spill)| (*key, spill.bytes))
+            .collect();
+        if ranked.len() <= SPILLERS_KEPT {
+            return;
+        }
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
+        for (key, _) in ranked.split_off(SPILLERS_KEPT) {
+            if let Some(spill) = self.spilled_by.remove(&key) {
+                self.spilled_by.entry(OTHER_WHO).or_default().merge(spill);
+            }
         }
     }
 
@@ -367,6 +418,12 @@ impl Merge for QueryStats {
         self.lock_wait_us += other.lock_wait_us;
         self.temp_files += other.temp_files;
         self.temp_bytes += other.temp_bytes;
+        for (key, spill) in other.spilled_by {
+            self.spilled_by.entry(key).or_default().merge(spill);
+        }
+        self.spill_first = earliest(self.spill_first, other.spill_first);
+        self.spill_last = latest(self.spill_last, other.spill_last);
+        self.cursor_unresolved |= other.cursor_unresolved;
         self.phases.parse.merge(other.phases.parse);
         self.phases.bind.merge(other.phases.bind);
         self.phases.fetch.merge(other.phases.fetch);
@@ -503,6 +560,9 @@ pub struct TempStats {
     pub files: u64,
     pub bytes: u64,
     pub max_bytes: u64,
+    /// Temp files whose record named no statement.
+    #[serde(default)]
+    pub unattributed: Spill,
 }
 
 impl Merge for TempStats {
@@ -510,6 +570,21 @@ impl Merge for TempStats {
         self.files += other.files;
         self.bytes += other.bytes;
         self.max_bytes = self.max_bytes.max(other.max_bytes);
+        self.unattributed.merge(other.unattributed);
+    }
+}
+
+/// Temp files written, and their size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Spill {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+impl Merge for Spill {
+    fn merge(&mut self, other: Self) {
+        self.files += other.files;
+        self.bytes += other.bytes;
     }
 }
 
@@ -1530,21 +1605,44 @@ impl Accumulators {
                     });
                 }
             }
-            Event::TempFile { bytes, .. } => {
-                if let Some(sql) = record.statement.as_deref() {
-                    self.with_query(sql, ts, record.query_id, |query| {
-                        query.seen(ts);
-                        query.temp_files += 1;
-                        query.temp_bytes += bytes;
-                    });
-                }
-            }
+            Event::TempFile { bytes, .. } => self.add_temp_file(record, *bytes),
             _ => {}
         }
         if record.level.is_error()
             && let Some(sql) = record.statement.as_deref()
         {
             self.add_failed_statement(record, sql);
+        }
+    }
+
+    /// Counts a temp file under its statement and whoever logged it, or as unattributed when the
+    /// record names no statement.
+    fn add_temp_file(&mut self, record: &LogRecord, bytes: u64) {
+        let ts = record.ts;
+        let Some(sql) = record.statement.as_deref() else {
+            self.totals.temp.unattributed.files += 1;
+            self.totals.temp.unattributed.bytes += bytes;
+            return;
+        };
+        let who = who_key(
+            record.database.as_deref(),
+            record.user.as_deref(),
+            record.application.as_deref(),
+            record.host.as_deref(),
+        );
+        let listed = self.with_query(sql, ts, record.query_id, |query| {
+            query.seen(ts);
+            // The overflow bucket keeps counts only.
+            if query.id == 0 {
+                query.temp_files += 1;
+                query.temp_bytes += bytes;
+            } else {
+                query.spilled(ts, who, bytes);
+            }
+            query.id != 0
+        });
+        if listed {
+            self.remember_who(who, record);
         }
     }
 
@@ -1705,6 +1803,7 @@ impl Accumulators {
                 ..
             } => self.dims.add(&attributes, Tally::Statement(*duration_ms)),
             Event::ConnectionAuthorized => self.dims.add(&attributes, Tally::Connection),
+            Event::TempFile { bytes, .. } => self.dims.add(&attributes, Tally::Temp(*bytes)),
             Event::Disconnection { session_ms } => {
                 self.dims.add(&attributes, Tally::Session(*session_ms));
             }
@@ -1758,6 +1857,9 @@ impl Accumulators {
     /// (ties: the larger id goes first), so the result does not depend on arrival order.
     pub fn recap(&mut self, limit: usize) {
         self.dims.recap(dimensions::LIMIT);
+        for query in self.queries.values_mut() {
+            query.recap_spills();
+        }
         for stat in self.totals.errors.values_mut() {
             stat.keep_busiest_statements();
         }
@@ -1770,7 +1872,10 @@ impl Accumulators {
             .queries
             .values()
             .chain(std::iter::once(&self.overflow))
-            .flat_map(|query| query.examples.rows().iter().map(|example| example.who))
+            .flat_map(|query| {
+                let examples = query.examples.rows().iter().map(|example| example.who);
+                examples.chain(query.spilled_by.keys().copied())
+            })
             .collect();
         self.who.retain(|key, _| used.contains(key));
         self.cap_queries(limit);
@@ -1792,6 +1897,9 @@ impl Accumulators {
                 query.query_id = None;
                 query.sample = None;
                 query.parsed = true;
+                query.spilled_by.clear();
+                query.spill_first = None;
+                query.spill_last = None;
                 self.overflow.merge(query);
             }
         }
@@ -1954,6 +2062,108 @@ mod tests {
         assert_eq!(a.totals.locks.acquired, 1);
         assert_eq!(a.totals.locks.wait_max_us, 400_250);
         assert_eq!(a.totals.temp.bytes, 1_000);
+    }
+
+    fn spill(second: i64, bytes: u64, sql: Option<&str>, app: &str) -> LogRecord {
+        let mut temp = log(second, &format!("temporary file: path \"x\", size {bytes}"));
+        temp.statement = sql.map(str::to_owned);
+        temp.user = Some("rollup".to_owned());
+        temp.application = Some(app.to_owned());
+        temp
+    }
+
+    #[test]
+    fn a_spill_is_listed_under_who_caused_it() {
+        let mut a = acc();
+        let sql = "SELECT sum(x) FROM big GROUP BY y";
+        a.add_record(&spill(5, 100, Some(sql), "app_b"));
+        a.add_record(&spill(2, 300, Some(sql), "app_a"));
+        a.add_record(&spill(9, 50, Some(sql), "app_a"));
+        a.recap(1_000);
+        let q = a.queries.values().next().unwrap();
+        let by_bytes: Vec<_> = q
+            .spilled_by
+            .iter()
+            .map(|(key, s)| (a.who[key].application.clone().unwrap(), s.files, s.bytes))
+            .collect();
+        assert_eq!(by_bytes.len(), 2);
+        assert!(by_bytes.contains(&("app_a".to_owned(), 2, 350)));
+        assert!(by_bytes.contains(&("app_b".to_owned(), 1, 100)));
+        assert_eq!((q.spill_first, q.spill_last), (Some(at(2)), Some(at(9))));
+        assert_eq!(a.dims.applications["app_a"].temp_bytes, 350);
+        assert_eq!(a.dims.users["rollup"].temp_files, 3);
+    }
+
+    #[test]
+    fn a_spill_without_a_statement_is_unattributed() {
+        let mut a = acc();
+        a.add_record(&spill(1, 700, None, "app_a"));
+        a.recap(1_000);
+        assert!(a.queries.is_empty());
+        assert_eq!(a.totals.temp.bytes, 700);
+        assert_eq!(
+            (
+                a.totals.temp.unattributed.files,
+                a.totals.temp.unattributed.bytes
+            ),
+            (1, 700)
+        );
+        assert_eq!(a.dims.applications["app_a"].temp_files, 1);
+    }
+
+    #[test]
+    fn more_than_five_spillers_fold_into_other() {
+        let mut a = acc();
+        let sql = "SELECT 1 FROM big";
+        for n in 0..7_u32 {
+            let bytes = 100 + u64::from(n);
+            a.add_record(&spill(i64::from(n), bytes, Some(sql), &format!("app{n}")));
+        }
+        a.recap(1_000);
+        let q = a.queries.values().next().unwrap();
+        assert_eq!(q.spilled_by.len(), 6);
+        let other = q.spilled_by[&OTHER_WHO];
+        assert_eq!((other.files, other.bytes), (2, 100 + 101));
+        let total: u64 = q.spilled_by.values().map(|s| s.bytes).sum();
+        assert_eq!(total, q.temp_bytes);
+    }
+
+    #[test]
+    fn merging_two_halves_spills_the_same_as_one_pass() {
+        let sql = "SELECT 1 FROM big";
+        let records: Vec<LogRecord> = (0..8_u32)
+            .map(|n| {
+                let app = format!("app{}", n % 3);
+                spill(i64::from(n), 10 * (u64::from(n) + 1), Some(sql), &app)
+            })
+            .collect();
+        let mut whole = acc();
+        let (mut left, mut right) = (acc(), acc());
+        for (n, record) in records.iter().enumerate() {
+            whole.add_record(record);
+            if n < 3 {
+                left.add_record(record);
+            } else {
+                right.add_record(record);
+            }
+        }
+        left.merge(right);
+        whole.recap(1_000);
+        left.recap(1_000);
+        let spills = |a: &Accumulators| a.queries.values().next().unwrap().spilled_by.clone();
+        assert_eq!(spills(&left), spills(&whole));
+    }
+
+    #[test]
+    fn spills_of_folded_statements_keep_counts_only() {
+        let mut a = acc();
+        a.add_record(&statement(0, 1.0, "SELECT 1 FROM hot"));
+        a.add_record(&statement(1, 1.0, "SELECT 1 FROM hot"));
+        a.add_record(&spill(2, 900, Some("SELECT 2 FROM cold"), "app_a"));
+        a.recap(1);
+        assert_eq!(a.queries.len(), 1);
+        assert_eq!((a.overflow.temp_files, a.overflow.temp_bytes), (1, 900));
+        assert!(a.overflow.spilled_by.is_empty());
     }
 
     #[test]

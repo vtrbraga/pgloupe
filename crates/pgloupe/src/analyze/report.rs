@@ -419,6 +419,16 @@ pub struct TempReport {
     pub files: u64,
     pub bytes: u64,
     pub max_bytes: u64,
+    /// Temp files whose log record named no statement, so no statement lists them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unattributed: Option<UnattributedTemp>,
+}
+
+/// Temp files that no statement accounts for.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct UnattributedTemp {
+    pub files: u64,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -663,6 +673,10 @@ impl Report {
                 files: totals.temp.files,
                 bytes: totals.temp.bytes,
                 max_bytes: totals.temp.max_bytes,
+                unattributed: (totals.temp.unattributed.files > 0).then_some(UnattributedTemp {
+                    files: totals.temp.unattributed.files,
+                    bytes: totals.temp.unattributed.bytes,
+                }),
             },
             connections: ConnectionsReport {
                 received: totals.connections.received,
@@ -1450,6 +1464,8 @@ mod tests {
         assert_eq!(report.errors[0].sqlstate.as_deref(), Some("42P01"));
         assert_eq!(report.errors[0].count, 1);
         assert_eq!(report.temp_files.bytes, 4096);
+        let unattributed = report.temp_files.unattributed.unwrap();
+        assert_eq!((unattributed.files, unattributed.bytes), (1, 4096));
         assert_eq!(report.checkpoints.len(), 2);
         assert_eq!(report.checkpoints[0].kind, "checkpoint");
         assert_eq!(report.checkpoints[1].kind, "restartpoint");
