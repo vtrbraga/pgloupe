@@ -8,7 +8,7 @@ All notable changes are listed here. The format follows
 ### Added
 
 - The report says who spilled to disk. A statement that wrote temp files lists the user, application, database and host behind them, with files, size and the first and last spill; the breakdown tables gain temp files and temp bytes, and a role that mostly spills is listed even when it runs few statements. Temp files that no statement lists (the log record names none, or the statement was folded into the overflow bucket) are reported separately.
-- A temp file logged under a cursor `FETCH` is credited to the query the cursor was declared for, when the `DECLARE` is in the log; otherwise the report says the cursor query is not in the log and how to get it logged. Part of #48; the per-file event list, the truncated `application_name` warning and the `pg_stat_statements` cross-check are still open there.
+- A temp file logged under a cursor `FETCH` is credited to the query the cursor was declared for, when the `DECLARE` is in the log; otherwise the report says the cursor query is not in the log and how to get it logged. A temp file released when a transaction ends is logged under that `COMMIT`, `CLOSE` or `ROLLBACK`, and the report keeps it there. Part of #48; the per-file event list, the truncated `application_name` warning and the `pg_stat_statements` cross-check are still open there.
 
 ### Fixed
 

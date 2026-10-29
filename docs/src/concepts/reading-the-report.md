@@ -39,4 +39,6 @@ A caveat is a reason a number may be off: a reset between snapshots, evicted ent
 
 A temp file is credited to the statement named on its `STATEMENT:` line. For a cursor that line reads `FETCH FORWARD 1 FROM "c_…"`, so pgloupe looks up the `DECLARE` of that cursor in the same file and credits the cursor's query. When the `DECLARE` is not in the log, the spill stays on the `FETCH` and the report says *cursor query not in the log*. A fast `DECLARE` is logged only if it passes `log_min_duration_statement` or `log_statement` covers it; lower the first or set `log_statement = 'all'` for a while to see it.
 
+Postgres logs a temp file when it releases it, under the statement running at that moment. A cursor's sort or hash can therefore be logged under the `FETCH` that finished it, or under the `COMMIT`, `CLOSE` or `ROLLBACK` that ended the transaction. pgloupe credits the statement the log names and does not guess which open cursor a `COMMIT` released, so such a spill appears under `COMMIT` with the role and application that ran it.
+
 Temp files whose record names no statement, or whose statement was folded into the overflow bucket by the fingerprint limit, count in the totals and the breakdowns and are reported as *not listed under a statement*.
