@@ -850,11 +850,13 @@
         return h('tr', null, [h('td', { 'class': 'num', text: L.fmtInt(b.count) }), h('td', { 'class': 'num', text: L.fmtMs(b.total_wait_ms) }), holder(b.blocker, b.blocker_text), holder(b.waiter, b.waiter_text)]);
       })));
     }
-    var temps = rows.filter(function (r) { return r.log && r.log.temp_files > 0; }).sort(function (a, b) { return b.log.temp_bytes - a.log.temp_bytes; }).slice(0, 15);
+    var temps = (logs.spilling || rows.filter(function (r) { return r.log && r.log.temp_files > 0; }).map(function (r) { return Object.assign({ fingerprint: r.fingerprint, text: r.text }, r.log); }))
+      .slice().sort(function (a, b) { return b.temp_bytes - a.temp_bytes; }).slice(0, 15);
     if (temps.length) {
       out.push(h('h2', { text: 'Statements that wrote temp files' }));
       out.push(simpleTable([{ label: 'Statement' }, { label: 'Files', num: true }, { label: 'Size', num: true }], temps.map(function (r) {
-        return h('tr', { 'class': 'clickable', onclick: function () { openStatement(r.fingerprint); } }, [h('td', null, h('div', { 'class': 'stmt' }, h('span', { 'class': 'sql', text: r.text.replace(/\s+/g, ' ') }))), h('td', { 'class': 'num', text: L.fmtInt(r.log.temp_files) }), h('td', { 'class': 'num', text: L.fmtBytes(r.log.temp_bytes) })]);
+        var shown = !!byFp[r.fingerprint];
+        return h('tr', { 'class': shown ? 'clickable' : '', onclick: shown ? function () { openStatement(r.fingerprint); } : null }, [h('td', null, h('div', { 'class': 'stmt' }, h('span', { 'class': 'sql', text: r.text.replace(/\s+/g, ' ') }))), h('td', { 'class': 'num', text: L.fmtInt(r.temp_files) }), h('td', { 'class': 'num', text: L.fmtBytes(r.temp_bytes) })]);
       })));
     }
     return out;
