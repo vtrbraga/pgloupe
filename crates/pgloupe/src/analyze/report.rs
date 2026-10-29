@@ -468,7 +468,8 @@ pub struct TempReport {
     pub files: u64,
     pub bytes: u64,
     pub max_bytes: u64,
-    /// Temp files whose log record named no statement, so no statement lists them.
+    /// Temp files no statement lists: the record named none, or its statement was folded into
+    /// the overflow bucket.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unattributed: Option<UnattributedTemp>,
 }
@@ -723,10 +724,7 @@ impl Report {
                 files: totals.temp.files,
                 bytes: totals.temp.bytes,
                 max_bytes: totals.temp.max_bytes,
-                unattributed: (totals.temp.unattributed.files > 0).then_some(UnattributedTemp {
-                    files: totals.temp.unattributed.files,
-                    bytes: totals.temp.unattributed.bytes,
-                }),
+                unattributed: unattributed(acc),
             },
             connections: ConnectionsReport {
                 received: totals.connections.received,
@@ -974,6 +972,15 @@ fn spill_rows(
         });
     }
     rows
+}
+
+/// Temp files no statement lists: logged without one, or under a fingerprint folded into the
+/// overflow bucket.
+fn unattributed(acc: &Accumulators) -> Option<UnattributedTemp> {
+    let lost = acc.totals.temp.unattributed;
+    let files = lost.files + acc.overflow.temp_files;
+    let bytes = lost.bytes + acc.overflow.temp_bytes;
+    (files > 0).then_some(UnattributedTemp { files, bytes })
 }
 
 /// The statements with the most temp bytes, from every fingerprint kept.
@@ -1667,6 +1674,31 @@ mod tests {
             report.spilling[0].spilled_by[0].user.as_deref(),
             Some("rollup")
         );
+    }
+
+    #[test]
+    fn spills_that_overflow_the_fingerprint_cap_still_reconcile_with_the_total() {
+        let mut acc = Accumulators::new(1, 60);
+        acc.add_record(&stmt(1, 10.0, "SELECT 1"));
+        acc.add_record(&spill(2, 400, Some("SELECT 2 FROM other"), "u", "app_a"));
+        acc.add_record(&spill(3, 100, Some("SELECT 1"), "u", "app_a"));
+        acc.recap(1);
+        let report = Report::build(
+            &output_from(acc),
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        let listed: u64 = report
+            .statements
+            .iter()
+            .flat_map(|s| s.spilled_by.iter())
+            .map(|s| s.bytes)
+            .sum();
+        let rest = report.temp_files.unattributed.map_or(0, |u| u.bytes);
+        assert_eq!(listed + rest, report.temp_files.bytes);
+        assert_eq!(rest, 400);
     }
 
     #[test]

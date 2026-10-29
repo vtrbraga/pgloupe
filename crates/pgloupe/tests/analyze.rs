@@ -1149,7 +1149,7 @@ fn the_text_report_says_who_spilled_each_statement() -> io::Result<()> {
     assert!(has("cursor query not in the log"), "{text}");
     assert!(has("first spill 2026-01-01T10:00:10"), "{text}");
     assert!(
-        has("unattributed (no statement in the log): 1 file, 6.7 MiB"),
+        has("not listed under a statement: 1 file, 6.7 MiB"),
         "{text}"
     );
     Ok(())

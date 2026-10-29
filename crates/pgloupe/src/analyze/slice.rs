@@ -152,3 +152,50 @@ impl Merge for Slices {
         add_maps(&mut self.by_hour, other.by_hour);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use jiff::Timestamp;
+
+    use super::*;
+    use crate::log::Severity;
+
+    fn spill(second: i64, bytes: u64, app: &str) -> LogRecord {
+        let mut record = LogRecord::new(
+            Timestamp::from_second(1_760_000_000 + second).unwrap(),
+            Severity::Log,
+            format!("temporary file: path \"p\", size {bytes}"),
+        );
+        record.statement = Some("SELECT 1 FROM big".to_owned());
+        record.application = Some(app.to_owned());
+        record
+    }
+
+    fn stored(slices: &Slices) -> Accumulators {
+        let (_, acc) = slices.by_hour.iter().next().unwrap();
+        serde_json::from_str(&serde_json::to_string(acc).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn stored_hours_add_up_the_same_spillers_as_one_run() {
+        let mut first = Slices::new(100, 60);
+        for n in 0..5_u32 {
+            first.add_record(&spill(i64::from(n), 100, &format!("app{n}")));
+        }
+        first.add_record(&spill(6, 50, "late"));
+        let mut second = Slices::new(100, 60);
+        second.add_record(&spill(7, 500, "late"));
+        first.recap(100);
+        second.recap(100);
+        let mut merged = stored(&first);
+        merged.merge(stored(&second));
+        merged.recap(100);
+        let query = merged.queries.values().next().unwrap();
+        let late = query
+            .spilled_by
+            .iter()
+            .find(|(key, _)| merged.who[key].application.as_deref() == Some("late"))
+            .map(|(_, spill)| spill.bytes);
+        assert_eq!(late, Some(550));
+    }
+}

@@ -374,7 +374,7 @@ fn temp_files(report: &Report) -> Vec<String> {
     )];
     if let Some(rest) = &t.unattributed {
         lines.push(format!(
-            "unattributed (no statement in the log): {}, {}",
+            "not listed under a statement: {}, {}",
             files(rest.files),
             size(rest.bytes)
         ));

@@ -53,6 +53,8 @@ fn execution(
 /// Slowest executions kept per statement, for "who ran this". One keeps the per-hour, per-worker
 /// footprint of a fingerprint small; the global slowest list has more.
 const EXAMPLES_PER_STATEMENT: usize = 1;
+/// Statements with the most temp bytes that the fingerprint cap never folds away.
+const SPILLING_KEPT: usize = 10;
 /// Runs faster than this are not worth an example (and would cost memory for every fast
 /// statement of a wide log).
 const EXAMPLE_MIN_US: u64 = 10_000;
@@ -240,15 +242,15 @@ pub struct QueryStats {
     pub temp_bytes: u64,
     /// Temp files by [`who_key`] of the record that logged them. Left whole so that merging
     /// hourly slices adds up; the report keeps the biggest few.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub spilled_by: BTreeMap<u64, Spill>,
     /// When the statement first and last wrote a temp file.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spill_first: Option<Timestamp>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spill_last: Option<Timestamp>,
     /// A spill was logged under a cursor `FETCH` whose `DECLARE` is not in the log.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cursor_unresolved: bool,
     /// Parse, bind and fetch time.
     #[serde(default)]
@@ -1844,8 +1846,9 @@ impl Accumulators {
         self.totals.keep_busiest_cancelled();
         self.totals.keep_longest_blockers();
         self.totals.observed.recap(MESSAGES_KEPT);
-        // Only the people the kept examples point at: which ones a worker saw along the way
-        // depends on how records were split.
+        self.cap_queries(limit);
+        // Only the people the kept examples and spills point at: which ones a worker saw along
+        // the way depends on how records were split.
         let used: std::collections::BTreeSet<u64> = self
             .queries
             .values()
@@ -1856,7 +1859,6 @@ impl Accumulators {
             })
             .collect();
         self.who.retain(|key, _| used.contains(key));
-        self.cap_queries(limit);
     }
 
     /// The fingerprint half of [`Accumulators::recap`], safe to repeat while merging.
@@ -1868,7 +1870,20 @@ impl Accumulators {
         let mut ranked: Vec<(u64, u64)> =
             self.queries.iter().map(|(id, q)| (*id, q.calls)).collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        // A statement known only from its temp files has no calls, but is the answer to "what
+        // spills": the biggest few stay.
+        let mut spilling: Vec<(u64, u64)> = self
+            .queries
+            .values()
+            .filter(|q| !q.spilled_by.is_empty())
+            .map(|q| (q.id, q.temp_bytes))
+            .collect();
+        spilling.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        spilling.truncate(SPILLING_KEPT);
         for (id, _) in ranked.split_off(self.limit) {
+            if spilling.iter().any(|(kept, _)| *kept == id) {
+                continue;
+            }
             if let Some(mut query) = self.queries.remove(&id) {
                 // The overflow bucket keeps its own identity: only counters flow into it.
                 query.text = String::new();
@@ -2114,6 +2129,97 @@ mod tests {
     }
 
     #[test]
+    fn a_statement_known_only_from_its_spill_survives_the_fingerprint_cap() {
+        let mut a = Accumulators::new(1_000, 60);
+        for n in 0..6 {
+            a.add_record(&statement(n, 5.0, &format!("SELECT {n} FROM busy{n}")));
+        }
+        a.add_record(&spill(10, 800, Some("SELECT sum(x) FROM big"), "app_b"));
+        a.recap(3);
+        assert!(a.queries.values().any(|q| q.temp_bytes == 800));
+        assert!(a.overflow.spilled_by.is_empty());
+    }
+
+    #[test]
+    fn folded_statements_leave_no_spillers_in_who() {
+        let mut a = Accumulators::new(1_000, 60);
+        for n in 0..4 {
+            a.add_record(&statement(n, 5.0, &format!("SELECT {n} FROM busy{n}")));
+            a.add_record(&statement(n, 5.0, &format!("SELECT {n} FROM busy{n}")));
+        }
+        for n in 0..12_u32 {
+            let sql = format!("SELECT x FROM spill{n}");
+            a.add_record(&spill(
+                20 + i64::from(n),
+                100 + u64::from(n),
+                Some(&sql),
+                &format!("app{n}"),
+            ));
+        }
+        a.recap(4);
+        let kept: std::collections::BTreeSet<u64> = a
+            .queries
+            .values()
+            .flat_map(|q| q.spilled_by.keys().copied())
+            .collect();
+        assert!(a.who.keys().all(|key| {
+            kept.contains(key)
+                || a.queries
+                    .values()
+                    .any(|q| q.examples.rows().iter().any(|e| e.who == *key))
+        }));
+    }
+
+    #[test]
+    fn a_shared_run_lists_spillers_the_same_as_a_single_pass() {
+        let records: Vec<LogRecord> = (0..9_u32)
+            .map(|n| {
+                let app = format!("app{}", n % 4);
+                spill(
+                    i64::from(n),
+                    10 * (u64::from(n) + 1),
+                    Some("SELECT 1 FROM big"),
+                    &app,
+                )
+            })
+            .collect();
+        let mut alone = acc();
+        let shared = SharedQueries::new();
+        let (mut left, mut right) = (
+            acc().with_shared(Arc::clone(&shared)),
+            acc().with_shared(Arc::clone(&shared)),
+        );
+        for (index, record) in records.iter().enumerate() {
+            alone.add_record(record);
+            if index % 2 == 0 {
+                left.add_record(record);
+            } else {
+                right.add_record(record);
+            }
+        }
+        left.merge(right);
+        left.absorb_shared();
+        alone.recap(1_000);
+        left.recap(1_000);
+        assert_eq!(left, alone);
+    }
+
+    #[test]
+    fn a_query_that_never_spilled_stores_no_spill_fields() {
+        let mut a = acc();
+        a.add_record(&statement(0, 1.0, "SELECT 1"));
+        let stored = serde_json::to_string(a.queries.values().next().unwrap()).unwrap();
+        for key in [
+            "spilled_by",
+            "spill_first",
+            "spill_last",
+            "cursor_unresolved",
+        ] {
+            assert!(!stored.contains(key), "{key} in {stored}");
+        }
+    }
+
+    #[test]
     fn merging_two_halves_spills_the_same_as_one_pass() {
         let sql = "SELECT 1 FROM big";
         let records: Vec<LogRecord> = (0..8_u32)
@@ -2140,10 +2246,9 @@ mod tests {
     }
 
     #[test]
-    fn spills_of_folded_statements_keep_counts_only() {
-        let mut a = acc();
+    fn spills_past_the_fingerprint_limit_keep_counts_only() {
+        let mut a = Accumulators::new(1, 60);
         a.add_record(&statement(0, 1.0, "SELECT 1 FROM hot"));
-        a.add_record(&statement(1, 1.0, "SELECT 1 FROM hot"));
         a.add_record(&spill(2, 900, Some("SELECT 2 FROM cold"), "app_a"));
         a.recap(1);
         assert_eq!(a.queries.len(), 1);

@@ -39,4 +39,4 @@ A caveat is a reason a number may be off: a reset between snapshots, evicted ent
 
 A temp file is credited to the statement named on its `STATEMENT:` line. For a cursor that line reads `FETCH FORWARD 1 FROM "c_…"`, so pgloupe looks up the `DECLARE` of that cursor in the same file and credits the cursor's query. When the `DECLARE` is not in the log, the spill stays on the `FETCH` and the report says *cursor query not in the log*. A fast `DECLARE` is logged only if it passes `log_min_duration_statement` or `log_statement` covers it; lower the first or set `log_statement = 'all'` for a while to see it.
 
-Temp files whose record names no statement count in the totals and the breakdowns and are listed as *unattributed*.
+Temp files whose record names no statement, or whose statement was folded into the overflow bucket by the fingerprint limit, count in the totals and the breakdowns and are reported as *not listed under a statement*.
