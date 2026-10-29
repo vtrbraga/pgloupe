@@ -5,6 +5,10 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The same error (same SQLSTATE) read from logs in different languages in one run is one kind in the report, not one per language. A run in a single language, and English logs, group as before.
+
 ## [0.1.2] - 2026-10-18
 
 Speed: `logs analyze` and `logs ingest` use several threads far better, and `logs fetch` from RDS downloads files in parallel. Reports are unchanged.

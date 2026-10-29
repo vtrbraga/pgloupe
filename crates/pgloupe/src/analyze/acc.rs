@@ -1,7 +1,7 @@
 //! Mergeable accumulators: per-fingerprint statistics and global totals.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -392,12 +392,23 @@ pub struct ErrorStat {
     pub statements: BTreeMap<u64, u64>,
 }
 
+/// Separates the language from the message shape in the group of a translated error.
+const LOCALE_SEP: char = '\u{1f}';
+
 /// The key errors are counted under.
+///
+/// A translated error carries its language in the group, so [`Totals::errors_by_kind`] can tell
+/// whether one SQLSTATE was seen in more than one language.
 fn error_key(record: &LogRecord) -> (String, Option<String>, String) {
+    let group = error_group(record.sqlstate.as_deref(), &record.message);
+    let group = match &record.locale {
+        Some(locale) => format!("{locale}{LOCALE_SEP}{group}"),
+        None => group,
+    };
     (
         record.level.label().to_owned(),
         record.sqlstate.clone(),
-        error_group(record.sqlstate.as_deref(), &record.message),
+        group,
     )
 }
 
@@ -1215,6 +1226,50 @@ impl Totals {
         if let Some(stat) = self.errors.get_mut(&key) {
             *stat.statements.entry(id).or_insert(0) += 1;
         }
+    }
+}
+
+impl Totals {
+    /// The errors as the report lists them: one entry per `(level, sqlstate, group)`, except that a
+    /// `(level, sqlstate)` seen in more than one language (English counts as one) is a single entry,
+    /// since the message shapes of different languages never match.
+    #[must_use]
+    pub fn errors_by_kind(&self) -> Vec<(String, Option<String>, ErrorStat)> {
+        let language = |group: &str| {
+            group
+                .split_once(LOCALE_SEP)
+                .map(|(locale, _)| locale.to_owned())
+        };
+        let mut languages: BTreeMap<(&str, &Option<String>), BTreeSet<Option<String>>> =
+            BTreeMap::new();
+        for (level, sqlstate, group) in self.errors.keys() {
+            languages
+                .entry((level, sqlstate))
+                .or_default()
+                .insert(language(group));
+        }
+        let mut collapsed: BTreeMap<(String, Option<String>), ErrorStat> = BTreeMap::new();
+        let mut rows = Vec::new();
+        for ((level, sqlstate, _), stat) in &self.errors {
+            if languages[&(level.as_str(), sqlstate)].len() < 2 {
+                rows.push((level.clone(), sqlstate.clone(), stat.clone()));
+                continue;
+            }
+            match collapsed.entry((level.clone(), sqlstate.clone())) {
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    slot.get_mut().merge(stat.clone());
+                }
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(stat.clone());
+                }
+            }
+        }
+        rows.extend(
+            collapsed
+                .into_iter()
+                .map(|((level, sqlstate), stat)| (level, sqlstate, stat)),
+        );
+        rows
     }
 }
 
