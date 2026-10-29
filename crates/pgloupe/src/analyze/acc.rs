@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Merge,
+    correlate::is_cursor_fetch,
     dimensions::{self, Attributes, Dimensions, Tally},
     event::{
         Event, StatementKind, cancel_reason, classify, disconnect_reason, error_group, parameters,
@@ -1624,6 +1625,9 @@ impl Accumulators {
             self.totals.temp.unattributed.bytes += bytes;
             return;
         };
+        let resolved = record.correlation.as_ref();
+        let unresolved = resolved.is_none() && is_cursor_fetch(sql);
+        let sql = resolved.map_or(sql, |c| &c.sql);
         let who = who_key(
             record.database.as_deref(),
             record.user.as_deref(),
@@ -1632,6 +1636,7 @@ impl Accumulators {
         );
         let listed = self.with_query(sql, ts, record.query_id, |query| {
             query.seen(ts);
+            query.cursor_unresolved |= unresolved;
             // The overflow bucket keeps counts only.
             if query.id == 0 {
                 query.temp_files += 1;
@@ -2164,6 +2169,38 @@ mod tests {
         assert_eq!(a.queries.len(), 1);
         assert_eq!((a.overflow.temp_files, a.overflow.temp_bytes), (1, 900));
         assert!(a.overflow.spilled_by.is_empty());
+    }
+
+    #[test]
+    fn a_resolved_cursor_spill_counts_under_the_cursors_query() {
+        let mut a = acc();
+        a.add_record(&linked(
+            spill(1, 500, Some("FETCH FORWARD 1 FROM \"c_1\""), "app_b"),
+            "SELECT * FROM big ORDER BY x",
+            Phase::Fetch,
+            false,
+        ));
+        a.recap(1_000);
+        let q = a.queries.values().next().unwrap();
+        assert_eq!(a.queries.len(), 1);
+        assert!(q.text.contains("big"), "{}", q.text);
+        assert_eq!((q.temp_files, q.temp_bytes), (1, 500));
+        assert!(!q.cursor_unresolved);
+    }
+
+    #[test]
+    fn an_unresolved_fetch_spill_is_flagged() {
+        let mut a = acc();
+        a.add_record(&spill(
+            1,
+            500,
+            Some("FETCH FORWARD 1 FROM \"c_9\""),
+            "app_c",
+        ));
+        a.add_record(&spill(2, 70, Some("SELECT 1 FROM plain"), "app_c"));
+        let flagged: Vec<bool> = a.queries.values().map(|q| q.cursor_unresolved).collect();
+        assert_eq!(flagged.iter().filter(|f| **f).count(), 1);
+        assert_eq!(flagged.len(), 2);
     }
 
     #[test]
