@@ -368,10 +368,71 @@ fn locks(report: &Report) -> Vec<String> {
 
 fn temp_files(report: &Report) -> Vec<String> {
     let t = &report.temp_files;
-    vec![format!(
+    let mut lines = vec![format!(
         "files {}, bytes {}, largest {}",
         t.files, t.bytes, t.max_bytes
-    )]
+    )];
+    if let Some(rest) = &t.unattributed {
+        lines.push(format!(
+            "not listed under a statement: {}, {}",
+            files(rest.files),
+            size(rest.bytes)
+        ));
+    }
+    for row in &report.spilling {
+        let note = if row.cursor_unresolved {
+            "  (cursor query not in the log: the DECLARE was not logged; lower log_min_duration_statement or set log_statement=all to see it)"
+        } else {
+            ""
+        };
+        lines.push(format!(
+            "{} in {}  {}{note}",
+            size(row.temp_bytes),
+            files(row.temp_files),
+            cut(&row.text)
+        ));
+        if let (Some(first), Some(last)) = (&row.spill_first, &row.spill_last) {
+            lines.push(format!("  first spill {first}, last spill {last}"));
+        }
+        for who in &row.spilled_by {
+            let name = if who.other {
+                "(other)".to_owned()
+            } else {
+                let part = |value: &Option<String>| value.as_deref().unwrap_or("(none)").to_owned();
+                format!(
+                    "{} @ {} ({}, {})",
+                    part(&who.user),
+                    part(&who.application),
+                    part(&who.database),
+                    part(&who.host)
+                )
+            };
+            lines.push(format!(
+                "  {name}: {}, {}",
+                files(who.files),
+                size(who.bytes)
+            ));
+        }
+    }
+    lines
+}
+
+fn files(count: u64) -> String {
+    format!("{count} {}", if count == 1 { "file" } else { "files" })
+}
+
+#[expect(clippy::cast_precision_loss, reason = "sizes stay far below 2^53")]
+fn size(bytes: u64) -> String {
+    let value = bytes as f64;
+    if bytes < 1_024 {
+        format!("{bytes} B")
+    } else if bytes < 1_048_576 {
+        format!("{:.1} KiB", value / 1_024.0)
+    } else if bytes < 1_073_741_824 {
+        format!("{:.1} MiB", value / 1_048_576.0)
+    } else {
+        format!("{:.1} GiB", value / 1_073_741_824.0)
+    }
 }
 
 fn quantile_line(label: &str, q: &Quantiles) -> String {
@@ -622,22 +683,25 @@ fn dimension(rows: &[DimensionRow]) -> Vec<String> {
     if rows.is_empty() {
         return Vec::new();
     }
-    let mut cells = vec![
-        [
-            "value",
-            "statements",
-            "total_ms",
-            "mean_ms",
-            "errors",
-            "conns",
-            "sessions",
-            "session_ms",
-        ]
-        .map(str::to_owned)
-        .to_vec(),
+    let temp = rows.iter().any(|row| row.temp_bytes > 0);
+    let mut head = vec![
+        "value",
+        "statements",
+        "total_ms",
+        "mean_ms",
+        "errors",
+        "conns",
+        "sessions",
+        "session_ms",
     ];
+    let mut right = vec![false, true, true, true, true, true, true, true];
+    if temp {
+        head.extend(["temp_files", "temp"]);
+        right.extend([true, true]);
+    }
+    let mut cells = vec![head.into_iter().map(str::to_owned).collect::<Vec<_>>()];
     for row in rows {
-        cells.push(vec![
+        let mut cell = vec![
             row.value.clone(),
             row.statements.to_string(),
             num(row.total_ms),
@@ -646,9 +710,13 @@ fn dimension(rows: &[DimensionRow]) -> Vec<String> {
             row.connections.to_string(),
             row.sessions.to_string(),
             opt(row.mean_session_ms),
-        ]);
+        ];
+        if temp {
+            cell.extend([row.temp_files.to_string(), size(row.temp_bytes)]);
+        }
+        cells.push(cell);
     }
-    align(&cells, &[false, true, true, true, true, true, true, true])
+    align(&cells, &right)
 }
 
 /// Picks one counter out of a timeline row.

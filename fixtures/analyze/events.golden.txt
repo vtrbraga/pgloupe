@@ -46,6 +46,9 @@ locks
 
 temp files
   files 2, bytes 12288, largest 8192
+  12.0 KiB in 2 files  SELECT * FROM big ORDER BY x
+    first spill 2026-10-14T10:00:12Z, last spill 2026-10-14T10:00:13Z
+    app @ (none) (shop, (none)): 2 files, 12.0 KiB
 
 connections
   received 1, authenticated 1, authorized 1, disconnections 1
@@ -93,21 +96,21 @@ session durations
   > 24 h                  0    0.0%
 
 by database
-  value  statements  total_ms  mean_ms  errors  conns  sessions  session_ms
-  shop            5    543.00   108.60       3      1         1   149000.00
+  value  statements  total_ms  mean_ms  errors  conns  sessions  session_ms  temp_files      temp
+  shop            5    543.00   108.60       3      1         1   149000.00           2  12.0 KiB
 
 by user
-  value  statements  total_ms  mean_ms  errors  conns  sessions  session_ms
-  app             5    543.00   108.60       3      1         1   149000.00
+  value  statements  total_ms  mean_ms  errors  conns  sessions  session_ms  temp_files      temp
+  app             5    543.00   108.60       3      1         1   149000.00           2  12.0 KiB
 
 by application
-  value   statements  total_ms  mean_ms  errors  conns  sessions  session_ms
-  web              5    543.00   108.60       2      1         0           -
-  (none)           0      0.00        -       1      0         1   149000.00
+  value   statements  total_ms  mean_ms  errors  conns  sessions  session_ms  temp_files      temp
+  web              5    543.00   108.60       2      1         0           -           0       0 B
+  (none)           0      0.00        -       1      0         1   149000.00           2  12.0 KiB
 
 by host
-  value   statements  total_ms  mean_ms  errors  conns  sessions  session_ms
-  (none)           5    543.00   108.60       3      1         1   149000.00
+  value   statements  total_ms  mean_ms  errors  conns  sessions  session_ms  temp_files      temp
+  (none)           5    543.00   108.60       3      1         1   149000.00           2  12.0 KiB
 
 timeline (bucket 1m)
   busiest statements: 2026-10-14T10:00:00Z (5)

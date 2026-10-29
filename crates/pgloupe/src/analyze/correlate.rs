@@ -134,6 +134,19 @@ impl Correlator {
                     self.holding.entry(holder).or_default().push(hold);
                 }
             }
+            Event::TempFile { .. } => {
+                record.correlation = record
+                    .statement
+                    .as_deref()
+                    .filter(|statement| is_cursor_fetch(statement))
+                    .and_then(|statement| self.cursor_query(pid, statement))
+                    .map(|sql| Correlation {
+                        sql,
+                        phase: Phase::Fetch,
+                        timing_only: false,
+                        discard: false,
+                    });
+            }
             Event::Disconnection { .. } => {
                 self.cursors.retain(|(p, _), _| *p != pid);
                 self.prepared.retain(|(p, _), _| *p != pid);
@@ -201,6 +214,12 @@ impl Correlator {
             .collect()
     }
 
+    /// The query of the cursor a `FETCH` or `MOVE` names, when this backend declared it.
+    fn cursor_query(&self, pid: u32, statement: &str) -> Option<String> {
+        let name = cursor_of(statement);
+        self.cursors.get(&(pid, name)).map(|c| c.sql.clone())
+    }
+
     /// Statements that change or use correlation state, in the simple protocol.
     fn simple(&mut self, pid: u32, text: &str) -> Option<Correlation> {
         let trimmed = text.trim_start();
@@ -225,8 +244,7 @@ impl Correlator {
                 Some(execute(inner))
             }
             "fetch" | "move" => {
-                let name = cursor_of(trimmed);
-                let sql = self.cursors.get(&(pid, name))?.sql.clone();
+                let sql = self.cursor_query(pid, trimmed)?;
                 Some(Correlation {
                     sql,
                     phase: Phase::Fetch,
@@ -331,6 +349,19 @@ fn execute(sql: String) -> Correlation {
     }
 }
 
+/// Whether `statement` is a `FETCH` or a `MOVE`.
+#[must_use]
+pub fn is_cursor_fetch(statement: &str) -> bool {
+    let trimmed = statement.trim_start();
+    let end = trimmed
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(trimmed.len());
+    matches!(
+        trimmed[..end].to_ascii_lowercase().as_str(),
+        "fetch" | "move"
+    )
+}
+
 /// The identifier at the start of `text` (after optional spaces), without quotes or a parameter
 /// list.
 fn statement_name(text: &str) -> String {
@@ -429,6 +460,49 @@ mod tests {
         assert!(run(&mut c, 8, "duration: 1 ms  statement: FETCH 1 FROM cur").is_none());
         run(&mut c, 7, "duration: 0.1 ms  statement: CLOSE cur");
         assert!(run(&mut c, 7, "duration: 1 ms  statement: FETCH 1 FROM cur").is_none());
+    }
+
+    fn run_temp(correlator: &mut Correlator, pid: u32, statement: &str) -> Option<Correlation> {
+        let mut r = record(pid, "temporary file: path \"x\", size 100");
+        r.statement = Some(statement.to_owned());
+        correlator.apply(&mut r);
+        r.correlation
+    }
+
+    #[test]
+    fn a_temp_file_fetch_belongs_to_the_cursors_query() {
+        let mut c = Correlator::new();
+        run(
+            &mut c,
+            7,
+            "statement: DECLARE \"c_1\" CURSOR FOR SELECT * FROM big",
+        );
+        let got = run_temp(&mut c, 7, "FETCH FORWARD 1 FROM \"c_1\"").unwrap();
+        assert_eq!(got.sql, "SELECT * FROM big");
+        assert_eq!(got.phase, Phase::Fetch);
+        // A temp file under a plain statement is not correlated.
+        assert!(run_temp(&mut c, 7, "SELECT 1").is_none());
+    }
+
+    #[test]
+    fn a_temp_file_fetch_of_a_closed_or_foreign_cursor_is_unresolved() {
+        let mut c = Correlator::new();
+        run(&mut c, 7, "statement: DECLARE cur CURSOR FOR SELECT 1");
+        assert!(run_temp(&mut c, 8, "FETCH 1 FROM cur").is_none());
+        run(&mut c, 7, "statement: CLOSE cur");
+        assert!(run_temp(&mut c, 7, "FETCH 1 FROM cur").is_none());
+    }
+
+    #[test]
+    fn a_with_hold_cursor_resolves_a_temp_file_after_commit() {
+        let mut c = Correlator::new();
+        run(
+            &mut c,
+            7,
+            "statement: DECLARE h CURSOR WITH HOLD FOR SELECT 1",
+        );
+        run(&mut c, 7, "statement: COMMIT");
+        assert!(run_temp(&mut c, 7, "FETCH 10 FROM h").is_some());
     }
 
     #[test]

@@ -12,6 +12,8 @@ pub const LIMIT: usize = 1_000;
 pub const OTHER: &str = "(other)";
 /// The label of records that do not carry the attribute.
 pub const NONE: &str = "(none)";
+/// Values with the most temp bytes that [`Dimensions::recap`] keeps even when they are not busy.
+pub const TEMP_KEPT: usize = 20;
 
 /// What one value of a dimension did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +32,12 @@ pub struct DimStats {
     pub sessions: u64,
     /// Sum of their durations, in microseconds.
     pub session_us: u64,
+    /// Temporary files written.
+    #[serde(default)]
+    pub temp_files: u64,
+    /// Their total size in bytes.
+    #[serde(default)]
+    pub temp_bytes: u64,
 }
 
 impl DimStats {
@@ -48,6 +56,10 @@ impl DimStats {
                 self.sessions += 1;
                 self.session_us += to_micros(ms);
             }
+            Tally::Temp(bytes) => {
+                self.temp_files += 1;
+                self.temp_bytes += bytes;
+            }
         }
     }
 }
@@ -61,6 +73,8 @@ impl Merge for DimStats {
         self.connections += other.connections;
         self.sessions += other.sessions;
         self.session_us += other.session_us;
+        self.temp_files += other.temp_files;
+        self.temp_bytes += other.temp_bytes;
     }
 }
 
@@ -94,6 +108,8 @@ pub enum Tally {
     Connection,
     /// A session ended after this many milliseconds.
     Session(f64),
+    /// A temporary file of this many bytes was written.
+    Temp(u64),
 }
 
 /// The record attributes a tally is filed under.
@@ -167,8 +183,9 @@ impl Dimensions {
         }
     }
 
-    /// Keeps the `limit` busiest values of each dimension and folds the rest into [`OTHER`]
-    /// (ties: the larger name goes first), so the result does not depend on arrival order.
+    /// Keeps the `limit` busiest values of each dimension, plus the [`TEMP_KEPT`] with most temp
+    /// bytes, and folds the rest into [`OTHER`] (ties: the larger name goes first), so the result
+    /// does not depend on arrival order.
     pub fn recap(&mut self, limit: usize) {
         for dimension in Dimension::ALL {
             let map = self.of_mut(dimension);
@@ -187,7 +204,21 @@ impl Dimensions {
                 })
                 .collect();
             ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            let mut spillers: Vec<(&String, u64)> = map
+                .iter()
+                .filter(|(name, stats)| name.as_str() != OTHER && stats.temp_bytes > 0)
+                .map(|(name, stats)| (name, stats.temp_bytes))
+                .collect();
+            spillers.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            let spilled: Vec<String> = spillers
+                .into_iter()
+                .take(TEMP_KEPT)
+                .map(|(name, _)| name.clone())
+                .collect();
             for (name, _) in ranked.split_off(kept - 1) {
+                if spilled.contains(&name) {
+                    continue;
+                }
                 if let Some(stats) = map.remove(&name) {
                     map.entry(OTHER.to_owned()).or_default().merge(stats);
                 }
@@ -270,6 +301,34 @@ mod tests {
             }
         }
         dims
+    }
+
+    #[test]
+    fn stats_stored_before_the_temp_columns_still_load() {
+        let old = r#"{"statements":1,"timed":0,"total_us":0,"errors":0,"connections":0,"sessions":0,"session_us":0}"#;
+        let stats: DimStats = serde_json::from_str(old).unwrap();
+        assert_eq!((stats.temp_files, stats.temp_bytes), (0, 0));
+    }
+
+    #[test]
+    fn a_temp_tally_counts_under_every_attribute() {
+        let mut dims = Dimensions::default();
+        dims.add(&attrs("shop", Some("app")), Tally::Temp(1_000));
+        dims.add(&attrs("shop", Some("app")), Tally::Temp(500));
+        let shop = &dims.databases["shop"];
+        assert_eq!((shop.temp_files, shop.temp_bytes), (2, 1_500));
+        assert_eq!(dims.users["app"].temp_bytes, 1_500);
+        assert_eq!(dims.applications[NONE].temp_files, 2);
+        assert_eq!(dims.hosts["10.0.0.1"].temp_bytes, 1_500);
+    }
+
+    #[test]
+    fn recap_keeps_a_value_that_only_spilled() {
+        let mut dims = many(1_001, |_| 3);
+        dims.add(&attrs("shop", Some("rollup")), Tally::Temp(10_000_000));
+        dims.recap(LIMIT);
+        assert_eq!(dims.users["rollup"].temp_bytes, 10_000_000);
+        assert!(dims.users.len() <= LIMIT + TEMP_KEPT);
     }
 
     #[test]

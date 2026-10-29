@@ -23,6 +23,12 @@ const SCHEMA_VERSION: u32 = 2;
 const TOP_TABLES: usize = 10;
 /// Values listed per breakdown dimension.
 const TOP_DIMENSION_VALUES: usize = 20;
+/// Spillers listed per statement; the rest are summed into one `other` row.
+const SPILLERS_KEPT: usize = 5;
+/// Statements listed in `spilling`.
+const SPILLING_STATEMENTS: usize = 10;
+/// Further values, by temp bytes, listed after the busiest ones.
+const TOP_SPILLERS: usize = 5;
 
 /// What orders the statement table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +56,9 @@ pub struct Report {
     /// What ranks `statements`: `total`, `calls`, `p95` or `max`.
     pub statements_by: &'static str,
     pub statements: Vec<StatementRow>,
+    /// The statements that wrote the most temp files, whether or not they rank in `statements`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spilling: Vec<StatementRow>,
     /// Duration of every statement that had one, across all of them.
     pub latency: Quantiles,
     pub errors: Vec<ErrorRow>,
@@ -132,6 +141,20 @@ pub struct DimensionRow {
     pub sessions: u64,
     /// Their mean duration, in milliseconds.
     pub mean_session_ms: Option<f64>,
+    /// Temporary files written.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub temp_files: u64,
+    /// Their total size in bytes.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub temp_bytes: u64,
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde passes a reference"
+)]
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// The busiest values of each dimension.
@@ -299,8 +322,34 @@ pub struct StatementRow {
     pub temp_bytes: u64,
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
-    /// The slowest run of this statement and who ran it.
+    /// Who wrote its temp files, biggest first; the folded rest come last as `other`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spilled_by: Vec<SpillRow>,
+    /// When it first wrote a temp file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spill_first: Option<String>,
+    /// When it last wrote a temp file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spill_last: Option<String>,
+    /// Its temp files were logged under a cursor `FETCH` whose `DECLARE` is not in the log.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_unresolved: bool,
+    /// The slowest runs of this statement and who ran them.
     pub examples: Vec<ExampleRow>,
+}
+
+/// Temp files one database, user, application and host wrote for a statement.
+#[derive(Debug, Clone, Serialize)]
+pub struct SpillRow {
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub application: Option<String>,
+    pub host: Option<String>,
+    pub files: u64,
+    pub bytes: u64,
+    /// The spillers beyond the few listed; the four names above are empty.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub other: bool,
 }
 
 /// Time in one phase of a statement's life.
@@ -419,6 +468,17 @@ pub struct TempReport {
     pub files: u64,
     pub bytes: u64,
     pub max_bytes: u64,
+    /// Temp files no statement lists: the record named none, or its statement was folded into
+    /// the overflow bucket.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unattributed: Option<UnattributedTemp>,
+}
+
+/// Temp files that no statement accounts for.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct UnattributedTemp {
+    pub files: u64,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -649,6 +709,7 @@ impl Report {
                 SortBy::Max => "max",
             },
             statements: statements(acc, options),
+            spilling: spilling(acc),
             latency: quantiles(&acc.statement_durations()),
             errors: errors(acc),
             locks: LocksReport {
@@ -663,6 +724,7 @@ impl Report {
                 files: totals.temp.files,
                 bytes: totals.temp.bytes,
                 max_bytes: totals.temp.max_bytes,
+                unattributed: unattributed(acc),
             },
             connections: ConnectionsReport {
                 received: totals.connections.received,
@@ -839,6 +901,10 @@ fn statement_row(
         temp_bytes: query.temp_bytes,
         first_seen: time(query.first_seen),
         last_seen: time(query.last_seen),
+        spilled_by: spill_rows(query, who),
+        spill_first: time(query.spill_first),
+        spill_last: time(query.spill_last),
+        cursor_unresolved: query.cursor_unresolved,
         examples: query
             .examples
             .rows()
@@ -857,6 +923,79 @@ fn statement_row(
             })
             .collect(),
     }
+}
+
+/// The biggest spillers of `query` (ties by name), the rest summed into a last `other` row.
+fn spill_rows(
+    query: &QueryStats,
+    who: &std::collections::BTreeMap<u64, crate::analyze::slowest::Who>,
+) -> Vec<SpillRow> {
+    let mut rows: Vec<SpillRow> = query
+        .spilled_by
+        .iter()
+        .map(|(key, spill)| {
+            let who = who.get(key);
+            SpillRow {
+                database: who.and_then(|w| w.database.clone()),
+                user: who.and_then(|w| w.user.clone()),
+                application: who.and_then(|w| w.application.clone()),
+                host: who.and_then(|w| w.host.clone()),
+                files: spill.files,
+                bytes: spill.bytes,
+                other: false,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        b.bytes.cmp(&a.bytes).then_with(|| {
+            (&a.database, &a.user, &a.application, &a.host).cmp(&(
+                &b.database,
+                &b.user,
+                &b.application,
+                &b.host,
+            ))
+        })
+    });
+    if rows.len() > SPILLERS_KEPT {
+        let (files, bytes) = rows
+            .split_off(SPILLERS_KEPT)
+            .iter()
+            .fold((0, 0), |(f, b), row| (f + row.files, b + row.bytes));
+        rows.push(SpillRow {
+            database: None,
+            user: None,
+            application: None,
+            host: None,
+            files,
+            bytes,
+            other: true,
+        });
+    }
+    rows
+}
+
+/// Temp files no statement lists: logged without one, or under a fingerprint folded into the
+/// overflow bucket.
+fn unattributed(acc: &Accumulators) -> Option<UnattributedTemp> {
+    let lost = acc.totals.temp.unattributed;
+    let files = lost.files + acc.overflow.temp_files;
+    let bytes = lost.bytes + acc.overflow.temp_bytes;
+    (files > 0).then_some(UnattributedTemp { files, bytes })
+}
+
+/// The statements with the most temp bytes, from every fingerprint kept.
+fn spilling(acc: &Accumulators) -> Vec<StatementRow> {
+    let mut rows: Vec<&QueryStats> = acc
+        .queries
+        .values()
+        .filter(|query| !query.spilled_by.is_empty())
+        .collect();
+    rows.sort_by(|a, b| b.temp_bytes.cmp(&a.temp_bytes).then(a.id.cmp(&b.id)));
+    rows.truncate(SPILLING_STATEMENTS);
+    let total_us = total_us(acc);
+    rows.into_iter()
+        .map(|query| statement_row(query, total_us, &acc.who))
+        .collect()
 }
 
 fn errors(acc: &Accumulators) -> Vec<ErrorRow> {
@@ -1019,19 +1158,39 @@ fn dimension_rows(acc: &Accumulators, dimension: Dimension) -> Vec<DimensionRow>
             .then_with(|| b.1.connections.cmp(&a.1.connections))
             .then_with(|| a.0.cmp(b.0))
     });
-    rows.into_iter()
-        .take(TOP_DIMENSION_VALUES)
-        .map(|(value, stats)| DimensionRow {
-            value: value.clone(),
-            statements: stats.statements,
-            timed_calls: stats.timed,
-            total_ms: ms(stats.total_us),
-            mean_ms: (stats.timed > 0).then(|| ms(stats.total_us) / count(stats.timed)),
-            errors: stats.errors,
-            connections: stats.connections,
-            sessions: stats.sessions,
-            mean_session_ms: (stats.sessions > 0)
-                .then(|| ms(stats.session_us) / count(stats.sessions)),
+    // A value that mostly spills may be too quiet for the top list, so the biggest spillers join it.
+    let mut spillers: Vec<usize> = (TOP_DIMENSION_VALUES..rows.len())
+        .filter(|&i| rows[i].1.temp_bytes > 0)
+        .collect();
+    spillers.sort_by(|&a, &b| {
+        rows[b]
+            .1
+            .temp_bytes
+            .cmp(&rows[a].1.temp_bytes)
+            .then_with(|| rows[a].0.cmp(rows[b].0))
+    });
+    spillers.truncate(TOP_SPILLERS);
+    let shown: Vec<usize> = (0..rows.len().min(TOP_DIMENSION_VALUES))
+        .chain(spillers)
+        .collect();
+    shown
+        .into_iter()
+        .map(|i| {
+            let (value, stats) = rows[i];
+            DimensionRow {
+                value: value.clone(),
+                statements: stats.statements,
+                timed_calls: stats.timed,
+                total_ms: ms(stats.total_us),
+                mean_ms: (stats.timed > 0).then(|| ms(stats.total_us) / count(stats.timed)),
+                errors: stats.errors,
+                connections: stats.connections,
+                sessions: stats.sessions,
+                mean_session_ms: (stats.sessions > 0)
+                    .then(|| ms(stats.session_us) / count(stats.sessions)),
+                temp_files: stats.temp_files,
+                temp_bytes: stats.temp_bytes,
+            }
         })
         .collect()
 }
@@ -1369,6 +1528,10 @@ mod tests {
         ));
         acc.add_record(&LogRecord::new(at(11), Severity::Log, "automatic vacuum of table \"d.s.big\": index scans: 0\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 2.00 s"));
         acc.add_record(&LogRecord::new(at(12), Severity::Log, "automatic vacuum of table \"d.s.small\": index scans: 0\nsystem usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.10 s"));
+        output_from(acc)
+    }
+
+    fn output_from(acc: Accumulators) -> Output {
         let files = vec![FileSummary {
             path: PathBuf::from("a.json"),
             bytes: 100,
@@ -1389,6 +1552,211 @@ mod tests {
 
     fn build_with(by: SortBy, top: usize) -> Report {
         Report::build(&output(), &ReportOptions { by, top })
+    }
+
+    fn spill(second: i64, bytes: u64, sql: Option<&str>, user: &str, app: &str) -> LogRecord {
+        let mut temp = LogRecord::new(
+            at(second),
+            Severity::Log,
+            format!("temporary file: path \"p\", size {bytes}"),
+        );
+        temp.statement = sql.map(str::to_owned);
+        temp.user = Some(user.to_owned());
+        temp.application = Some(app.to_owned());
+        temp
+    }
+
+    fn json(report: &Report) -> String {
+        serde_json::to_string(report).unwrap()
+    }
+
+    #[test]
+    fn spilled_by_rows_name_the_who_biggest_first() {
+        let mut out = output();
+        let sql = "SELECT * FROM actor";
+        out.acc
+            .add_record(&spill(20, 300, Some(sql), "web", "app_a"));
+        out.acc
+            .add_record(&spill(25, 900, Some(sql), "rollup", "app_b"));
+        out.acc.recap(100);
+        let report = Report::build(
+            &out,
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        let actor = report.statements.iter().find(|s| s.text == sql).unwrap();
+        let who: Vec<_> = actor
+            .spilled_by
+            .iter()
+            .map(|s| {
+                (
+                    s.user.as_deref(),
+                    s.application.as_deref(),
+                    s.files,
+                    s.bytes,
+                )
+            })
+            .collect();
+        assert_eq!(
+            who,
+            [
+                (Some("rollup"), Some("app_b"), 1, 900),
+                (Some("web"), Some("app_a"), 1, 300)
+            ]
+        );
+        assert!(actor.spill_first.is_some() && actor.spill_last.is_some());
+        assert!(!actor.cursor_unresolved);
+        let rollup = report.dimensions.user.iter().find(|r| r.value == "rollup");
+        assert_eq!(rollup.map(|r| (r.temp_files, r.temp_bytes)), Some((1, 900)));
+    }
+
+    #[test]
+    fn more_than_five_spillers_fold_into_other_in_the_report() {
+        let mut out = output();
+        for n in 0..7_u32 {
+            let app = format!("app{n}");
+            let bytes = 100 + u64::from(n);
+            out.acc.add_record(&spill(
+                20 + i64::from(n),
+                bytes,
+                Some("SELECT * FROM actor"),
+                "u",
+                &app,
+            ));
+        }
+        out.acc.recap(100);
+        let report = Report::build(
+            &out,
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        let actor = report
+            .statements
+            .iter()
+            .find(|s| s.text == "SELECT * FROM actor")
+            .unwrap();
+        assert_eq!(actor.spilled_by.len(), 6);
+        let last = actor.spilled_by.last().unwrap();
+        assert!(last.other);
+        assert_eq!((last.files, last.bytes), (2, 100 + 101));
+        let total: u64 = actor.spilled_by.iter().map(|s| s.bytes).sum();
+        assert_eq!(total, actor.temp_bytes);
+    }
+
+    #[test]
+    fn a_statement_known_only_from_its_spill_is_still_listed() {
+        let mut acc = Accumulators::new(100, 60);
+        for n in 0..30 {
+            acc.add_record(&stmt(n, 50.0, &format!("SELECT {n} FROM t{n}")));
+        }
+        acc.add_record(&spill(
+            40,
+            900_000_000,
+            Some("SELECT sum(x) FROM big"),
+            "rollup",
+            "app_b",
+        ));
+        acc.recap(100);
+        let report = Report::build(
+            &output_from(acc),
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 5,
+            },
+        );
+        assert!(report.statements.iter().all(|s| s.temp_files == 0));
+        assert_eq!(report.spilling.len(), 1);
+        assert_eq!(
+            report.spilling[0].spilled_by[0].user.as_deref(),
+            Some("rollup")
+        );
+    }
+
+    #[test]
+    fn spills_that_overflow_the_fingerprint_cap_still_reconcile_with_the_total() {
+        let mut acc = Accumulators::new(1, 60);
+        acc.add_record(&stmt(1, 10.0, "SELECT 1"));
+        acc.add_record(&spill(2, 400, Some("SELECT 2 FROM other"), "u", "app_a"));
+        acc.add_record(&spill(3, 100, Some("SELECT 1"), "u", "app_a"));
+        acc.recap(1);
+        let report = Report::build(
+            &output_from(acc),
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        let listed: u64 = report
+            .statements
+            .iter()
+            .flat_map(|s| s.spilled_by.iter())
+            .map(|s| s.bytes)
+            .sum();
+        let rest = report.temp_files.unattributed.map_or(0, |u| u.bytes);
+        assert_eq!(listed + rest, report.temp_files.bytes);
+        assert_eq!(rest, 400);
+    }
+
+    #[test]
+    fn a_log_without_spill_serializes_without_the_new_keys() {
+        let mut acc = Accumulators::new(100, 60);
+        acc.add_record(&stmt(1, 10.0, "SELECT 1"));
+        let text = json(&Report::build(
+            &output_from(acc),
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        ));
+        for key in [
+            "spilled_by",
+            "spill_first",
+            "spill_last",
+            "cursor_unresolved",
+            "unattributed",
+        ] {
+            assert!(!text.contains(key), "{key}");
+        }
+        let dimensions = serde_json::to_string(
+            &Report::build(
+                &output_from({
+                    let mut acc = Accumulators::new(100, 60);
+                    acc.add_record(&stmt(1, 10.0, "SELECT 1"));
+                    acc
+                }),
+                &ReportOptions {
+                    by: SortBy::Total,
+                    top: 10,
+                },
+            )
+            .dimensions,
+        )
+        .unwrap();
+        assert!(!dimensions.contains("temp_"), "{dimensions}");
+    }
+
+    #[test]
+    fn a_small_spiller_is_shown_in_the_dimension_rows() {
+        let mut acc = Accumulators::new(100, 60);
+        for n in 0..30 {
+            let mut busy = stmt(n, 50.0, "SELECT 1");
+            busy.user = Some(format!("busy{n:02}"));
+            acc.add_record(&busy);
+        }
+        acc.add_record(&spill(40, 5_000_000, Some("SELECT 2"), "rollup", "app_b"));
+        acc.recap(100);
+        let report = Report::build(
+            &output_from(acc),
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        assert!(report.dimensions.user.iter().any(|r| r.value == "rollup"));
     }
 
     #[test]
@@ -1450,6 +1818,8 @@ mod tests {
         assert_eq!(report.errors[0].sqlstate.as_deref(), Some("42P01"));
         assert_eq!(report.errors[0].count, 1);
         assert_eq!(report.temp_files.bytes, 4096);
+        let unattributed = report.temp_files.unattributed.unwrap();
+        assert_eq!((unattributed.files, unattributed.bytes), (1, 4096));
         assert_eq!(report.checkpoints.len(), 2);
         assert_eq!(report.checkpoints[0].kind, "checkpoint");
         assert_eq!(report.checkpoints[1].kind, "restartpoint");

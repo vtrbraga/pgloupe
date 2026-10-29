@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     Merge,
+    correlate::is_cursor_fetch,
     dimensions::{self, Attributes, Dimensions, Tally},
     event::{
         Event, StatementKind, cancel_reason, classify, disconnect_reason, error_group, parameters,
@@ -52,6 +53,8 @@ fn execution(
 /// Slowest executions kept per statement, for "who ran this". One keeps the per-hour, per-worker
 /// footprint of a fingerprint small; the global slowest list has more.
 const EXAMPLES_PER_STATEMENT: usize = 1;
+/// Statements with the most temp bytes that the fingerprint cap never folds away.
+const SPILLING_KEPT: usize = 10;
 /// Runs faster than this are not worth an example (and would cost memory for every fast
 /// statement of a wide log).
 const EXAMPLE_MIN_US: u64 = 10_000;
@@ -237,6 +240,18 @@ pub struct QueryStats {
     pub lock_wait_us: u64,
     pub temp_files: u64,
     pub temp_bytes: u64,
+    /// Temp files by [`who_key`] of the record that logged them. Left whole so that merging
+    /// hourly slices adds up; the report keeps the biggest few.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub spilled_by: BTreeMap<u64, Spill>,
+    /// When the statement first and last wrote a temp file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_first: Option<Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_last: Option<Timestamp>,
+    /// A spill was logged under a cursor `FETCH` whose `DECLARE` is not in the log.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cursor_unresolved: bool,
     /// Parse, bind and fetch time.
     #[serde(default)]
     pub phases: Phases,
@@ -268,8 +283,23 @@ impl QueryStats {
             lock_wait_us: 0,
             temp_files: 0,
             temp_bytes: 0,
+            spilled_by: BTreeMap::new(),
+            spill_first: None,
+            spill_last: None,
+            cursor_unresolved: false,
             phases: Phases::default(),
         }
+    }
+
+    /// Counts one temp file of `bytes` written at `ts` by `who`.
+    fn spilled(&mut self, ts: Timestamp, who: u64, bytes: u64) {
+        self.temp_files += 1;
+        self.temp_bytes += bytes;
+        let slot = self.spilled_by.entry(who).or_default();
+        slot.files += 1;
+        slot.bytes += bytes;
+        self.spill_first = earliest(self.spill_first, Some(ts));
+        self.spill_last = latest(self.spill_last, Some(ts));
     }
 
     /// Offers a spelling of this statement as the representative sample: the one with the smallest
@@ -367,6 +397,12 @@ impl Merge for QueryStats {
         self.lock_wait_us += other.lock_wait_us;
         self.temp_files += other.temp_files;
         self.temp_bytes += other.temp_bytes;
+        for (key, spill) in other.spilled_by {
+            self.spilled_by.entry(key).or_default().merge(spill);
+        }
+        self.spill_first = earliest(self.spill_first, other.spill_first);
+        self.spill_last = latest(self.spill_last, other.spill_last);
+        self.cursor_unresolved |= other.cursor_unresolved;
         self.phases.parse.merge(other.phases.parse);
         self.phases.bind.merge(other.phases.bind);
         self.phases.fetch.merge(other.phases.fetch);
@@ -503,6 +539,9 @@ pub struct TempStats {
     pub files: u64,
     pub bytes: u64,
     pub max_bytes: u64,
+    /// Temp files whose record named no statement.
+    #[serde(default)]
+    pub unattributed: Spill,
 }
 
 impl Merge for TempStats {
@@ -510,6 +549,21 @@ impl Merge for TempStats {
         self.files += other.files;
         self.bytes += other.bytes;
         self.max_bytes = self.max_bytes.max(other.max_bytes);
+        self.unattributed.merge(other.unattributed);
+    }
+}
+
+/// Temp files written, and their size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Spill {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+impl Merge for Spill {
+    fn merge(&mut self, other: Self) {
+        self.files += other.files;
+        self.bytes += other.bytes;
     }
 }
 
@@ -1530,21 +1584,48 @@ impl Accumulators {
                     });
                 }
             }
-            Event::TempFile { bytes, .. } => {
-                if let Some(sql) = record.statement.as_deref() {
-                    self.with_query(sql, ts, record.query_id, |query| {
-                        query.seen(ts);
-                        query.temp_files += 1;
-                        query.temp_bytes += bytes;
-                    });
-                }
-            }
+            Event::TempFile { bytes, .. } => self.add_temp_file(record, *bytes),
             _ => {}
         }
         if record.level.is_error()
             && let Some(sql) = record.statement.as_deref()
         {
             self.add_failed_statement(record, sql);
+        }
+    }
+
+    /// Counts a temp file under its statement and whoever logged it, or as unattributed when the
+    /// record names no statement.
+    fn add_temp_file(&mut self, record: &LogRecord, bytes: u64) {
+        let ts = record.ts;
+        let Some(sql) = record.statement.as_deref() else {
+            self.totals.temp.unattributed.files += 1;
+            self.totals.temp.unattributed.bytes += bytes;
+            return;
+        };
+        let resolved = record.correlation.as_ref();
+        let unresolved = resolved.is_none() && is_cursor_fetch(sql);
+        let sql = resolved.map_or(sql, |c| &c.sql);
+        let who = who_key(
+            record.database.as_deref(),
+            record.user.as_deref(),
+            record.application.as_deref(),
+            record.host.as_deref(),
+        );
+        let listed = self.with_query(sql, ts, record.query_id, |query| {
+            query.seen(ts);
+            query.cursor_unresolved |= unresolved;
+            // The overflow bucket keeps counts only.
+            if query.id == 0 {
+                query.temp_files += 1;
+                query.temp_bytes += bytes;
+            } else {
+                query.spilled(ts, who, bytes);
+            }
+            query.id != 0
+        });
+        if listed {
+            self.remember_who(who, record);
         }
     }
 
@@ -1705,6 +1786,7 @@ impl Accumulators {
                 ..
             } => self.dims.add(&attributes, Tally::Statement(*duration_ms)),
             Event::ConnectionAuthorized => self.dims.add(&attributes, Tally::Connection),
+            Event::TempFile { bytes, .. } => self.dims.add(&attributes, Tally::Temp(*bytes)),
             Event::Disconnection { session_ms } => {
                 self.dims.add(&attributes, Tally::Session(*session_ms));
             }
@@ -1764,16 +1846,19 @@ impl Accumulators {
         self.totals.keep_busiest_cancelled();
         self.totals.keep_longest_blockers();
         self.totals.observed.recap(MESSAGES_KEPT);
-        // Only the people the kept examples point at: which ones a worker saw along the way
-        // depends on how records were split.
+        self.cap_queries(limit);
+        // Only the people the kept examples and spills point at: which ones a worker saw along
+        // the way depends on how records were split.
         let used: std::collections::BTreeSet<u64> = self
             .queries
             .values()
             .chain(std::iter::once(&self.overflow))
-            .flat_map(|query| query.examples.rows().iter().map(|example| example.who))
+            .flat_map(|query| {
+                let examples = query.examples.rows().iter().map(|example| example.who);
+                examples.chain(query.spilled_by.keys().copied())
+            })
             .collect();
         self.who.retain(|key, _| used.contains(key));
-        self.cap_queries(limit);
     }
 
     /// The fingerprint half of [`Accumulators::recap`], safe to repeat while merging.
@@ -1785,13 +1870,29 @@ impl Accumulators {
         let mut ranked: Vec<(u64, u64)> =
             self.queries.iter().map(|(id, q)| (*id, q.calls)).collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        // A statement known only from its temp files has no calls, but is the answer to "what
+        // spills": the biggest few stay.
+        let mut spilling: Vec<(u64, u64)> = self
+            .queries
+            .values()
+            .filter(|q| !q.spilled_by.is_empty())
+            .map(|q| (q.id, q.temp_bytes))
+            .collect();
+        spilling.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        spilling.truncate(SPILLING_KEPT);
         for (id, _) in ranked.split_off(self.limit) {
+            if spilling.iter().any(|(kept, _)| *kept == id) {
+                continue;
+            }
             if let Some(mut query) = self.queries.remove(&id) {
                 // The overflow bucket keeps its own identity: only counters flow into it.
                 query.text = String::new();
                 query.query_id = None;
                 query.sample = None;
                 query.parsed = true;
+                query.spilled_by.clear();
+                query.spill_first = None;
+                query.spill_last = None;
                 self.overflow.merge(query);
             }
         }
@@ -1954,6 +2055,237 @@ mod tests {
         assert_eq!(a.totals.locks.acquired, 1);
         assert_eq!(a.totals.locks.wait_max_us, 400_250);
         assert_eq!(a.totals.temp.bytes, 1_000);
+    }
+
+    fn spill(second: i64, bytes: u64, sql: Option<&str>, app: &str) -> LogRecord {
+        let mut temp = log(second, &format!("temporary file: path \"x\", size {bytes}"));
+        temp.statement = sql.map(str::to_owned);
+        temp.user = Some("rollup".to_owned());
+        temp.application = Some(app.to_owned());
+        temp
+    }
+
+    #[test]
+    fn a_spill_is_listed_under_who_caused_it() {
+        let mut a = acc();
+        let sql = "SELECT sum(x) FROM big GROUP BY y";
+        a.add_record(&spill(5, 100, Some(sql), "app_b"));
+        a.add_record(&spill(2, 300, Some(sql), "app_a"));
+        a.add_record(&spill(9, 50, Some(sql), "app_a"));
+        a.recap(1_000);
+        let q = a.queries.values().next().unwrap();
+        let by_bytes: Vec<_> = q
+            .spilled_by
+            .iter()
+            .map(|(key, s)| (a.who[key].application.clone().unwrap(), s.files, s.bytes))
+            .collect();
+        assert_eq!(by_bytes.len(), 2);
+        assert!(by_bytes.contains(&("app_a".to_owned(), 2, 350)));
+        assert!(by_bytes.contains(&("app_b".to_owned(), 1, 100)));
+        assert_eq!((q.spill_first, q.spill_last), (Some(at(2)), Some(at(9))));
+        assert_eq!(a.dims.applications["app_a"].temp_bytes, 350);
+        assert_eq!(a.dims.users["rollup"].temp_files, 3);
+    }
+
+    #[test]
+    fn a_spill_without_a_statement_is_unattributed() {
+        let mut a = acc();
+        a.add_record(&spill(1, 700, None, "app_a"));
+        a.recap(1_000);
+        assert!(a.queries.is_empty());
+        assert_eq!(a.totals.temp.bytes, 700);
+        assert_eq!(
+            (
+                a.totals.temp.unattributed.files,
+                a.totals.temp.unattributed.bytes
+            ),
+            (1, 700)
+        );
+        assert_eq!(a.dims.applications["app_a"].temp_files, 1);
+    }
+
+    #[test]
+    fn a_spiller_is_not_trimmed_before_the_report() {
+        let sql = "SELECT 1 FROM big";
+        let mut first = acc();
+        for n in 0..5_u32 {
+            first.add_record(&spill(i64::from(n), 100, Some(sql), &format!("app{n}")));
+        }
+        first.add_record(&spill(6, 50, Some(sql), "late"));
+        let mut second = acc();
+        second.add_record(&spill(7, 500, Some(sql), "late"));
+        first.recap(1_000);
+        second.recap(1_000);
+        first.merge(second);
+        first.recap(1_000);
+        let q = first.queries.values().next().unwrap();
+        let late = q
+            .spilled_by
+            .iter()
+            .find(|(key, _)| first.who[key].application.as_deref() == Some("late"))
+            .map(|(_, spill)| spill.bytes);
+        assert_eq!(late, Some(550));
+        assert_eq!(q.spilled_by.len(), 6);
+    }
+
+    #[test]
+    fn a_statement_known_only_from_its_spill_survives_the_fingerprint_cap() {
+        let mut a = Accumulators::new(1_000, 60);
+        for n in 0..6 {
+            a.add_record(&statement(n, 5.0, &format!("SELECT {n} FROM busy{n}")));
+        }
+        a.add_record(&spill(10, 800, Some("SELECT sum(x) FROM big"), "app_b"));
+        a.recap(3);
+        assert!(a.queries.values().any(|q| q.temp_bytes == 800));
+        assert!(a.overflow.spilled_by.is_empty());
+    }
+
+    #[test]
+    fn folded_statements_leave_no_spillers_in_who() {
+        let mut a = Accumulators::new(1_000, 60);
+        for n in 0..4 {
+            a.add_record(&statement(n, 5.0, &format!("SELECT {n} FROM busy{n}")));
+            a.add_record(&statement(n, 5.0, &format!("SELECT {n} FROM busy{n}")));
+        }
+        for n in 0..12_u32 {
+            let sql = format!("SELECT x FROM spill{n}");
+            a.add_record(&spill(
+                20 + i64::from(n),
+                100 + u64::from(n),
+                Some(&sql),
+                &format!("app{n}"),
+            ));
+        }
+        a.recap(4);
+        let kept: std::collections::BTreeSet<u64> = a
+            .queries
+            .values()
+            .flat_map(|q| q.spilled_by.keys().copied())
+            .collect();
+        assert!(a.who.keys().all(|key| {
+            kept.contains(key)
+                || a.queries
+                    .values()
+                    .any(|q| q.examples.rows().iter().any(|e| e.who == *key))
+        }));
+    }
+
+    #[test]
+    fn a_shared_run_lists_spillers_the_same_as_a_single_pass() {
+        let records: Vec<LogRecord> = (0..9_u32)
+            .map(|n| {
+                let app = format!("app{}", n % 4);
+                spill(
+                    i64::from(n),
+                    10 * (u64::from(n) + 1),
+                    Some("SELECT 1 FROM big"),
+                    &app,
+                )
+            })
+            .collect();
+        let mut alone = acc();
+        let shared = SharedQueries::new();
+        let (mut left, mut right) = (
+            acc().with_shared(Arc::clone(&shared)),
+            acc().with_shared(Arc::clone(&shared)),
+        );
+        for (index, record) in records.iter().enumerate() {
+            alone.add_record(record);
+            if index % 2 == 0 {
+                left.add_record(record);
+            } else {
+                right.add_record(record);
+            }
+        }
+        left.merge(right);
+        left.absorb_shared();
+        alone.recap(1_000);
+        left.recap(1_000);
+        assert_eq!(left, alone);
+    }
+
+    #[test]
+    fn a_query_that_never_spilled_stores_no_spill_fields() {
+        let mut a = acc();
+        a.add_record(&statement(0, 1.0, "SELECT 1"));
+        let stored = serde_json::to_string(a.queries.values().next().unwrap()).unwrap();
+        for key in [
+            "spilled_by",
+            "spill_first",
+            "spill_last",
+            "cursor_unresolved",
+        ] {
+            assert!(!stored.contains(key), "{key} in {stored}");
+        }
+    }
+
+    #[test]
+    fn merging_two_halves_spills_the_same_as_one_pass() {
+        let sql = "SELECT 1 FROM big";
+        let records: Vec<LogRecord> = (0..8_u32)
+            .map(|n| {
+                let app = format!("app{}", n % 3);
+                spill(i64::from(n), 10 * (u64::from(n) + 1), Some(sql), &app)
+            })
+            .collect();
+        let mut whole = acc();
+        let (mut left, mut right) = (acc(), acc());
+        for (n, record) in records.iter().enumerate() {
+            whole.add_record(record);
+            if n < 3 {
+                left.add_record(record);
+            } else {
+                right.add_record(record);
+            }
+        }
+        left.merge(right);
+        whole.recap(1_000);
+        left.recap(1_000);
+        let spills = |a: &Accumulators| a.queries.values().next().unwrap().spilled_by.clone();
+        assert_eq!(spills(&left), spills(&whole));
+    }
+
+    #[test]
+    fn spills_past_the_fingerprint_limit_keep_counts_only() {
+        let mut a = Accumulators::new(1, 60);
+        a.add_record(&statement(0, 1.0, "SELECT 1 FROM hot"));
+        a.add_record(&spill(2, 900, Some("SELECT 2 FROM cold"), "app_a"));
+        a.recap(1);
+        assert_eq!(a.queries.len(), 1);
+        assert_eq!((a.overflow.temp_files, a.overflow.temp_bytes), (1, 900));
+        assert!(a.overflow.spilled_by.is_empty());
+    }
+
+    #[test]
+    fn a_resolved_cursor_spill_counts_under_the_cursors_query() {
+        let mut a = acc();
+        a.add_record(&linked(
+            spill(1, 500, Some("FETCH FORWARD 1 FROM \"c_1\""), "app_b"),
+            "SELECT * FROM big ORDER BY x",
+            Phase::Fetch,
+            false,
+        ));
+        a.recap(1_000);
+        let q = a.queries.values().next().unwrap();
+        assert_eq!(a.queries.len(), 1);
+        assert!(q.text.contains("big"), "{}", q.text);
+        assert_eq!((q.temp_files, q.temp_bytes), (1, 500));
+        assert!(!q.cursor_unresolved);
+    }
+
+    #[test]
+    fn an_unresolved_fetch_spill_is_flagged() {
+        let mut a = acc();
+        a.add_record(&spill(
+            1,
+            500,
+            Some("FETCH FORWARD 1 FROM \"c_9\""),
+            "app_c",
+        ));
+        a.add_record(&spill(2, 70, Some("SELECT 1 FROM plain"), "app_c"));
+        let flagged: Vec<bool> = a.queries.values().map(|q| q.cursor_unresolved).collect();
+        assert_eq!(flagged.iter().filter(|f| **f).count(), 1);
+        assert_eq!(flagged.len(), 2);
     }
 
     #[test]

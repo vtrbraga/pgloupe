@@ -1080,3 +1080,77 @@ fn the_shares_of_the_kinds_add_up_when_statements_have_phases() -> io::Result<()
     );
     Ok(())
 }
+
+#[test]
+fn a_spill_is_attributed_to_the_role_and_application_that_caused_it() -> io::Result<()> {
+    let out = analyze(
+        &["--output", "json"],
+        &[fixtures().join("logs/temp_spill.log")],
+    )?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_str(&stdout(&out))?;
+    let statements = report["statements"].as_array().expect("statements");
+    let resolved = statements
+        .iter()
+        .find(|s| {
+            s["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("GROUP BY region"))
+        })
+        .expect("the cursor's query has its own row");
+    assert_eq!(resolved["temp_bytes"], 266_000_000);
+    assert_eq!(resolved["spilled_by"][0]["user"], "rollup");
+    assert_eq!(resolved["spilled_by"][0]["application"], "app_b");
+    assert_eq!(resolved["spilled_by"][0]["files"], 2);
+    assert!(resolved.get("cursor_unresolved").is_none());
+    let unresolved = statements
+        .iter()
+        .find(|s| {
+            s["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("FETCH FORWARD"))
+        })
+        .expect("an undeclared cursor keeps its FETCH row");
+    assert_eq!(unresolved["cursor_unresolved"], true);
+    assert_eq!(unresolved["spilled_by"][0]["application"], "app_c");
+    assert_eq!(
+        report["temp_files"]["unattributed"],
+        serde_json::json!({"files": 1, "bytes": 7_000_000})
+    );
+    let rollup = report["dimensions"]["user"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|r| r["value"] == "rollup"))
+        .expect("rollup row");
+    assert_eq!(
+        (rollup["temp_files"].clone(), rollup["temp_bytes"].clone()),
+        (2.into(), 266_000_000.into())
+    );
+    Ok(())
+}
+
+#[test]
+fn the_text_report_says_who_spilled_each_statement() -> io::Result<()> {
+    let out = analyze(&[], &[fixtures().join("logs/temp_spill.log")])?;
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let lines: Vec<String> = text
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect();
+    let has = |part: &str| lines.iter().any(|l| l.contains(part));
+    assert!(
+        has("rollup @ app_b (shop, 10.0.0.6): 2 files, 253.7 MiB"),
+        "{text}"
+    );
+    assert!(
+        has("batch @ app_c (shop, 10.0.0.7): 1 file, 47.7 MiB"),
+        "{text}"
+    );
+    assert!(has("cursor query not in the log"), "{text}");
+    assert!(has("first spill 2026-01-01T10:00:10"), "{text}");
+    assert!(
+        has("not listed under a statement: 1 file, 6.7 MiB"),
+        "{text}"
+    );
+    Ok(())
+}

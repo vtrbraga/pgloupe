@@ -726,6 +726,12 @@
           h('td', { text: [x.database, x.user, x.application, x.host].filter(Boolean).join(' / ') || '\u2014' }), h('td', { 'class': 'mono', text: x.params || '\u2014' })]);
       }))));
     }
+    if (row.log && row.log.spilled_by && row.log.spilled_by.length) {
+      var spillNote = row.log.cursor_unresolved ? h('p', { 'class': 'muted small', text: 'This is a cursor FETCH and its DECLARE is not in the log, so the cursor\u2019s query is unknown. Lower log_min_duration_statement or set log_statement=all to log the DECLARE.' }) : null;
+      body.appendChild(panel('Temp files by who', h('div', null, [spillNote, simpleTable([{ label: 'Who' }, { label: 'Files', num: true }, { label: 'Size', num: true }], row.log.spilled_by.map(function (x) {
+        return h('tr', null, [h('td', { text: x.other ? '(other)' : [x.database, x.user, x.application, x.host].filter(Boolean).join(' / ') || '\u2014' }), h('td', { 'class': 'num', text: L.fmtInt(x.files) }), h('td', { 'class': 'num', text: L.fmtBytes(x.bytes) })]);
+      })), row.log.spill_first ? h('p', { 'class': 'muted small', text: 'First ' + L.fmtTime(row.log.spill_first, true) + ' \u00b7 last ' + L.fmtTime(row.log.spill_last, true) }) : null])));
+    }
     if (row.log) {
       var lg = row.log;
       body.appendChild(panel('What the log saw', h('div', null, [
@@ -823,7 +829,7 @@
     var l = logs.locks, t = logs.temp_files;
     var out = [h('div', { 'class': 'grid kpis' }, [
       kpi('Lock waits', L.fmtInt(l.waits), l.acquired + ' completed after waiting'), kpi('Total wait', L.fmtMs(l.total_wait_ms), 'longest ' + L.fmtMs(l.max_wait_ms)),
-      kpi('Deadlocks', L.fmtInt(l.deadlocks), '', null, l.deadlocks ? 'bad' : ''), kpi('Temp files', L.fmtInt(t.files), L.fmtBytes(t.bytes) + ' total'), kpi('Largest temp file', L.fmtBytes(t.max_bytes), '')
+      kpi('Deadlocks', L.fmtInt(l.deadlocks), '', null, l.deadlocks ? 'bad' : ''), kpi('Temp files', L.fmtInt(t.files), L.fmtBytes(t.bytes) + ' total'), kpi('Largest temp file', L.fmtBytes(t.max_bytes), t.unattributed ? L.fmtBytes(t.unattributed.bytes) + ' in ' + L.fmtInt(t.unattributed.files) + ' files with no statement in the log' : '')
     ])];
     if (display.some(function (b) { return b.lock_waits > 0; })) { out.push(chartPanel('Lock waits over time', ['lock_waits'])); }
     else if (notLogged('lock waits')) { out.push(panel('Lock waits over time', emptyNote('Not logged: log_lock_waits is off, or no lock wait lasted longer than deadlock_timeout.'))); }
@@ -844,11 +850,13 @@
         return h('tr', null, [h('td', { 'class': 'num', text: L.fmtInt(b.count) }), h('td', { 'class': 'num', text: L.fmtMs(b.total_wait_ms) }), holder(b.blocker, b.blocker_text), holder(b.waiter, b.waiter_text)]);
       })));
     }
-    var temps = rows.filter(function (r) { return r.log && r.log.temp_files > 0; }).sort(function (a, b) { return b.log.temp_bytes - a.log.temp_bytes; }).slice(0, 15);
+    var temps = (logs.spilling || rows.filter(function (r) { return r.log && r.log.temp_files > 0; }).map(function (r) { return Object.assign({ fingerprint: r.fingerprint, text: r.text }, r.log); }))
+      .slice().sort(function (a, b) { return b.temp_bytes - a.temp_bytes; }).slice(0, 15);
     if (temps.length) {
       out.push(h('h2', { text: 'Statements that wrote temp files' }));
       out.push(simpleTable([{ label: 'Statement' }, { label: 'Files', num: true }, { label: 'Size', num: true }], temps.map(function (r) {
-        return h('tr', { 'class': 'clickable', onclick: function () { openStatement(r.fingerprint); } }, [h('td', null, h('div', { 'class': 'stmt' }, h('span', { 'class': 'sql', text: r.text.replace(/\s+/g, ' ') }))), h('td', { 'class': 'num', text: L.fmtInt(r.log.temp_files) }), h('td', { 'class': 'num', text: L.fmtBytes(r.log.temp_bytes) })]);
+        var shown = !!byFp[r.fingerprint];
+        return h('tr', { 'class': shown ? 'clickable' : '', onclick: shown ? function () { openStatement(r.fingerprint); } : null }, [h('td', null, h('div', { 'class': 'stmt' }, h('span', { 'class': 'sql', text: r.text.replace(/\s+/g, ' ') }))), h('td', { 'class': 'num', text: L.fmtInt(r.temp_files) }), h('td', { 'class': 'num', text: L.fmtBytes(r.temp_bytes) })]);
       })));
     }
     return out;
@@ -959,11 +967,12 @@
     var wrap = h('div', { 'class': 'grid cols-2' });
     var chips = h('div', { 'class': 'toolbar' });
     var skipped = h('p', { 'class': 'muted' });
-    function metricOf(r) { return breakdownMetric === 'time' ? r.total_ms : breakdownMetric === 'errors' ? r.errors : breakdownMetric === 'connections' ? r.connections : r.statements; }
+    function metricOf(r) { return breakdownMetric === 'time' ? r.total_ms : breakdownMetric === 'errors' ? r.errors : breakdownMetric === 'connections' ? r.connections : breakdownMetric === 'temp' ? (r.temp_bytes || 0) : r.statements; }
     function draw() {
       C.clear(chips); C.clear(wrap); skipped.textContent = '';
       var absent = [];
-      [['time', 'Statement time'], ['statements', 'Statements'], ['errors', 'Errors'], ['connections', 'Connections']].forEach(function (m) {
+      var hasTemp = Object.keys(logs.dimensions).some(function (k) { return (logs.dimensions[k] || []).some(function (r) { return r.temp_bytes > 0; }); });
+      [['time', 'Statement time'], ['statements', 'Statements'], ['errors', 'Errors'], ['connections', 'Connections']].concat(hasTemp ? [['temp', 'Temp files']] : []).forEach(function (m) {
         chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(breakdownMetric === m[0]), onclick: function () { breakdownMetric = m[0]; draw(); }, text: m[1] }));
       });
       chips.appendChild(h('button', { 'class': 'chip', 'aria-pressed': String(breakdownAll), onclick: function () { breakdownAll = !breakdownAll; draw(); }, text: 'Show empty rows' }));
@@ -975,7 +984,7 @@
         var max = Math.max.apply(null, list.map(metricOf).concat([1]));
         wrap.appendChild(panel(d[1], list.length ? h('div', { 'class': 'ranked' }, list.map(function (r) {
           return h('div', { 'class': 'row', title: r.value }, [h('span', { 'class': 'name', text: r.value }), h('span', { 'class': 'track' }, h('b', { style: { width: (metricOf(r) / max * 100) + '%' } })),
-            h('span', { 'class': 'val', text: breakdownMetric === 'time' ? L.fmtMs(r.total_ms) : L.fmtInt(metricOf(r)) + ' \u00b7 ' + L.fmtInt(r.statements) + ' stmts' })]);
+            h('span', { 'class': 'val', text: breakdownMetric === 'time' ? L.fmtMs(r.total_ms) : breakdownMetric === 'temp' ? L.fmtBytes(r.temp_bytes || 0) + ' \u00b7 ' + L.fmtInt(r.temp_files || 0) + ' files' : L.fmtInt(metricOf(r)) + ' \u00b7 ' + L.fmtInt(r.statements) + ' stmts' })]);
         })) : emptyNote('Nothing recorded.')));
       });
       if (absent.length) { skipped.textContent = 'Not in this log: ' + absent.join(', ') + ' (the log_line_prefix does not carry them, or nothing was timed).'; }
