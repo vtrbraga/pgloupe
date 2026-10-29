@@ -33,8 +33,10 @@ pub struct DimStats {
     /// Sum of their durations, in microseconds.
     pub session_us: u64,
     /// Temporary files written.
+    #[serde(default)]
     pub temp_files: u64,
     /// Their total size in bytes.
+    #[serde(default)]
     pub temp_bytes: u64,
 }
 
@@ -299,6 +301,13 @@ mod tests {
             }
         }
         dims
+    }
+
+    #[test]
+    fn stats_stored_before_the_temp_columns_still_load() {
+        let old = r#"{"statements":1,"timed":0,"total_us":0,"errors":0,"connections":0,"sessions":0,"session_us":0}"#;
+        let stats: DimStats = serde_json::from_str(old).unwrap();
+        assert_eq!((stats.temp_files, stats.temp_bytes), (0, 0));
     }
 
     #[test]

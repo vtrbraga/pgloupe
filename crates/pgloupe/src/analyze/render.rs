@@ -366,9 +366,6 @@ fn locks(report: &Report) -> Vec<String> {
     lines
 }
 
-/// Statements listed in the temp-file section.
-const TEMP_STATEMENTS_SHOWN: usize = 10;
-
 fn temp_files(report: &Report) -> Vec<String> {
     let t = &report.temp_files;
     let mut lines = vec![format!(
@@ -382,13 +379,7 @@ fn temp_files(report: &Report) -> Vec<String> {
             size(rest.bytes)
         ));
     }
-    let mut spilling: Vec<&StatementRow> = report
-        .statements
-        .iter()
-        .filter(|row| !row.spilled_by.is_empty())
-        .collect();
-    spilling.sort_by_key(|row| std::cmp::Reverse(row.temp_bytes));
-    for row in spilling.into_iter().take(TEMP_STATEMENTS_SHOWN) {
+    for row in &report.spilling {
         let note = if row.cursor_unresolved {
             "  (cursor query not in the log: the DECLARE was not logged; lower log_min_duration_statement or set log_statement=all to see it)"
         } else {
@@ -400,6 +391,9 @@ fn temp_files(report: &Report) -> Vec<String> {
             files(row.temp_files),
             cut(&row.text)
         ));
+        if let (Some(first), Some(last)) = (&row.spill_first, &row.spill_last) {
+            lines.push(format!("  first spill {first}, last spill {last}"));
+        }
         for who in &row.spilled_by {
             let name = if who.other {
                 "(other)".to_owned()

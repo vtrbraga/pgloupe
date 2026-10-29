@@ -47,6 +47,7 @@ locks
 temp files
   files 2, bytes 12288, largest 8192
   12.0 KiB in 2 files  SELECT * FROM big ORDER BY x
+    first spill 2026-10-14T10:00:12Z, last spill 2026-10-14T10:00:13Z
     app @ (none) (shop, (none)): 2 files, 12.0 KiB
 
 connections

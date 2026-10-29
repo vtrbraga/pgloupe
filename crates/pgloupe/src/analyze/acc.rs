@@ -53,10 +53,6 @@ fn execution(
 /// Slowest executions kept per statement, for "who ran this". One keeps the per-hour, per-worker
 /// footprint of a fingerprint small; the global slowest list has more.
 const EXAMPLES_PER_STATEMENT: usize = 1;
-/// Who-entries kept per statement in [`QueryStats::spilled_by`]; the rest fold into [`OTHER_WHO`].
-const SPILLERS_KEPT: usize = 5;
-/// The key of the folded-away spillers in [`QueryStats::spilled_by`].
-pub const OTHER_WHO: u64 = 0;
 /// Runs faster than this are not worth an example (and would cost memory for every fast
 /// statement of a wide log).
 const EXAMPLE_MIN_US: u64 = 10_000;
@@ -242,8 +238,8 @@ pub struct QueryStats {
     pub lock_wait_us: u64,
     pub temp_files: u64,
     pub temp_bytes: u64,
-    /// Temp files by [`who_key`] of the record that logged them, trimmed by
-    /// [`QueryStats::recap_spills`] when a run ends.
+    /// Temp files by [`who_key`] of the record that logged them. Left whole so that merging
+    /// hourly slices adds up; the report keeps the biggest few.
     #[serde(default)]
     pub spilled_by: BTreeMap<u64, Spill>,
     /// When the statement first and last wrote a temp file.
@@ -302,26 +298,6 @@ impl QueryStats {
         slot.bytes += bytes;
         self.spill_first = earliest(self.spill_first, Some(ts));
         self.spill_last = latest(self.spill_last, Some(ts));
-    }
-
-    /// Keeps the [`SPILLERS_KEPT`] biggest spillers (ties: the larger key goes first) and folds
-    /// the rest into [`OTHER_WHO`].
-    fn recap_spills(&mut self) {
-        let mut ranked: Vec<(u64, u64)> = self
-            .spilled_by
-            .iter()
-            .filter(|(key, _)| **key != OTHER_WHO)
-            .map(|(key, spill)| (*key, spill.bytes))
-            .collect();
-        if ranked.len() <= SPILLERS_KEPT {
-            return;
-        }
-        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
-        for (key, _) in ranked.split_off(SPILLERS_KEPT) {
-            if let Some(spill) = self.spilled_by.remove(&key) {
-                self.spilled_by.entry(OTHER_WHO).or_default().merge(spill);
-            }
-        }
     }
 
     /// Offers a spelling of this statement as the representative sample: the one with the smallest
@@ -1862,9 +1838,6 @@ impl Accumulators {
     /// (ties: the larger id goes first), so the result does not depend on arrival order.
     pub fn recap(&mut self, limit: usize) {
         self.dims.recap(dimensions::LIMIT);
-        for query in self.queries.values_mut() {
-            query.recap_spills();
-        }
         for stat in self.totals.errors.values_mut() {
             stat.keep_busiest_statements();
         }
@@ -2117,20 +2090,27 @@ mod tests {
     }
 
     #[test]
-    fn more_than_five_spillers_fold_into_other() {
-        let mut a = acc();
+    fn a_spiller_is_not_trimmed_before_the_report() {
         let sql = "SELECT 1 FROM big";
-        for n in 0..7_u32 {
-            let bytes = 100 + u64::from(n);
-            a.add_record(&spill(i64::from(n), bytes, Some(sql), &format!("app{n}")));
+        let mut first = acc();
+        for n in 0..5_u32 {
+            first.add_record(&spill(i64::from(n), 100, Some(sql), &format!("app{n}")));
         }
-        a.recap(1_000);
-        let q = a.queries.values().next().unwrap();
+        first.add_record(&spill(6, 50, Some(sql), "late"));
+        let mut second = acc();
+        second.add_record(&spill(7, 500, Some(sql), "late"));
+        first.recap(1_000);
+        second.recap(1_000);
+        first.merge(second);
+        first.recap(1_000);
+        let q = first.queries.values().next().unwrap();
+        let late = q
+            .spilled_by
+            .iter()
+            .find(|(key, _)| first.who[key].application.as_deref() == Some("late"))
+            .map(|(_, spill)| spill.bytes);
+        assert_eq!(late, Some(550));
         assert_eq!(q.spilled_by.len(), 6);
-        let other = q.spilled_by[&OTHER_WHO];
-        assert_eq!((other.files, other.bytes), (2, 100 + 101));
-        let total: u64 = q.spilled_by.values().map(|s| s.bytes).sum();
-        assert_eq!(total, q.temp_bytes);
     }
 
     #[test]
