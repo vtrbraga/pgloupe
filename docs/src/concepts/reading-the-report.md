@@ -6,10 +6,10 @@
 | What to fix first | Ranked problems, each with the numbers, the advice and the statements involved |
 | Statements | Per statement: calls, total, mean, p50, p95, p99, max, spread (standard deviation over the mean), errors, lock waits, temp files; parse, bind and cursor-fetch time; from the statistics, cache hit, I/O share of execution time, blocks read, rows per call, blocks read per row and WAL per call. A *Top by* selector reorders the table on any of those. *Slower* and *faster* flag a statement whose mean moved by half or more since before the window |
 | Errors | By SQLSTATE and message shape, with the statement, `DETAIL` and `HINT` |
-| Locks and temp files | Waits over time, who held the lock, deadlocks, temp-file spills |
+| Locks and temp files | Waits over time, who held the lock, deadlocks, temp-file spills. A statement that spilled lists, in its detail, the user, application, database and host that wrote each share of its temp files, with the first and last spill |
 | Sessions | Connections, session durations, connections per host, sessions that ended abruptly |
 | Maintenance | Checkpoints (WAL between them, causes, sync time first), autovacuum per table, schema changes and temporary tables |
-| Breakdowns | By database, user, application and host. Columns the log never had are left out; when the log carries no databases or users, the statistics fill in |
+| Breakdowns | By database, user, application and host, also by temp files written. Columns the log never had are left out; when the log carries no databases or users, the statistics fill in |
 | Slowest | The slowest single executions, with parameters only if you ask |
 | Pooler | pgBouncer only: logins, why sessions ended, mean client wait and peak transactions per second from the `stats:` lines |
 | Comparison | One period against the one before it |
@@ -34,3 +34,9 @@ A caveat is a reason a number may be off: a reset between snapshots, evicted ent
 ## Evictions
 
 `pg_stat_statements` drops its least-used entries when it is full. Its `dealloc` counter counts eviction rounds, each of which removes about 5% of `pg_stat_statements.max`, not entries. The report says how many rounds happened, estimates the entries lost, names utility statements as the cause when they dominate the churn (`track_utility = off` fixes that), and does not call churn news right after a reset.
+
+## Temp files and cursors
+
+A temp file is credited to the statement named on its `STATEMENT:` line. For a cursor that line reads `FETCH FORWARD 1 FROM "c_…"`, so pgloupe looks up the `DECLARE` of that cursor in the same file and credits the cursor's query. When the `DECLARE` is not in the log, the spill stays on the `FETCH` and the report says *cursor query not in the log*. A fast `DECLARE` is logged only if it passes `log_min_duration_statement` or `log_statement` covers it; lower the first or set `log_statement = 'all'` for a while to see it.
+
+Temp files whose record names no statement count in the totals and the breakdowns and are listed as *unattributed*.

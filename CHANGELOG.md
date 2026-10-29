@@ -5,6 +5,11 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The report says who spilled to disk. A statement that wrote temp files lists the user, application, database and host behind them, with files, size and the first and last spill; the breakdown tables gain temp files and temp bytes, and a role that mostly spills is listed even when it runs few statements. Temp files whose log record names no statement are reported as unattributed.
+- A temp file logged under a cursor `FETCH` is credited to the query the cursor was declared for, when the `DECLARE` is in the log; otherwise the report says the cursor query is not in the log and how to get it logged. Part of #48; the per-file event list, the truncated `application_name` warning and the `pg_stat_statements` cross-check are still open there.
+
 ### Fixed
 
 - The same error (same SQLSTATE) read from logs in different languages in one run is one kind in the report, not one per language. A run in a single language, and English logs, group as before.
