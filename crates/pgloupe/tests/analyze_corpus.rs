@@ -337,14 +337,13 @@ fn blocked_parse_and_bind_and_cursor_fetches_land_on_their_statements() -> io::R
         "{:?}",
         cursor.phases
     );
-    // SQL-level EXECUTEs count as the prepared query, and no FETCH or EXECUTE row exists.
+    // SQL-level EXECUTEs count as the prepared query, and no FETCH or EXECUTE row exists, except
+    // the temp-file cursor whose DECLARE the generator keeps out of the log.
     let prepared = by_text("title FROM film WHERE film_id");
     assert!(prepared.calls >= 4, "{}", prepared.calls);
     assert!(
-        out.acc
-            .queries
-            .values()
-            .all(|q| !q.text.starts_with("FETCH") && !q.text.starts_with("EXECUTE"))
+        out.acc.queries.values().all(|q| q.cursor_unresolved
+            || (!q.text.starts_with("FETCH") && !q.text.starts_with("EXECUTE")))
     );
     Ok(())
 }
@@ -489,5 +488,53 @@ fn background_work_abrupt_endings_and_schema_changes_show_up() -> io::Result<()>
     assert!(fk.len() >= 2, "one row per constraint: {fk:?}");
     assert!(fk.iter().any(|e| e.first_message.contains("actor_id_fkey")));
     assert!(fk.iter().any(|e| e.first_message.contains("film_id_fkey")));
+    Ok(())
+}
+
+#[test]
+#[ignore = "needs data/synth/17-42 (cargo run -p synth -- generate)"]
+fn temp_files_are_attributed_to_the_role_and_application_that_wrote_them() -> io::Result<()> {
+    let path = corpus().join("log").join(reference());
+    let out = pipeline::run(std::slice::from_ref(&path), &Options::new()).map_err(io_err)?;
+    let report = pgloupe::analyze::report::Report::build(
+        &out,
+        &pgloupe::analyze::report::ReportOptions {
+            by: pgloupe::analyze::report::SortBy::Total,
+            top: 1,
+        },
+    );
+    let spilled = |user: &str, application: &str| {
+        report
+            .spilling
+            .iter()
+            .flat_map(|row| row.spilled_by.iter())
+            .any(|who| {
+                who.user.as_deref() == Some(user) && who.application.as_deref() == Some(application)
+            })
+    };
+    assert!(spilled("report", "synth:temp_files:rollup"));
+    assert!(spilled("app_rw", "synth:temp_files:web"));
+    // A cursor whose DECLARE is logged is credited to its query; one whose DECLARE is not stays a
+    // FETCH and is flagged.
+    assert!(report.spilling.iter().any(|row| {
+        row.text.contains("ORDER BY g DESC")
+            && row
+                .spilled_by
+                .iter()
+                .any(|w| w.application.as_deref() == Some("synth:temp_files:cursor"))
+    }));
+    assert!(
+        report
+            .spilling
+            .iter()
+            .any(|row| row.cursor_unresolved && row.text.starts_with("FETCH"))
+    );
+    assert!(
+        report
+            .dimensions
+            .user
+            .iter()
+            .any(|r| r.value == "report" && r.temp_bytes > 0)
+    );
     Ok(())
 }
