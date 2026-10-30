@@ -5,6 +5,8 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-30
+
 ### Added
 
 - Temp files are listed one by one in the JSON (`temp_files.events`, the 200 largest, with time, size, process id, user, application, database, host and the statement fingerprint when the log names one). Temp files whose log record names no statement (extended-protocol drivers are one cause) are reported with who wrote them; pgloupe does not guess their statement.
