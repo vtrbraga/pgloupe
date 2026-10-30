@@ -536,5 +536,32 @@ fn temp_files_are_attributed_to_the_role_and_application_that_wrote_them() -> io
             .iter()
             .any(|r| r.value == "report" && r.temp_bytes > 0)
     );
+    // An extended-protocol spill carries no statement in the log: it is listed by who and as an
+    // event without a fingerprint, and no statement lists that application.
+    let extended = |application: Option<&str>| application == Some("synth:temp_files:extended");
+    let lost = report
+        .temp_files
+        .unattributed
+        .as_ref()
+        .expect("unattributed spills");
+    assert!(
+        lost.by
+            .iter()
+            .any(|who| extended(who.application.as_deref()))
+    );
+    assert!(
+        report
+            .temp_files
+            .events
+            .iter()
+            .any(|e| { extended(e.application.as_deref()) && e.fingerprint.is_none() })
+    );
+    assert!(
+        !report
+            .spilling
+            .iter()
+            .flat_map(|row| row.spilled_by.iter())
+            .any(|who| extended(who.application.as_deref()))
+    );
     Ok(())
 }

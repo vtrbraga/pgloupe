@@ -7,8 +7,10 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- Temp files are listed one by one in the JSON (`temp_files.events`, the 200 largest, with time, size, process id, user, application, database, host and the statement fingerprint when the log names one). Temp files the log names no statement for, which is what extended-protocol drivers produce, are reported with who wrote them; pgloupe does not guess their statement.
+- A warning for `application_name` values of exactly 63 bytes (the most Postgres keeps), and a note when a statement's temp bytes in the log and in `pg_stat_statements` differ by more than four times.
 - The report says who spilled to disk. A statement that wrote temp files lists the user, application, database and host behind them, with files, size and the first and last spill; the breakdown tables gain temp files and temp bytes, and a role that mostly spills is listed even when it runs few statements. Temp files that no statement lists (the log record names none, or the statement was folded into the overflow bucket) are reported separately.
-- A temp file logged under a cursor `FETCH` is credited to the query the cursor was declared for, when the `DECLARE` is in the log; otherwise the report says the cursor query is not in the log and how to get it logged. A temp file released when a transaction ends is logged under that `COMMIT`, `CLOSE` or `ROLLBACK`, and the report keeps it there. Part of #48; the per-file event list, the truncated `application_name` warning and the `pg_stat_statements` cross-check are still open there.
+- A temp file logged under a cursor `FETCH` is credited to the query the cursor was declared for, when the `DECLARE` is in the log; otherwise the report says the cursor query is not in the log and how to get it logged. A temp file released when a transaction ends is logged under that `COMMIT`, `CLOSE` or `ROLLBACK`, and the report keeps it there.
 
 ### Fixed
 
