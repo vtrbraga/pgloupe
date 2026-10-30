@@ -1113,10 +1113,22 @@ fn a_spill_is_attributed_to_the_role_and_application_that_caused_it() -> io::Res
         .expect("an undeclared cursor keeps its FETCH row");
     assert_eq!(unresolved["cursor_unresolved"], true);
     assert_eq!(unresolved["spilled_by"][0]["application"], "app_c");
+    let lost = &report["temp_files"]["unattributed"];
     assert_eq!(
-        report["temp_files"]["unattributed"],
-        serde_json::json!({"files": 1, "bytes": 7_000_000})
+        (lost["files"].clone(), lost["bytes"].clone()),
+        (1.into(), 7_000_000.into())
     );
+    assert_eq!(lost["by"][0]["application"], "app_c");
+    let events = report["temp_files"]["events"].as_array().expect("events");
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0]["bytes"], 133_000_000);
+    let no_statement = events
+        .iter()
+        .find(|e| e["bytes"] == 7_000_000)
+        .expect("the unattributed file");
+    assert!(no_statement.get("fingerprint").is_none());
+    assert_eq!(no_statement["user"], "batch");
+    assert!(events[0].get("fingerprint").is_some());
     let rollup = report["dimensions"]["user"]
         .as_array()
         .and_then(|rows| rows.iter().find(|r| r["value"] == "rollup"))
@@ -1148,6 +1160,11 @@ fn the_text_report_says_who_spilled_each_statement() -> io::Result<()> {
     );
     assert!(has("cursor query not in the log"), "{text}");
     assert!(has("first spill 2026-01-01T10:00:10"), "{text}");
+    assert!(
+        has("batch @ app_c (shop, 10.0.0.7): 1 file, 6.7 MiB"),
+        "{text}"
+    );
+    assert!(has("the log names no statement for these"), "{text}");
     assert!(
         has("not listed under a statement: 1 file, 6.7 MiB"),
         "{text}"
