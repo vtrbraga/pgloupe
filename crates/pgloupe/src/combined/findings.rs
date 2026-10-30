@@ -116,17 +116,7 @@ pub fn findings(ctx: &Context<'_>) -> Vec<Finding> {
         ));
     }
     if ctx.has_logs && ctx.delta.is_some() {
-        heavy_stats_only(ctx, &mut found);
-        low_coverage(ctx, &mut found);
-        high_coverage(ctx, &mut found);
-        if ctx.top.iter().any(|row| row.link == "log") {
-            found.push(finding(
-                "log_only_present",
-                "info",
-                "some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, the counters were reset, or they failed (pg_stat_statements does not count failed statements)"
-                    .to_owned(),
-            ));
-        }
+        log_against_stats(ctx, &mut found);
     }
     if let Some(filter) = &ctx.log_filter
         && ctx.delta.is_some()
@@ -374,6 +364,69 @@ fn low_coverage(ctx: &Context<'_>, found: &mut Vec<Finding>) {
     }
 }
 
+/// The rules that compare what the log saw with what the statistics counted.
+fn log_against_stats(ctx: &Context<'_>, found: &mut Vec<Finding>) {
+    heavy_stats_only(ctx, found);
+    low_coverage(ctx, found);
+    high_coverage(ctx, found);
+    temp_disagree(ctx, found);
+    if ctx.top.iter().any(|row| row.link == "log") {
+        found.push(finding(
+            "log_only_present",
+            "info",
+            "some top statements appear in the logs but not in the pg_stat_statements window: they started after the second snapshot, the counters were reset, or they failed (pg_stat_statements does not count failed statements)"
+                .to_owned(),
+        ));
+    }
+}
+
+/// Size of a Postgres block, which `temp_blks_written` counts in.
+const BLOCK_BYTES: u64 = 8_192;
+/// Pairs under this many bytes on both sides are not compared.
+const TEMP_MIN_BYTES: u64 = 1 << 20;
+/// How many times larger one side may be than the other before they count as disagreeing.
+const TEMP_DISAGREE_FACTOR: u64 = 4;
+
+/// Joined statements whose temp-file bytes in the log and in `pg_stat_statements` differ a lot.
+/// It reports that they differ, not why.
+fn temp_disagree(ctx: &Context<'_>, found: &mut Vec<Finding>) {
+    if ctx.overlap_pct.is_some_and(|pct| pct < MIN_OVERLAP_PCT)
+        || ctx
+            .window_ratio
+            .is_some_and(|ratio| ratio >= MAX_WINDOW_RATIO || ratio <= 1.0 / MAX_WINDOW_RATIO)
+    {
+        return;
+    }
+    let differ: Vec<&JoinedRow> = ctx
+        .joined
+        .rows
+        .iter()
+        .filter(|row| {
+            let (Some(log), Some(stats)) = (&row.log, &row.stats) else {
+                return false;
+            };
+            let from_stats = stats.temp_blks_written.saturating_mul(BLOCK_BYTES);
+            log.temp_bytes > 0
+                && log.temp_bytes.max(from_stats) >= TEMP_MIN_BYTES
+                && (from_stats == 0
+                    || log.temp_bytes >= from_stats.saturating_mul(TEMP_DISAGREE_FACTOR)
+                    || from_stats >= log.temp_bytes.saturating_mul(TEMP_DISAGREE_FACTOR))
+        })
+        .collect();
+    if !differ.is_empty() {
+        let mut f = finding(
+            "temp_disagree",
+            "info",
+            format!(
+                "for {} the temp-file bytes in the log and pg_stat_statements' temp_blks_written (8 KiB blocks) differ by more than {TEMP_DISAGREE_FACTOR}×, or the statistics show none: they count different things (files the log attributes to a statement, blocks the statistics attribute to its runs), so compare them with that in mind",
+                statements_of(differ.len())
+            ),
+        );
+        f.statements = listed(ctx, differ.iter().copied());
+        found.push(f);
+    }
+}
+
 fn high_coverage(ctx: &Context<'_>, found: &mut Vec<Finding>) {
     let comparable = ctx.overlap_pct.is_none_or(|pct| pct >= MIN_OVERLAP_PCT)
         && ctx
@@ -463,6 +516,54 @@ mod tests {
         let d = delta_with_info(&[(key(1), Some(FILM), 10, 100.0)], Some(quiet_infos()));
         let log = log_rows(&[("SELECT * FROM film WHERE film_id = 5", 9, 10.0)]);
         (d, log)
+    }
+
+    fn temp_pair(log_bytes: u64, stats_blocks: u64, overlap: Option<f64>) -> Vec<Finding> {
+        let (d, log) = healthy_inputs();
+        let mut joined = join(log, Some(&d));
+        let row = &mut joined.rows[0];
+        row.log.as_mut().unwrap().temp_bytes = log_bytes;
+        row.stats.as_mut().unwrap().temp_blks_written = stats_blocks;
+        let mut top = joined.rows.clone();
+        rank(&mut top, crate::analyze::report::SortBy::Total);
+        findings(&Context {
+            delta: Some(&d),
+            joined: &joined,
+            overlap_pct: overlap,
+            window_ratio: overlap.map(|_| 1.0),
+            top: &top,
+            has_logs: true,
+            from_store: false,
+            log_overflow_calls: 0,
+            log_filter: None,
+        })
+    }
+
+    #[test]
+    fn temp_bytes_the_two_sources_disagree_on_are_reported_without_a_cause() {
+        const MIB: u64 = 1 << 20;
+        // The log wrote 270 MiB; pg_stat_statements shows no temp blocks.
+        let found = temp_pair(270 * MIB, 0, Some(100.0));
+        let f = found.iter().find(|f| f.code == "temp_disagree").unwrap();
+        assert_eq!(f.severity, "info");
+        assert_eq!(f.statements.len(), 1);
+        assert!(f.message.contains("different things"), "{}", f.message);
+        // Within 4x either way, or under 1 MiB on both sides, or no log temp files: silent.
+        for (log, blocks) in [
+            (100 * MIB, 30 * 128),
+            (100 * MIB, 90 * 128),
+            (MIB / 2, 0),
+            (0, 5_000),
+        ] {
+            assert!(
+                !codes(&temp_pair(log, blocks, Some(100.0))).contains(&"temp_disagree"),
+                "{log} {blocks}"
+            );
+        }
+        // The statistics 4x or more above the log.
+        assert!(codes(&temp_pair(10 * MIB, 45 * 128, Some(100.0))).contains(&"temp_disagree"));
+        // Windows that do not overlap say nothing about each other.
+        assert!(!codes(&temp_pair(270 * MIB, 0, Some(10.0))).contains(&"temp_disagree"));
     }
 
     #[test]
