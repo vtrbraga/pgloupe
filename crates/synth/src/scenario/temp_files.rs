@@ -17,6 +17,10 @@ pub const QUERIES: &[&str] = &[
 /// A sort that spills when a cursor over it is first fetched.
 const CURSOR_QUERY: &str = "SELECT g FROM generate_series(1, 300000) g ORDER BY g DESC";
 
+/// A spilling query that takes a bind parameter, so it runs over the extended protocol.
+const EXTENDED_QUERY: &str =
+    "SELECT count(*) FROM (SELECT g FROM generate_series(1, 300000) g ORDER BY g DESC OFFSET $1) s";
+
 /// The `temp_files` scenario.
 pub const SCENARIO: Scenario = Scenario {
     name: "temp_files",
@@ -47,6 +51,14 @@ fn run(ctx: &mut Ctx) -> anyhow::Result<()> {
                 .with_context(|| format!("running {sql} as {role}"))?;
         }
     }
+    // An extended-protocol client: Postgres releases its temp files after the statement context
+    // is gone, so the log line names no statement.
+    let app = format!("{}:extended", ctx.app);
+    let mut client = ctx.target.connect("pagila", "app_rw", &app)?;
+    client.batch_execute("SET work_mem = '64kB'")?;
+    client
+        .query(EXTENDED_QUERY, &[&0_i64])
+        .context("running the extended-protocol query")?;
     // A spill logged under a cursor FETCH whose DECLARE is in the log. Each statement goes in its
     // own message, as a driver sends them.
     let app = format!("{}:cursor", ctx.app);

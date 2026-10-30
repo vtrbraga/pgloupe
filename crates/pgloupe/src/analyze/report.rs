@@ -6,7 +6,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    acc::{Accumulators, QueryStats, to_micros},
+    acc::{Accumulators, QueryStats, Spill, to_micros},
     diagnostics::{self, Diagnostics},
     dimensions::{DimStats, Dimension},
     histogram::{self, HistogramBucket},
@@ -472,13 +472,38 @@ pub struct TempReport {
     /// the overflow bucket.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unattributed: Option<UnattributedTemp>,
+    /// The largest temp files, one by one, largest first; `files` says how many there were.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<TempEventRow>,
 }
 
 /// Temp files that no statement accounts for.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct UnattributedTemp {
     pub files: u64,
     pub bytes: u64,
+    /// Who wrote them, biggest first; `other` sums the rest and the spills whose statement was
+    /// folded into the overflow bucket, which carry no who.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub by: Vec<SpillRow>,
+}
+
+/// One temp file, as its log record states it.
+#[derive(Debug, Clone, Serialize)]
+pub struct TempEventRow {
+    /// When the log recorded it.
+    pub timestamp: String,
+    pub bytes: u64,
+    /// The backend that logged it, when the prefix carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    pub database: Option<String>,
+    pub user: Option<String>,
+    pub application: Option<String>,
+    pub host: Option<String>,
+    /// The statement the log names for it; absent when the log names none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -725,6 +750,7 @@ impl Report {
                 bytes: totals.temp.bytes,
                 max_bytes: totals.temp.max_bytes,
                 unattributed: unattributed(acc),
+                events: temp_events(acc),
             },
             connections: ConnectionsReport {
                 received: totals.connections.received,
@@ -925,13 +951,20 @@ fn statement_row(
     }
 }
 
-/// The biggest spillers of `query` (ties by name), the rest summed into a last `other` row.
+/// The biggest spillers of `query`.
 fn spill_rows(
     query: &QueryStats,
     who: &std::collections::BTreeMap<u64, crate::analyze::slowest::Who>,
 ) -> Vec<SpillRow> {
-    let mut rows: Vec<SpillRow> = query
-        .spilled_by
+    who_rows(&query.spilled_by, who)
+}
+
+/// The biggest of `spills` (ties by name), the rest summed into a last `other` row.
+fn who_rows(
+    spills: &std::collections::BTreeMap<u64, Spill>,
+    who: &std::collections::BTreeMap<u64, crate::analyze::slowest::Who>,
+) -> Vec<SpillRow> {
+    let mut rows: Vec<SpillRow> = spills
         .iter()
         .map(|(key, spill)| {
             let who = who.get(key);
@@ -961,17 +994,21 @@ fn spill_rows(
             .split_off(SPILLERS_KEPT)
             .iter()
             .fold((0, 0), |(f, b), row| (f + row.files, b + row.bytes));
-        rows.push(SpillRow {
-            database: None,
-            user: None,
-            application: None,
-            host: None,
-            files,
-            bytes,
-            other: true,
-        });
+        rows.push(other_row(files, bytes));
     }
     rows
+}
+
+fn other_row(files: u64, bytes: u64) -> SpillRow {
+    SpillRow {
+        database: None,
+        user: None,
+        application: None,
+        host: None,
+        files,
+        bytes,
+        other: true,
+    }
 }
 
 /// Temp files no statement lists: logged without one, or under a fingerprint folded into the
@@ -980,7 +1017,54 @@ fn unattributed(acc: &Accumulators) -> Option<UnattributedTemp> {
     let lost = acc.totals.temp.unattributed;
     let files = lost.files + acc.overflow.temp_files;
     let bytes = lost.bytes + acc.overflow.temp_bytes;
-    (files > 0).then_some(UnattributedTemp { files, bytes })
+    if files == 0 {
+        return None;
+    }
+    let mut by = who_rows(&acc.totals.temp.unattributed_by, &acc.who);
+    // Spills folded into the overflow bucket have no who: they are the rest of the total.
+    let listed = by
+        .iter()
+        .fold((0, 0), |(f, b), row| (f + row.files, b + row.bytes));
+    let (rest_files, rest_bytes) = (
+        files.saturating_sub(listed.0),
+        bytes.saturating_sub(listed.1),
+    );
+    if rest_files > 0 {
+        match by.last_mut().filter(|row| row.other) {
+            Some(other) => {
+                other.files += rest_files;
+                other.bytes += rest_bytes;
+            }
+            None => by.push(other_row(rest_files, rest_bytes)),
+        }
+    }
+    Some(UnattributedTemp { files, bytes, by })
+}
+
+/// The largest temp files, as the log recorded them.
+fn temp_events(acc: &Accumulators) -> Vec<TempEventRow> {
+    acc.totals
+        .temp
+        .events
+        .rows()
+        .iter()
+        .map(|event| {
+            let who = acc.who.get(&event.who);
+            TempEventRow {
+                timestamp: event.ts.to_string(),
+                bytes: event.bytes,
+                pid: event.pid,
+                database: who.and_then(|w| w.database.clone()),
+                user: who.and_then(|w| w.user.clone()),
+                application: who.and_then(|w| w.application.clone()),
+                host: who.and_then(|w| w.host.clone()),
+                // Only a statement the report still lists: one folded into the overflow bucket
+                // after the event was logged has no row to look up.
+                fingerprint: (acc.queries.contains_key(&event.fingerprint))
+                    .then(|| format!("{:016x}", event.fingerprint)),
+            }
+        })
+        .collect()
 }
 
 /// The statements with the most temp bytes, from every fingerprint kept.
@@ -1702,6 +1786,135 @@ mod tests {
     }
 
     #[test]
+    fn unattributed_spills_are_listed_by_who_with_the_rest_folded() {
+        let mut acc = Accumulators::new(100, 60);
+        for n in 0..7_u32 {
+            let app = format!("app{n}");
+            acc.add_record(&spill(i64::from(n), 100 + u64::from(n), None, "u", &app));
+        }
+        acc.recap(100);
+        let report = Report::build(
+            &output_from(acc),
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        let lost = report.temp_files.unattributed.unwrap();
+        assert_eq!((lost.files, lost.bytes), (7, 721));
+        assert_eq!(lost.by.len(), 6);
+        assert_eq!(lost.by[0].application.as_deref(), Some("app6"));
+        let other = lost.by.last().unwrap();
+        assert!(other.other);
+        assert_eq!((other.files, other.bytes), (2, 100 + 101));
+    }
+
+    #[test]
+    fn spills_folded_into_overflow_are_the_unlisted_rest_of_the_who_rows() {
+        let mut acc = Accumulators::new(1, 60);
+        acc.add_record(&stmt(1, 10.0, "SELECT 1"));
+        acc.add_record(&spill(2, 400, Some("SELECT 2 FROM other"), "u", "app_a"));
+        acc.add_record(&spill(3, 50, None, "u", "app_b"));
+        acc.recap(1);
+        let report = Report::build(
+            &output_from(acc),
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        let lost = report.temp_files.unattributed.unwrap();
+        assert_eq!((lost.files, lost.bytes), (2, 450));
+        let by: Vec<(bool, u64)> = lost.by.iter().map(|r| (r.other, r.bytes)).collect();
+        assert_eq!(by, [(false, 50), (true, 400)]);
+    }
+
+    #[test]
+    fn events_list_each_large_temp_file_and_name_a_statement_only_when_the_log_does() {
+        let mut out = output();
+        out.acc
+            .add_record(&spill(30, 900, Some("SELECT * FROM actor"), "web", "app_a"));
+        out.acc.add_record(&spill(31, 400, None, "rollup", "app_b"));
+        out.acc.recap(100);
+        let report = Report::build(
+            &out,
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 10,
+            },
+        );
+        let events = &report.temp_files.events;
+        assert_eq!(events.len(), 3);
+        assert_eq!((events[0].bytes, events[0].user.as_deref()), (4096, None));
+        let named = events.iter().find(|e| e.bytes == 900).unwrap();
+        let actor = report
+            .statements
+            .iter()
+            .find(|s| s.text == "SELECT * FROM actor")
+            .unwrap();
+        assert_eq!(
+            named.fingerprint.as_deref(),
+            Some(actor.fingerprint.as_str())
+        );
+        assert_eq!(named.application.as_deref(), Some("app_a"));
+        let unnamed = events.iter().find(|e| e.bytes == 400).unwrap();
+        assert_eq!(unnamed.fingerprint, None);
+        assert!(unnamed.timestamp.starts_with("20"));
+        assert!(
+            serde_json::to_string(unnamed)
+                .unwrap()
+                .find("fingerprint")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn an_event_names_a_fingerprint_only_while_the_report_lists_that_statement() {
+        // Names differ by letters: the fingerprint folds digits in identifiers together.
+        let letter = |base: u8, n: u32| char::from(base + u8::try_from(n).unwrap());
+        let mut acc = Accumulators::new(1_000, 60);
+        for n in 0..25_u32 {
+            acc.add_record(&stmt(
+                i64::from(n),
+                5.0,
+                &format!("SELECT 1 FROM busy_{}", letter(b'a', n)),
+            ));
+        }
+        for n in 0..15_u32 {
+            let sql = format!("SELECT 1 FROM spill_{}", letter(b'a', n));
+            acc.add_record(&spill(
+                100 + i64::from(n),
+                1_000 + u64::from(n),
+                Some(&sql),
+                "u",
+                "app",
+            ));
+        }
+        acc.recap(20);
+        let report = Report::build(
+            &output_from(acc),
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 100,
+            },
+        );
+        let listed: std::collections::BTreeSet<&str> = report
+            .statements
+            .iter()
+            .map(|s| s.fingerprint.as_str())
+            .collect();
+        let events = &report.temp_files.events;
+        assert_eq!(events.len(), 15);
+        assert!(
+            events
+                .iter()
+                .all(|e| e.fingerprint.as_deref().is_none_or(|f| listed.contains(f)))
+        );
+        let without = events.iter().filter(|e| e.fingerprint.is_none()).count();
+        assert_eq!(without, 5, "the five spill statements folded by the limit");
+    }
+
+    #[test]
     fn a_log_without_spill_serializes_without_the_new_keys() {
         let mut acc = Accumulators::new(100, 60);
         acc.add_record(&stmt(1, 10.0, "SELECT 1"));
@@ -1737,6 +1950,22 @@ mod tests {
         )
         .unwrap();
         assert!(!dimensions.contains("temp_"), "{dimensions}");
+        assert!(
+            !text.contains("\"temp_files\":{\"files\":0,\"bytes\":0,\"max_bytes\":0,"),
+            "{text}"
+        );
+        let temp = serde_json::to_string(
+            &Report::build(
+                &output_from(Accumulators::new(100, 60)),
+                &ReportOptions {
+                    by: SortBy::Total,
+                    top: 10,
+                },
+            )
+            .temp_files,
+        )
+        .unwrap();
+        assert_eq!(temp, r#"{"files":0,"bytes":0,"max_bytes":0}"#);
     }
 
     #[test]

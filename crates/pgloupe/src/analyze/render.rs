@@ -6,8 +6,8 @@ use super::{
     histogram::HistogramBucket,
     report::{
         CancelledReport, CheckpointRow, DdlReport, DimensionRow, DisconnectsReport, ErrorRow,
-        KindRow, MessageRow, PoolerReport, Quantiles, Report, SlowestReport, StatementRow,
-        TableRow, TimelineRow,
+        KindRow, MessageRow, PoolerReport, Quantiles, Report, SlowestReport, SpillRow,
+        StatementRow, TableRow, TimelineRow,
     },
 };
 
@@ -378,6 +378,13 @@ fn temp_files(report: &Report) -> Vec<String> {
             files(rest.files),
             size(rest.bytes)
         ));
+        lines.push(
+            "  the log record names no statement for these, or their statement was folded into the overflow bucket by --max-fingerprints. A record has none, for example, with extended-protocol clients or when log_min_error_statement is above LOG. Who wrote them, where known:"
+                .to_owned(),
+        );
+        for who in &rest.by {
+            lines.push(format!("  {}", who_line(who)));
+        }
     }
     for row in &report.spilling {
         let note = if row.cursor_unresolved {
@@ -395,26 +402,27 @@ fn temp_files(report: &Report) -> Vec<String> {
             lines.push(format!("  first spill {first}, last spill {last}"));
         }
         for who in &row.spilled_by {
-            let name = if who.other {
-                "(other)".to_owned()
-            } else {
-                let part = |value: &Option<String>| value.as_deref().unwrap_or("(none)").to_owned();
-                format!(
-                    "{} @ {} ({}, {})",
-                    part(&who.user),
-                    part(&who.application),
-                    part(&who.database),
-                    part(&who.host)
-                )
-            };
-            lines.push(format!(
-                "  {name}: {}, {}",
-                files(who.files),
-                size(who.bytes)
-            ));
+            lines.push(format!("  {}", who_line(who)));
         }
     }
     lines
+}
+
+/// `user @ application (database, host): N files, size`.
+fn who_line(who: &SpillRow) -> String {
+    let name = if who.other {
+        "(other)".to_owned()
+    } else {
+        let part = |value: &Option<String>| value.as_deref().unwrap_or("(none)").to_owned();
+        format!(
+            "{} @ {} ({}, {})",
+            part(&who.user),
+            part(&who.application),
+            part(&who.database),
+            part(&who.host)
+        )
+    };
+    format!("{name}: {}, {}", files(who.files), size(who.bytes))
 }
 
 fn files(count: u64) -> String {

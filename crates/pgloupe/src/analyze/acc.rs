@@ -22,6 +22,7 @@ use super::{
     kind::QueryKind,
     sketch::Sketch,
     slowest::{self, Example, Examples, Execution, Slowest, Who, who_key},
+    temp_events::{TempEvent, TempEvents},
 };
 use crate::log::{BlockPair, LogRecord, Phase};
 
@@ -542,6 +543,12 @@ pub struct TempStats {
     /// Temp files whose record named no statement.
     #[serde(default)]
     pub unattributed: Spill,
+    /// The same, by [`who_key`] of the record that logged them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub unattributed_by: BTreeMap<u64, Spill>,
+    /// The largest temp files, one by one.
+    #[serde(default)]
+    pub events: TempEvents,
 }
 
 impl Merge for TempStats {
@@ -550,6 +557,10 @@ impl Merge for TempStats {
         self.bytes += other.bytes;
         self.max_bytes = self.max_bytes.max(other.max_bytes);
         self.unattributed.merge(other.unattributed);
+        for (key, spill) in other.unattributed_by {
+            self.unattributed_by.entry(key).or_default().merge(spill);
+        }
+        self.events.merge(other.events);
     }
 }
 
@@ -1598,35 +1609,47 @@ impl Accumulators {
     /// record names no statement.
     fn add_temp_file(&mut self, record: &LogRecord, bytes: u64) {
         let ts = record.ts;
-        let Some(sql) = record.statement.as_deref() else {
-            self.totals.temp.unattributed.files += 1;
-            self.totals.temp.unattributed.bytes += bytes;
-            return;
-        };
-        let resolved = record.correlation.as_ref();
-        let unresolved = resolved.is_none() && is_cursor_fetch(sql);
-        let sql = resolved.map_or(sql, |c| &c.sql);
         let who = who_key(
             record.database.as_deref(),
             record.user.as_deref(),
             record.application.as_deref(),
             record.host.as_deref(),
         );
-        let listed = self.with_query(sql, ts, record.query_id, |query| {
-            query.seen(ts);
-            query.cursor_unresolved |= unresolved;
-            // The overflow bucket keeps counts only.
-            if query.id == 0 {
-                query.temp_files += 1;
-                query.temp_bytes += bytes;
-            } else {
-                query.spilled(ts, who, bytes);
+        let fingerprint = match record.statement.as_deref() {
+            None => {
+                self.totals.temp.unattributed.files += 1;
+                self.totals.temp.unattributed.bytes += bytes;
+                let slot = self.totals.temp.unattributed_by.entry(who).or_default();
+                slot.files += 1;
+                slot.bytes += bytes;
+                0
             }
-            query.id != 0
+            Some(sql) => {
+                let resolved = record.correlation.as_ref();
+                let unresolved = resolved.is_none() && is_cursor_fetch(sql);
+                let sql = resolved.map_or(sql, |c| &c.sql);
+                self.with_query(sql, ts, record.query_id, |query| {
+                    query.seen(ts);
+                    query.cursor_unresolved |= unresolved;
+                    // The overflow bucket keeps counts only.
+                    if query.id == 0 {
+                        query.temp_files += 1;
+                        query.temp_bytes += bytes;
+                    } else {
+                        query.spilled(ts, who, bytes);
+                    }
+                    query.id
+                })
+            }
+        };
+        self.totals.temp.events.offer(TempEvent {
+            ts,
+            bytes,
+            pid: record.pid,
+            who,
+            fingerprint,
         });
-        if listed {
-            self.remember_who(who, record);
-        }
+        self.remember_who(who, record);
     }
 
     /// Counts a failed statement against its fingerprint and the error it caused.
@@ -1857,6 +1880,8 @@ impl Accumulators {
                 let examples = query.examples.rows().iter().map(|example| example.who);
                 examples.chain(query.spilled_by.keys().copied())
             })
+            .chain(self.totals.temp.unattributed_by.keys().copied())
+            .chain(self.totals.temp.events.rows().iter().map(|event| event.who))
             .collect();
         self.who.retain(|key, _| used.contains(key));
     }
@@ -2088,6 +2113,38 @@ mod tests {
     }
 
     #[test]
+    fn a_spill_without_a_statement_is_listed_by_who_and_as_an_event() {
+        let mut a = acc();
+        a.add_record(&spill(1, 700, None, "app_a"));
+        a.add_record(&spill(2, 300, None, "app_b"));
+        a.add_record(&spill(3, 100, None, "app_a"));
+        let by: Vec<(String, u64, u64)> = a
+            .totals
+            .temp
+            .unattributed_by
+            .iter()
+            .map(|(key, s)| (a.who[key].application.clone().unwrap(), s.files, s.bytes))
+            .collect();
+        assert!(by.contains(&("app_a".to_owned(), 2, 800)), "{by:?}");
+        assert!(by.contains(&("app_b".to_owned(), 1, 300)), "{by:?}");
+        let events = a.totals.temp.events.rows();
+        assert_eq!(events.len(), 3);
+        assert_eq!((events[0].bytes, events[0].fingerprint), (700, 0));
+    }
+
+    #[test]
+    fn an_event_carries_the_fingerprint_only_when_the_log_names_the_statement() {
+        let mut a = acc();
+        a.add_record(&spill(1, 500, Some("SELECT 1 FROM big"), "app_a"));
+        let id = a.queries.values().next().unwrap().id;
+        let events = a.totals.temp.events.rows();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].fingerprint, id);
+        assert_eq!(events[0].pid, None);
+        assert!(a.who.contains_key(&events[0].who));
+    }
+
+    #[test]
     fn a_spill_without_a_statement_is_unattributed() {
         let mut a = acc();
         a.add_record(&spill(1, 700, None, "app_a"));
@@ -2161,6 +2218,7 @@ mod tests {
             .queries
             .values()
             .flat_map(|q| q.spilled_by.keys().copied())
+            .chain(a.totals.temp.events.rows().iter().map(|e| e.who))
             .collect();
         assert!(a.who.keys().all(|key| {
             kept.contains(key)

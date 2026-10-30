@@ -82,7 +82,27 @@ pub fn build(output: &Output) -> Diagnostics {
         ));
     }
     timezone_warning(&output.files, &mut diagnostics.warnings);
+    application_name_warning(&output.acc, &mut diagnostics.warnings);
     diagnostics
+}
+
+/// Longest `application_name` Postgres keeps, in bytes (`NAMEDATALEN` - 1).
+const APPLICATION_NAME_LIMIT: usize = 63;
+
+fn application_name_warning(acc: &super::acc::Accumulators, warnings: &mut Vec<String>) {
+    let at_limit = acc
+        .dims
+        .applications
+        .keys()
+        .filter(|name| name.len() == APPLICATION_NAME_LIMIT)
+        .count();
+    if at_limit > 0 {
+        warnings.push(format!(
+            "{at_limit} application name{} {} exactly 63 bytes, the most Postgres keeps (it cuts longer names to that length), so these may have been cut and applications that share their first 63 bytes may appear as one",
+            if at_limit == 1 { "" } else { "s" },
+            if at_limit == 1 { "is" } else { "are" },
+        ));
+    }
 }
 
 /// The warnings that come from the files themselves (prefix, labels, timezones), not from what
@@ -374,6 +394,31 @@ mod tests {
             }
         );
         assert_eq!(d.unmatched_shapes.len(), 2);
+    }
+
+    fn with_applications(names: &[&str]) -> Diagnostics {
+        let mut out = output(&["statement: SELECT 1"], Vec::new());
+        for name in names {
+            let mut record =
+                LogRecord::new(Timestamp::UNIX_EPOCH, Severity::Log, "statement: SELECT 1");
+            record.application = Some((*name).to_owned());
+            out.acc.add_record(&record);
+        }
+        build(&out)
+    }
+
+    #[test]
+    fn an_application_name_of_63_bytes_may_have_been_cut() {
+        let long = "x".repeat(63);
+        let d = with_applications(&["web", &long]);
+        let warning = d.warnings.iter().find(|w| w.contains("63 bytes")).unwrap();
+        assert!(warning.contains("may"), "{warning}");
+        assert!(warning.contains("1 application name"), "{warning}");
+        let (short, over) = ("y".repeat(62), "z".repeat(64));
+        for names in [&["web"][..], &[short.as_str()][..], &[over.as_str()][..]] {
+            let d = with_applications(names);
+            assert!(!has(&d, "63 bytes"), "{names:?} {:?}", d.warnings);
+        }
     }
 
     #[test]

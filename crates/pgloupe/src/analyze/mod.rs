@@ -16,6 +16,7 @@ pub mod report;
 pub mod sketch;
 pub mod slice;
 pub mod slowest;
+pub mod temp_events;
 
 /// Combining two partial results into one.
 ///
