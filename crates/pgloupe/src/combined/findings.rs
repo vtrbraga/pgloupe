@@ -418,7 +418,7 @@ fn temp_disagree(ctx: &Context<'_>, found: &mut Vec<Finding>) {
             "temp_disagree",
             "info",
             format!(
-                "for {} the temp-file bytes in the log and pg_stat_statements' temp_blks_written (8 KiB blocks) differ by more than {TEMP_DISAGREE_FACTOR}×, or the statistics show none: they count different things (files the log attributes to a statement, blocks the statistics attribute to its runs), so compare them with that in mind",
+                "for {} the temp-file bytes in the log and pg_stat_statements' temp_blks_written (8 KiB blocks) differ by {TEMP_DISAGREE_FACTOR}× or more, or the statistics show none: they count different things (files the log attributes to a statement, blocks the statistics attribute to its runs), so compare them with that in mind",
                 statements_of(differ.len())
             ),
         );

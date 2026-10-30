@@ -1164,7 +1164,9 @@ fn the_text_report_says_who_spilled_each_statement() -> io::Result<()> {
         has("batch @ app_c (shop, 10.0.0.7): 1 file, 6.7 MiB"),
         "{text}"
     );
-    assert!(has("the log names no statement for these"), "{text}");
+    assert!(has("names no statement for these"), "{text}");
+    assert!(has("log_min_error_statement"), "{text}");
+    assert!(!text.contains("clears the statement"), "{text}");
     assert!(
         has("not listed under a statement: 1 file, 6.7 MiB"),
         "{text}"

@@ -861,7 +861,7 @@
     }
     if (t.unattributed && t.unattributed.by && t.unattributed.by.length) {
       out.push(h('h2', { text: 'Temp files no statement lists' }));
-      out.push(h('p', { 'class': 'muted', text: 'The log names no statement for these: Postgres clears the statement before it releases some temp files, as with extended-protocol clients. Only who wrote them is known.' }));
+      out.push(h('p', { 'class': 'muted', text: 'The log record names no statement for these, or their statement was folded into the overflow bucket by --max-fingerprints. A record has none, for example, with extended-protocol clients or when log_min_error_statement is above LOG. Only who wrote them is known, where the log says.' }));
       out.push(simpleTable([{ label: 'Who' }, { label: 'Files', num: true }, { label: 'Size', num: true }], t.unattributed.by.map(function (x) {
         return h('tr', null, [h('td', { text: x.other ? '(other)' : [x.database, x.user, x.application, x.host].filter(Boolean).join(' / ') || '\u2014' }), h('td', { 'class': 'num', text: L.fmtInt(x.files) }), h('td', { 'class': 'num', text: L.fmtBytes(x.bytes) })]);
       })));

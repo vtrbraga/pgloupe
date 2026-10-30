@@ -1025,7 +1025,10 @@ fn unattributed(acc: &Accumulators) -> Option<UnattributedTemp> {
     let listed = by
         .iter()
         .fold((0, 0), |(f, b), row| (f + row.files, b + row.bytes));
-    let (rest_files, rest_bytes) = (files - listed.0, bytes - listed.1);
+    let (rest_files, rest_bytes) = (
+        files.saturating_sub(listed.0),
+        bytes.saturating_sub(listed.1),
+    );
     if rest_files > 0 {
         match by.last_mut().filter(|row| row.other) {
             Some(other) => {
@@ -1055,7 +1058,9 @@ fn temp_events(acc: &Accumulators) -> Vec<TempEventRow> {
                 user: who.and_then(|w| w.user.clone()),
                 application: who.and_then(|w| w.application.clone()),
                 host: who.and_then(|w| w.host.clone()),
-                fingerprint: (event.fingerprint != 0)
+                // Only a statement the report still lists: one folded into the overflow bucket
+                // after the event was logged has no row to look up.
+                fingerprint: (acc.queries.contains_key(&event.fingerprint))
                     .then(|| format!("{:016x}", event.fingerprint)),
             }
         })
@@ -1861,6 +1866,52 @@ mod tests {
                 .find("fingerprint")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_event_names_a_fingerprint_only_while_the_report_lists_that_statement() {
+        // Names differ by letters: the fingerprint folds digits in identifiers together.
+        let letter = |base: u8, n: u32| char::from(base + u8::try_from(n).unwrap());
+        let mut acc = Accumulators::new(1_000, 60);
+        for n in 0..25_u32 {
+            acc.add_record(&stmt(
+                i64::from(n),
+                5.0,
+                &format!("SELECT 1 FROM busy_{}", letter(b'a', n)),
+            ));
+        }
+        for n in 0..15_u32 {
+            let sql = format!("SELECT 1 FROM spill_{}", letter(b'a', n));
+            acc.add_record(&spill(
+                100 + i64::from(n),
+                1_000 + u64::from(n),
+                Some(&sql),
+                "u",
+                "app",
+            ));
+        }
+        acc.recap(20);
+        let report = Report::build(
+            &output_from(acc),
+            &ReportOptions {
+                by: SortBy::Total,
+                top: 100,
+            },
+        );
+        let listed: std::collections::BTreeSet<&str> = report
+            .statements
+            .iter()
+            .map(|s| s.fingerprint.as_str())
+            .collect();
+        let events = &report.temp_files.events;
+        assert_eq!(events.len(), 15);
+        assert!(
+            events
+                .iter()
+                .all(|e| e.fingerprint.as_deref().is_none_or(|f| listed.contains(f)))
+        );
+        let without = events.iter().filter(|e| e.fingerprint.is_none()).count();
+        assert_eq!(without, 5, "the five spill statements folded by the limit");
     }
 
     #[test]

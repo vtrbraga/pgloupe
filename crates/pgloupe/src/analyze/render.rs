@@ -379,7 +379,7 @@ fn temp_files(report: &Report) -> Vec<String> {
             size(rest.bytes)
         ));
         lines.push(
-            "  the log names no statement for these (Postgres clears the statement before it releases some temp files, as with extended-protocol clients); who wrote them:"
+            "  the log record names no statement for these, or their statement was folded into the overflow bucket by --max-fingerprints. A record has none, for example, with extended-protocol clients or when log_min_error_statement is above LOG. Who wrote them, where known:"
                 .to_owned(),
         );
         for who in &rest.by {
