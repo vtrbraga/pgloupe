@@ -25,7 +25,7 @@ flate2 = "1"
 lz4_flex = "0.14"
 jiff = { version = "0.2", features = ["serde"] }
 minijinja = { version = "3", default-features = false, features = ["serde", "builtins"] }
-pg_query = "6"
+pg_query = "18"
 postgres = "0.19"
 rand = "0.10"
 rand_chacha = "0.10"
