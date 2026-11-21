@@ -38,7 +38,7 @@ cargo test
 ```
 
 CI runs the same, plus MSRV, `cargo deny`, `typos`, the generated command reference, the
-PostgreSQL 14-18 corpus matrix, the docs build and coverage.
+PostgreSQL 14-19 corpus matrix, the docs build and coverage.
 
 ## How the code is laid out
 

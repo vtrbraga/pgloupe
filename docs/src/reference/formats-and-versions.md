@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| PostgreSQL | 14 to 18, each tested against a real server |
+| PostgreSQL | 14 to 19, each tested against a real server |
 | Log formats | stderr (any `log_line_prefix`, inferred), csvlog, jsonlog |
 | Compression | gzip, zstd, xz, lz4, bzip2, detected from the file contents |
 | Statistics | CSV exports of `pg_stat_statements`, `pg_stat_statements_info`, `pg_stat_database` and `pg_settings`, which `snap` writes beside each other |

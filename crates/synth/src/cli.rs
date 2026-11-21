@@ -137,6 +137,9 @@ pub enum PgMajor {
     /// Postgres 18.
     #[value(name = "18")]
     V18,
+    /// Postgres 19.
+    #[value(name = "19")]
+    V19,
 }
 
 impl PgMajor {
@@ -149,6 +152,7 @@ impl PgMajor {
             Self::V16 => 16,
             Self::V17 => 17,
             Self::V18 => 18,
+            Self::V19 => 19,
         }
     }
 }
