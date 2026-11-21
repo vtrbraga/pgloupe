@@ -5,6 +5,19 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- PostgreSQL 19 is supported. Its checkpoint lines put the reason first (`checkpoint complete: fast force wait: wrote ...`), which the decoder did not read, so a PostgreSQL 19 log showed checkpoint starts but no completions. The reason `immediate` is called `fast` there; the checkpoint table lists whichever the log uses.
+- `logs fetch --provider aws-rds --whole-files` downloads each finished hourly file in one signed request instead of one `aws` call per 760 KB, and keeps the portion download for the file still being written. It is off by default while it is tested on real instances. It needs `--region` (or `AWS_REGION`), credentials the `aws` CLI can export, and the `rds:DownloadCompleteDBLogFile` permission.
+
+### Changed
+
+- The minimum supported Rust version is 1.89 (it was 1.88). It only matters when building from source.
+
+### Fixed
+
+- The SQLite that pgloupe bundles is updated for RUSTSEC-2026-0459: opening a crafted database together with its `-wal` file could return stale memory. It only applied to a `--store` file written by someone else; a store you made yourself was not affected.
+
 ## [0.1.3] - 2026-10-30
 
 ### Added
