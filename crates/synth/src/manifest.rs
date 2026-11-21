@@ -28,7 +28,7 @@ pub enum EventKind {
     Deadlock,
     /// `temporary file: …`.
     TempFile,
-    /// `checkpoint starting: immediate force wait`; not attributed to an application.
+    /// `checkpoint starting: immediate force wait` (`fast` from PG19); not attributed to an application.
     Checkpoint,
     /// `connection authorized: …`; application read from the message.
     ConnectionAuthorized,

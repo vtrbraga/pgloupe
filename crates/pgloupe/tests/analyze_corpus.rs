@@ -88,7 +88,8 @@ fn counts(file: &str, format: Format) -> io::Result<(Counts, u64)> {
             record.application.clone().unwrap_or_default()
         };
         if let Event::CheckpointStart { reason, .. } = &event
-            && reason == "immediate force wait"
+            // PG19 renamed `immediate` to `fast`.
+            && matches!(reason.as_str(), "immediate force wait" | "fast force wait")
             && record.ts > loaded
         {
             forced += 1;
