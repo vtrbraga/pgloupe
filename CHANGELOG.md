@@ -5,6 +5,8 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-21
+
 ### Added
 
 - PostgreSQL 19 is supported. Its checkpoint lines put the reason first (`checkpoint complete: fast force wait: wrote ...`), which the decoder did not read, so a PostgreSQL 19 log showed checkpoint starts but no completions. The reason `immediate` is called `fast` there; the checkpoint table lists whichever the log uses.
