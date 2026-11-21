@@ -136,7 +136,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pg: ["14", "15", "16", "17", "18"]
+        pg: ["14", "15", "16", "17", "18", "19"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install libclang (pg_query's bindgen)
@@ -164,5 +164,5 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Pull the images the tests start
-        run: for v in 14 15 16 17 18; do docker pull postgres:$v; done
+        run: for v in 14 15 16 17 18 19; do docker pull postgres:$v; done
       - run: cargo test -p pgloupe --test collect_snap --test collect_tls --test collect_fetch -- --ignored --test-threads=2

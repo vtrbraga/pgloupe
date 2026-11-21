@@ -3,7 +3,7 @@
 [![CI](https://github.com/vtrbraga/pgloupe/actions/workflows/ci.yml/badge.svg)](https://github.com/vtrbraga/pgloupe/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/vtrbraga/pgloupe/graph/badge.svg)](https://codecov.io/gh/vtrbraga/pgloupe)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14%20%7C%2015%20%7C%2016%20%7C%2017%20%7C%2018-336791?logo=postgresql&logoColor=white)](#what-it-reads)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14%20%7C%2015%20%7C%2016%20%7C%2017%20%7C%2018%20%7C%2019-336791?logo=postgresql&logoColor=white)](#what-it-reads)
 [![Rust](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](https://www.rust-lang.org)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS-lightgrey)](#install)
 
@@ -182,7 +182,7 @@ Run any command with `--help`, or read the
 
 ## What it reads
 
-- **PostgreSQL 14 to 18**, tested against real servers of each version.
+- **PostgreSQL 14 to 19**, tested against real servers of each version.
 - **Logs:** stderr (any `log_line_prefix`, inferred), csvlog and jsonlog, plain or compressed
   with gzip, zstd, xz, lz4 or bzip2. Multi-line entries, application names with spaces and
   Amazon RDS truncation markers are handled.
@@ -217,7 +217,7 @@ Details, including what is not read, are in
 cargo fmt --all && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-Tests that need Docker (real PostgreSQL 14 to 18) are ignored by default:
+Tests that need Docker (real PostgreSQL 14 to 19) are ignored by default:
 
 ```bash
 cargo run -p synth -- generate --pg 17     # a generated test server and its logs, in data/

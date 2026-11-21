@@ -14,4 +14,4 @@ Limits: autovacuum lines are not translated, error texts stay in their own langu
 
 ## Other clouds
 
-CloudWatch, Azure, Cloud SQL, Aiven and Heroku are available as `--provider` values. They are tested against recorded payloads, not the real services. Amazon RDS (`aws-rds`) is the first target, and logs read over SQL (`sql-logdir`) are tested against real Postgres servers 14 to 18 in containers.
+CloudWatch, Azure, Cloud SQL, Aiven and Heroku are available as `--provider` values. They are tested against recorded payloads, not the real services. Amazon RDS (`aws-rds`) is the first target, and logs read over SQL (`sql-logdir`) are tested against real Postgres servers 14 to 19 in containers.

@@ -258,7 +258,10 @@ fn checkpoint_event(message: &str) -> Option<Event> {
             });
         }
         if let Some(rest) = message.strip_prefix(&format!("{word} complete: ")) {
-            let after_wrote = rest.strip_prefix("wrote ")?;
+            // PG19 puts the reason first: `checkpoint complete: fast force wait: wrote …`.
+            let after_wrote = rest
+                .strip_prefix("wrote ")
+                .or_else(|| rest.split_once(": wrote ").map(|(_, tail)| tail))?;
             let buffers: u64 = after_wrote.split(' ').next()?.parse().ok()?;
             return Some(Event::CheckpointDone {
                 restart,
@@ -972,6 +975,24 @@ mod tests {
             }
         );
         assert_eq!(log("checkpoint complete: nothing useful"), Event::Other);
+    }
+
+    #[test]
+    fn pg19_checkpoint_complete_carries_the_reason_before_the_counts() {
+        assert_eq!(
+            log(
+                "checkpoint complete: fast force wait: wrote 4745 buffers (29.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 2 recycled; write=0.016 s, sync=0.001 s, total=0.017 s; sync files=800, longest=0.001 s, average=0.000 s; distance=36899 kB, estimate=40000 kB"
+            ),
+            Event::CheckpointDone {
+                restart: false,
+                buffers: 4745,
+                write_ms: 16.0,
+                sync_ms: 1.0,
+                total_ms: 17.0,
+                distance_kb: Some(36899),
+                estimate_kb: Some(40000),
+            }
+        );
     }
 
     #[test]

@@ -28,12 +28,13 @@ const APP: usize = 22;
 
 /// Args writing into a fresh temp dir, sharing the repo's download cache.
 ///
-/// `SYNTH_TEST_PG=16|18` selects another Postgres major (default 17).
+/// `SYNTH_TEST_PG=16|18|19` selects another Postgres major (default 17).
 fn args(only: &[&str]) -> GenerateArgs {
     GenerateArgs {
         pg: match std::env::var("SYNTH_TEST_PG").as_deref() {
             Ok("16") => PgMajor::V16,
             Ok("18") => PgMajor::V18,
+            Ok("19") => PgMajor::V19,
             _ => PgMajor::V17,
         },
         seed: 42,
@@ -99,7 +100,11 @@ fn matches(row: &StringRecord, expect: &Expect) -> bool {
             app_matches && &row[SEVERITY] == "ERROR" && &row[SQLSTATE] == "40P01"
         }
         EventKind::TempFile => app_matches && message.starts_with("temporary file: "),
-        EventKind::Checkpoint => message == "checkpoint starting: immediate force wait",
+        // PG19 renamed the `immediate` flag to `fast`.
+        EventKind::Checkpoint => {
+            message == "checkpoint starting: immediate force wait"
+                || message == "checkpoint starting: fast force wait"
+        }
         EventKind::ConnectionAuthorized => {
             message.starts_with("connection authorized: ")
                 && message.contains(&format!("application_name={}", expect.app))

@@ -34,7 +34,7 @@ use crate::{
     version,
     about,
     arg_required_else_help = true,
-    after_help = "Exit codes: 0 success; 1 the work failed (unreadable input, nothing decoded, a server or vendor error); 2 the command line is wrong.\nPostgres 14 to 18 are supported; logs may be stderr, csvlog or jsonlog, plain or gzip, zstd, xz, lz4 or bzip2."
+    after_help = "Exit codes: 0 success; 1 the work failed (unreadable input, nothing decoded, a server or vendor error); 2 the command line is wrong.\nPostgres 14 to 19 are supported; logs may be stderr, csvlog or jsonlog, plain or gzip, zstd, xz, lz4 or bzip2."
 )]
 pub struct Cli {
     #[command(subcommand)]
