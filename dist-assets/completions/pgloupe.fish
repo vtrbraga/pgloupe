@@ -174,6 +174,7 @@ complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_su
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l sslrootcert -d 'CA certificate (PEM) to trust' -r -F
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l since -d 'Start: `30m`, `24h`, `7d`, `2w` back from now, or an RFC 3339 time or `YYYY-MM-DD` (UTC)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l out -d 'Directory the files go to (created if missing); a rerun continues where this stopped' -r -F
+complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l whole-files -d 'Download each finished hourly file in one signed request (`aws-rds`; experimental)'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -l quiet -d 'Do not print a line for each finished file'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from fetch" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand logs; and __fish_seen_subcommand_from help" -f -a "dump" -d 'Decode a log (csvlog, jsonlog or stderr; compression is detected) and print each record as JSON'
@@ -275,6 +276,7 @@ complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l since -d 'How
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l out -d 'Directory for everything: `snapshots/`, `logs/` and the fetch state' -r -F
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l report -d 'Also write the report here (HTML) from the logs and the two newest snapshots' -r -F
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l prefix -d 'The server\'s `log_line_prefix`, for stderr logs whose prefix cannot be inferred' -r
+complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -l whole-files -d 'Download each finished hourly file in one signed request (`aws-rds`; experimental)'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand export" -s h -l help -d 'Print help (see more with \'--help\')'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l conn -d 'Connection string: `postgres://user@host:5432/db` or `key=value` pairs. The password comes from the string, `PGPASSWORD` (or `--password-env`), or `~/.pgpass`; prefer those to putting it on the command line' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l password-env -d 'Environment variable that holds the password (default `PGPASSWORD`)' -r
@@ -302,6 +304,7 @@ complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l state-dir -d '
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l keep-snapshots -d 'Snapshots to keep (288 is 24 hours at 5 minutes)' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l prefix -d 'The server\'s `log_line_prefix`, if the logs are stderr and it cannot be inferred' -r
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l out -d 'Also write the HTML here after every update' -r -F
+complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l whole-files -d 'Download each finished hourly file in one signed request (`aws-rds`; experimental)'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l allow-remote -d 'Allow `--listen` on an address other machines can reach. The page holds statement text'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -l once -d 'Run one cycle and exit instead of looping and serving'
 complete -c pgloupe -n "__fish_pgloupe_using_subcommand watch" -s h -l help -d 'Print help (see more with \'--help\')'

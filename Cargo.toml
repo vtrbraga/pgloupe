@@ -23,6 +23,7 @@ clap_mangen = "0.3.3"
 csv = "1"
 flate2 = "1"
 lz4_flex = "0.14"
+hmac = "0.13"
 jiff = { version = "1", features = ["serde"] }
 minijinja = { version = "3", default-features = false, features = ["serde", "builtins"] }
 pg_query = "18"

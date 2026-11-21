@@ -184,6 +184,7 @@ Register-ArgumentCompleter -Native -CommandName 'pgloupe' -ScriptBlock {
             [CompletionResult]::new('--sslrootcert', '--sslrootcert', [CompletionResultType]::ParameterName, 'CA certificate (PEM) to trust')
             [CompletionResult]::new('--since', '--since', [CompletionResultType]::ParameterName, 'Start: `30m`, `24h`, `7d`, `2w` back from now, or an RFC 3339 time or `YYYY-MM-DD` (UTC)')
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Directory the files go to (created if missing); a rerun continues where this stopped')
+            [CompletionResult]::new('--whole-files', '--whole-files', [CompletionResultType]::ParameterName, 'Download each finished hourly file in one signed request (`aws-rds`; experimental)')
             [CompletionResult]::new('--quiet', '--quiet', [CompletionResultType]::ParameterName, 'Do not print a line for each finished file')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
@@ -305,6 +306,7 @@ Register-ArgumentCompleter -Native -CommandName 'pgloupe' -ScriptBlock {
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Directory for everything: `snapshots/`, `logs/` and the fetch state')
             [CompletionResult]::new('--report', '--report', [CompletionResultType]::ParameterName, 'Also write the report here (HTML) from the logs and the two newest snapshots')
             [CompletionResult]::new('--prefix', '--prefix', [CompletionResultType]::ParameterName, 'The server''s `log_line_prefix`, for stderr logs whose prefix cannot be inferred')
+            [CompletionResult]::new('--whole-files', '--whole-files', [CompletionResultType]::ParameterName, 'Download each finished hourly file in one signed request (`aws-rds`; experimental)')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')
             break
@@ -330,6 +332,7 @@ Register-ArgumentCompleter -Native -CommandName 'pgloupe' -ScriptBlock {
             [CompletionResult]::new('--keep-snapshots', '--keep-snapshots', [CompletionResultType]::ParameterName, 'Snapshots to keep (288 is 24 hours at 5 minutes)')
             [CompletionResult]::new('--prefix', '--prefix', [CompletionResultType]::ParameterName, 'The server''s `log_line_prefix`, if the logs are stderr and it cannot be inferred')
             [CompletionResult]::new('--out', '--out', [CompletionResultType]::ParameterName, 'Also write the HTML here after every update')
+            [CompletionResult]::new('--whole-files', '--whole-files', [CompletionResultType]::ParameterName, 'Download each finished hourly file in one signed request (`aws-rds`; experimental)')
             [CompletionResult]::new('--allow-remote', '--allow-remote', [CompletionResultType]::ParameterName, 'Allow `--listen` on an address other machines can reach. The page holds statement text')
             [CompletionResult]::new('--once', '--once', [CompletionResultType]::ParameterName, 'Run one cycle and exit instead of looping and serving')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help (see more with ''--help'')')

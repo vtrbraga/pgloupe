@@ -375,3 +375,182 @@ fn the_hour_that_ended_before_since_is_not_downloaded() {
         fake.calls()
     );
 }
+
+mod whole_files {
+    use std::{
+        sync::{Arc, Mutex},
+        thread,
+    };
+
+    use super::*;
+
+    type Seen = Arc<Mutex<Vec<(String, Vec<(String, String)>)>>>;
+
+    /// A local stand-in for the RDS endpoint: replies in order, then `500`.
+    struct Endpoint {
+        base: String,
+        seen: Seen,
+    }
+
+    fn endpoint(replies: Vec<(u16, Vec<u8>)>) -> Endpoint {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr().to_ip().unwrap());
+        let seen: Seen = Arc::default();
+        let log = Arc::clone(&seen);
+        thread::spawn(move || {
+            let mut replies = replies.into_iter();
+            for request in server.incoming_requests() {
+                let headers = request
+                    .headers()
+                    .iter()
+                    .map(|h| (h.field.to_string().to_lowercase(), h.value.to_string()))
+                    .collect();
+                log.lock()
+                    .unwrap()
+                    .push((request.url().to_owned(), headers));
+                let (code, body) = replies.next().unwrap_or((500, Vec::new()));
+                drop(request.respond(tiny_http::Response::from_data(body).with_status_code(code)));
+            }
+        });
+        Endpoint { base, seen }
+    }
+
+    fn credentials() -> Reply {
+        Reply::Out(
+            r#"{"Version":1,"AccessKeyId":"AKIDTEST","SecretAccessKey":"secret","SessionToken":"tok"}"#
+                .to_owned(),
+        )
+    }
+
+    #[test]
+    fn a_finished_hour_comes_in_one_signed_request_and_non_utf8_bytes_survive() {
+        let name = "error/postgresql.log.2026-10-14-10";
+        let fake = FakeCli::new("aws-whole")
+            .on(
+                &["describe-db-log-files"],
+                vec![Reply::Out(list(&[(name, 1_000, 14)]))],
+            )
+            .on(&["configure export-credentials"], vec![credentials()]);
+        let server = endpoint(vec![(200, b"line one\n\xffbad\n".to_vec())]);
+        let provider = provider(&fake)
+            .with_whole_files(true)
+            .with_endpoint(server.base.clone());
+        let mut sink = MemorySink::default();
+        let mut state = ProviderState::new();
+        provider.fetch(&request(), &mut sink, &mut state).unwrap();
+        assert_eq!(
+            sink.files["error_postgresql.log.2026-10-14-10"],
+            b"line one\n\xffbad\n"
+        );
+        assert_eq!(state[&format!("marker:{name}")], "whole");
+        assert!(
+            fake.calls()
+                .iter()
+                .all(|c| !c.contains("download-db-log-file-portion")),
+            "no portion was asked for"
+        );
+        let seen = server.seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        let (path, headers) = &seen[0];
+        assert_eq!(
+            path,
+            "/v13/downloadCompleteLogFile/prod-db/error/postgresql.log.2026-10-14-10"
+        );
+        let header = |name: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
+        };
+        let auth = header("authorization").unwrap();
+        assert!(
+            auth.starts_with("AWS4-HMAC-SHA256 Credential=AKIDTEST/"),
+            "{auth}"
+        );
+        assert!(auth.contains("/eu-west-1/rds/aws4_request"), "{auth}");
+        assert!(auth.contains("x-amz-security-token"), "{auth}");
+        assert_eq!(header("x-amz-security-token"), Some("tok"));
+        drop(seen);
+        let again = provider.fetch(&request(), &mut sink, &mut state).unwrap();
+        assert_eq!(again.bytes, 0, "an unchanged file is not fetched again");
+        assert_eq!(server.seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_whole_file_that_grew_is_fetched_again_from_the_start() {
+        let name = "log/postgresql.log.2026-10-14-10";
+        let fake = FakeCli::new("aws-whole-grew")
+            .on(
+                &["describe-db-log-files"],
+                vec![
+                    Reply::Out(list(&[(name, 1_000, 5)])),
+                    Reply::Out(list(&[(name, 1_500, 9)])),
+                ],
+            )
+            .on(&["configure export-credentials"], vec![credentials()]);
+        let server = endpoint(vec![(200, b"12345".to_vec()), (200, b"123456789".to_vec())]);
+        let provider = provider(&fake)
+            .with_whole_files(true)
+            .with_endpoint(server.base.clone());
+        let mut sink = MemorySink::default();
+        let mut state = ProviderState::new();
+        provider.fetch(&request(), &mut sink, &mut state).unwrap();
+        let summary = provider.fetch(&request(), &mut sink, &mut state).unwrap();
+        assert_eq!(sink.files["log_postgresql.log.2026-10-14-10"], b"123456789");
+        assert_eq!(summary.restarted, ["log_postgresql.log.2026-10-14-10"]);
+    }
+
+    #[test]
+    fn a_file_still_being_written_keeps_using_portions() {
+        let fake = FakeCli::new("aws-whole-open")
+            .on(
+                &["describe-db-log-files"],
+                vec![Reply::Out(list(&[("error/postgresql.log", 1_000, 5)]))],
+            )
+            .on(
+                &["--marker 0 --no-paginate"],
+                vec![Reply::Out(portion("12345", "1:5", false))],
+            );
+        let server = endpoint(Vec::new());
+        let provider = provider(&fake)
+            .with_whole_files(true)
+            .with_endpoint(server.base.clone());
+        let mut sink = MemorySink::default();
+        provider
+            .fetch(&request(), &mut sink, &mut ProviderState::new())
+            .unwrap();
+        assert_eq!(sink.files["error_postgresql.log"], b"12345");
+        assert!(server.seen.lock().unwrap().is_empty());
+        assert!(
+            fake.calls()
+                .iter()
+                .all(|c| !c.contains("export-credentials"))
+        );
+    }
+
+    #[test]
+    fn a_refused_request_names_the_permission_to_grant() {
+        let fake = FakeCli::new("aws-whole-403")
+            .on(
+                &["describe-db-log-files"],
+                vec![Reply::Out(list(&[(
+                    "log/postgresql.log.2026-10-14-10",
+                    1_000,
+                    5,
+                )]))],
+            )
+            .on(&["configure export-credentials"], vec![credentials()]);
+        let server = endpoint(vec![(403, Vec::new())]);
+        let error = provider(&fake)
+            .with_whole_files(true)
+            .with_endpoint(server.base.clone())
+            .fetch(
+                &request(),
+                &mut MemorySink::default(),
+                &mut ProviderState::new(),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("rds:DownloadCompleteDBLogFile"), "{error}");
+    }
+}

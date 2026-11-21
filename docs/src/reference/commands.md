@@ -514,6 +514,9 @@ Options:
           
           [default: 4]
 
+      --whole-files
+          Download each finished hourly file in one signed request (`aws-rds`; experimental)
+
       --conn <CONN>
           Connection for `--provider sql`
           
@@ -859,6 +862,9 @@ Options:
           
           [default: 4]
 
+      --whole-files
+          Download each finished hourly file in one signed request (`aws-rds`; experimental)
+
       --since <SINCE>
           How far back to fetch logs (see `logs fetch --since`)
           
@@ -936,6 +942,9 @@ Options:
           Files downloaded at the same time (`aws-rds`; 1 to 16)
           
           [default: 4]
+
+      --whole-files
+          Download each finished hourly file in one signed request (`aws-rds`; experimental)
 
       --interval <INTERVAL>
           Time between updates (`30s`, `5m`, `1h`)
