@@ -249,7 +249,7 @@ impl Clock {
             return true;
         }
         let zone = self.zone.clone().unwrap_or(jiff::tz::TimeZone::UTC);
-        let local = ts.to_zoned(zone);
+        let local = ts.to_zoned_datetime(zone);
         if let Some(days) = self.weekdays {
             let day = usize::from(local.weekday().to_monday_zero_offset().unsigned_abs());
             if !days[day] {

@@ -73,7 +73,7 @@ impl Cursor {
 /// `<prefix>-YYYYMMDD-HH.log`: the hour (UTC) the entry belongs to.
 #[must_use]
 pub fn hourly_name(prefix: &str, ts: Timestamp) -> String {
-    let at = ts.to_zoned(TimeZone::UTC);
+    let at = ts.to_zoned_datetime(TimeZone::UTC);
     format!(
         "{}-{:04}{:02}{:02}-{:02}.log",
         super::aws::safe_name(prefix),
