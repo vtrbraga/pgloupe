@@ -44,7 +44,7 @@ pub fn parse_time(text: &str) -> Result<Timestamp, String> {
         return Err(bad());
     }
     let date: Date = text.parse().map_err(|_err| bad())?;
-    date.to_zoned(TimeZone::UTC)
+    date.to_zoned_datetime(TimeZone::UTC)
         .map(|zoned| zoned.timestamp())
         .map_err(|_err| bad())
 }
