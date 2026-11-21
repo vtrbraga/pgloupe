@@ -185,7 +185,7 @@ _pgloupe() {
             return 0
             ;;
         pgloupe__subcmd__export)
-            opts="-h --conn --password-env --sslrootcert --provider --instance --region --profile --project --resource-group --subscription --log-group --bin --jobs --since --out --report --prefix --help"
+            opts="-h --conn --password-env --sslrootcert --provider --instance --region --profile --project --resource-group --subscription --log-group --bin --jobs --whole-files --since --out --report --prefix --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -651,7 +651,7 @@ _pgloupe() {
             return 0
             ;;
         pgloupe__subcmd__logs__subcmd__fetch)
-            opts="-h --provider --instance --region --profile --project --resource-group --subscription --log-group --bin --jobs --conn --password-env --sslrootcert --since --out --quiet --help"
+            opts="-h --provider --instance --region --profile --project --resource-group --subscription --log-group --bin --jobs --whole-files --conn --password-env --sslrootcert --since --out --quiet --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1305,7 +1305,7 @@ _pgloupe() {
             return 0
             ;;
         pgloupe__subcmd__watch)
-            opts="-h --conn --password-env --sslrootcert --provider --instance --region --profile --project --resource-group --subscription --log-group --bin --jobs --interval --window --listen --allow-remote --state-dir --keep-snapshots --prefix --out --once --help"
+            opts="-h --conn --password-env --sslrootcert --provider --instance --region --profile --project --resource-group --subscription --log-group --bin --jobs --whole-files --interval --window --listen --allow-remote --state-dir --keep-snapshots --prefix --out --once --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

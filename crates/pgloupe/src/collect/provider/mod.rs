@@ -8,6 +8,7 @@ pub mod cmd;
 pub mod entries;
 pub mod gcp;
 pub mod heroku;
+pub mod sigv4;
 pub mod sql;
 
 use std::collections::BTreeMap;

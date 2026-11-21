@@ -3,7 +3,7 @@
 //! Supported: this is the connector tested against a real account.
 
 use std::{
-    io::Write as _,
+    io::{Read as _, Write as _},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -19,10 +19,17 @@ use serde::Deserialize;
 use super::{
     FetchError, LogProvider, LogSink, ProviderState, Request, Summary,
     cmd::{Output, Tool},
+    sigv4::{self, Credentials},
 };
 
 /// Calls retried when AWS says to slow down.
 const RETRIES: u32 = 4;
+/// Bytes of a whole-file download handed to the sink at a time.
+const CHUNK: usize = 256 << 10;
+/// What a file fetched whole stores in place of an RDS marker: there is no position to resume from.
+const WHOLE_MARKER: &str = "whole";
+/// Seconds to wait for a connection and for each read of a whole-file download.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Portions fetched for one file before giving up (a guard against a marker that never ends).
 const MAX_PORTIONS: u32 = 1_000_000;
 
@@ -61,6 +68,16 @@ struct Portion {
     marker: Option<String>,
     #[serde(default)]
     additional_data_pending: bool,
+}
+
+/// The JSON `aws configure export-credentials --format process` prints.
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ExportedCredentials {
+    access_key_id: String,
+    secret_access_key: String,
+    #[serde(default)]
+    session_token: Option<String>,
 }
 
 /// What to try for the failures AWS reports most.
@@ -198,6 +215,43 @@ impl AwsCli {
         unreachable_attempts(command)
     }
 
+    /// The region of `--region`, or of `AWS_REGION` / `AWS_DEFAULT_REGION`.
+    #[must_use]
+    pub fn region(&self) -> Option<String> {
+        self.region.clone().or_else(|| {
+            ["AWS_REGION", "AWS_DEFAULT_REGION"]
+                .iter()
+                .find_map(|name| std::env::var(name).ok().filter(|v| !v.is_empty()))
+        })
+    }
+
+    /// The credentials the CLI would sign with, for a request made without it.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the fix when the CLI is not signed in, or when it prints something else.
+    pub fn credentials(&self) -> Result<Credentials, FetchError> {
+        let mut args = ["configure", "export-credentials", "--format", "process"]
+            .map(str::to_owned)
+            .to_vec();
+        if let Some(profile) = &self.profile {
+            args.push("--profile".to_owned());
+            args.push(profile.clone());
+        }
+        let out = self.call(&args, "configure export-credentials")?;
+        let exported: ExportedCredentials =
+            serde_json::from_slice(&out).map_err(|e| FetchError::Output {
+                provider: "aws-rds",
+                what: "configure export-credentials",
+                detail: e.to_string(),
+            })?;
+        Ok(Credentials {
+            access_key: exported.access_key_id,
+            secret_key: exported.secret_access_key,
+            session_token: exported.session_token,
+        })
+    }
+
     /// The CLI is installed and its credentials work.
     ///
     /// # Errors
@@ -219,6 +273,8 @@ pub struct AwsRds {
     instance: String,
     jobs: usize,
     progress: bool,
+    whole_files: bool,
+    endpoint: Option<String>,
 }
 
 /// One file to download, after the checks that need the sink and the saved state.
@@ -247,7 +303,7 @@ impl Halt<'_> {
 enum Event {
     Data {
         job: usize,
-        text: String,
+        text: Vec<u8>,
         marker: String,
     },
     Done {
@@ -274,7 +330,24 @@ impl AwsRds {
             instance,
             jobs: DEFAULT_JOBS,
             progress: false,
+            whole_files: false,
+            endpoint: None,
         }
+    }
+
+    /// Downloads each file whose hour has ended in one signed request, not portion by portion.
+    #[must_use]
+    pub fn with_whole_files(mut self, whole_files: bool) -> Self {
+        self.whole_files = whole_files;
+        self
+    }
+
+    /// Sends whole-file requests to `endpoint` (scheme and authority) instead of the regional
+    /// RDS endpoint.
+    #[must_use]
+    pub fn with_endpoint(mut self, endpoint: String) -> Self {
+        self.endpoint = Some(endpoint);
+        self
     }
 
     /// Downloads up to `jobs` files at the same time (at least 1, at most [`MAX_JOBS`]).
@@ -416,7 +489,14 @@ impl AwsRds {
             if !shrunk && last_size == Some(size) && state.contains_key(&key) {
                 continue;
             }
-            let marker = state.get(&key).cloned().unwrap_or_else(|| "0".to_owned());
+            let mut marker = state.get(&key).cloned().unwrap_or_else(|| "0".to_owned());
+            if marker == WHOLE_MARKER {
+                // A file fetched whole has no position to continue from, so growth means again.
+                sink.reset(&local)?;
+                state.remove(&key);
+                summary.restarted.push(local.clone());
+                "0".clone_into(&mut marker);
+            }
             jobs.push(Job {
                 name: file.name,
                 local,
@@ -484,7 +564,7 @@ impl AwsRds {
                         }
                         let spec = &jobs[job];
                         if !text.is_empty() {
-                            if let Err(error) = sink.append(&spec.local, text.as_bytes()) {
+                            if let Err(error) = sink.append(&spec.local, &text) {
                                 stop.store(true, Ordering::Relaxed);
                                 sink_failed = true;
                                 keep_first(&mut failure, job, error);
@@ -539,13 +619,16 @@ impl AwsRds {
         tx: &SyncSender<Event>,
         halt: &Halt<'_>,
     ) -> Result<bool, FetchError> {
+        if self.whole_files && job.marker == "0" && ends_before(&job.name, Timestamp::now()) {
+            return self.download_whole(index, job, tx, halt);
+        }
         let mut marker = job.marker.clone();
         for _ in 0..MAX_PORTIONS {
             if halt.stops(index) {
                 return Ok(false);
             }
             let portion = self.portion(&job.name, &marker)?;
-            let text = portion.log_file_data.unwrap_or_default();
+            let text = portion.log_file_data.unwrap_or_default().into_bytes();
             let next = portion.marker.unwrap_or_else(|| marker.clone());
             if portion.additional_data_pending && next == marker {
                 // More data is promised but the marker stands still: stop before repeating text.
@@ -569,6 +652,102 @@ impl AwsRds {
             }
         }
         Ok(true)
+    }
+
+    /// Downloads one finished file with a single signed `DownloadCompleteDBLogFile` request and
+    /// hands it on in chunks. `Ok(false)` means it stopped early because another file failed.
+    fn download_whole(
+        &self,
+        index: usize,
+        job: &Job,
+        tx: &SyncSender<Event>,
+        halt: &Halt<'_>,
+    ) -> Result<bool, FetchError> {
+        let fail = |detail: String| FetchError::Output {
+            provider: "aws-rds",
+            what: "DownloadCompleteDBLogFile",
+            detail,
+        };
+        let region = self.cli.region().ok_or_else(|| {
+            fail("signing needs a region: pass --region or set AWS_REGION".to_owned())
+        })?;
+        let (base, host) = if let Some(endpoint) = &self.endpoint {
+            let authority = endpoint
+                .split_once("://")
+                .map_or(endpoint.as_str(), |(_, authority)| authority);
+            (endpoint.clone(), authority.to_owned())
+        } else {
+            let host = format!("rds.{region}.amazonaws.com");
+            (format!("https://{host}"), host)
+        };
+        let file = job
+            .name
+            .split('/')
+            .map(sigv4::encode_segment)
+            .collect::<Vec<_>>()
+            .join("/");
+        let path = format!(
+            "/v13/downloadCompleteLogFile/{}/{file}",
+            sigv4::encode_segment(&self.instance)
+        );
+        let credentials = self.cli.credentials()?;
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(HTTP_TIMEOUT))
+            .timeout_per_read(Some(HTTP_TIMEOUT))
+            .build()
+            .into();
+        let mut delay = self.cli.retry_delay;
+        let mut attempt = 0;
+        let response = loop {
+            let signed =
+                sigv4::sign_get(&credentials, &region, "rds", &host, &path, Timestamp::now());
+            let mut request = agent.get(format!("{base}{path}"));
+            for (name, value) in signed.headers {
+                request = request.header(name, value);
+            }
+            match request.call() {
+                Ok(response) => break response,
+                Err(ureq::Error::StatusCode(429 | 503)) if attempt < RETRIES => {
+                    attempt += 1;
+                    thread::sleep(delay);
+                    delay *= 2;
+                }
+                Err(ureq::Error::StatusCode(code @ (401 | 403))) => {
+                    return Err(fail(format!(
+                        "HTTP {code} for {}: the credentials need rds:DownloadCompleteDBLogFile on this instance",
+                        job.name
+                    )));
+                }
+                Err(error) => return Err(fail(format!("{}: {error}", job.name))),
+            }
+        };
+        let mut body = response.into_body().into_reader();
+        let mut buffer = vec![0_u8; CHUNK];
+        loop {
+            if halt.stops(index) {
+                return Ok(false);
+            }
+            let read = body
+                .read(&mut buffer)
+                .map_err(|e| fail(format!("{}: {e}", job.name)))?;
+            if read == 0 {
+                break;
+            }
+            let event = Event::Data {
+                job: index,
+                text: buffer[..read].to_vec(),
+                marker: job.marker.clone(),
+            };
+            if tx.send(event).is_err() {
+                return Ok(false);
+            }
+        }
+        let done = Event::Data {
+            job: index,
+            text: Vec::new(),
+            marker: WHOLE_MARKER.to_owned(),
+        };
+        Ok(tx.send(done).is_ok())
     }
 }
 

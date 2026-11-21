@@ -260,6 +260,9 @@ pub struct TargetArgs {
     /// Files downloaded at the same time (`aws-rds`; 1 to 16).
     #[arg(long, default_value = "4", value_parser = clap::value_parser!(u8).range(1..=16))]
     jobs: u8,
+    /// Download each finished hourly file in one signed request (`aws-rds`; experimental).
+    #[arg(long)]
+    whole_files: bool,
 }
 
 /// `logs fetch`: download a time range of log files.
@@ -360,6 +363,7 @@ pub fn build_provider(
                 args.profile.clone(),
             )
             .with_jobs(usize::from(args.jobs))
+            .with_whole_files(args.whole_files)
             .with_progress(progress),
         ),
         ProviderKind::AwsCloudwatch => {
