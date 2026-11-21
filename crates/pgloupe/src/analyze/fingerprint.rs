@@ -102,7 +102,7 @@ fn is_cached(sql: &str) -> bool {
 /// The fingerprint straight from `pg_query`, the reference the cache must agree with.
 #[must_use]
 pub fn fingerprint_uncached(sql: &str) -> Fingerprint {
-    match pg_query::fingerprint(sql) {
+    match pg_query::fingerprint(sql, 0, pg_query::FingerprintOptions::RANGEVAR_PG17_COMPAT) {
         Ok(found) => Fingerprint {
             id: found.value,
             parsed: true,
@@ -303,7 +303,7 @@ pub fn statement_kind(sql: &str) -> QueryKind {
 #[must_use]
 pub fn statement_tag(sql: &str) -> Option<String> {
     use pg_query::NodeEnum as N;
-    let parsed = pg_query::parse(sql).ok()?;
+    let parsed = pg_query::parse(sql, 0).ok()?;
     let node = parsed
         .protobuf
         .stmts
@@ -356,7 +356,7 @@ pub fn statement_tag(sql: &str) -> Option<String> {
 
 fn parsed_kind(sql: &str) -> QueryKind {
     use pg_query::NodeEnum as N;
-    let Ok(parsed) = pg_query::parse(sql) else {
+    let Ok(parsed) = pg_query::parse(sql, 0) else {
         return QueryKind::Other;
     };
     let Some(node) = parsed
