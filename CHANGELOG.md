@@ -5,6 +5,10 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Amazon RDS truncation markers no longer make stderr log-prefix inference reject an otherwise recognizable log.
+
 ## [0.1.4] - 2026-11-21
 
 ### Added
