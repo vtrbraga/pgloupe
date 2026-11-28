@@ -54,7 +54,7 @@ fn held_entry(held: &mut VecDeque<Pending>, base: u64, seq: u64) -> Option<&mut 
 const DEFAULT_MAX_OPEN: usize = 10_000;
 
 /// The line Amazon RDS writes after an entry it cut short.
-const TRUNCATED: &str = "[Your log message was truncated]";
+pub(super) const TRUNCATED: &str = "[Your log message was truncated]";
 
 /// Which field of a held entry a tab-indented continuation line extends.
 #[derive(Debug, Clone, Copy)]

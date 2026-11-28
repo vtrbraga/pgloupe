@@ -5,6 +5,7 @@ use jiff::{Timestamp, tz::Offset};
 use super::{
     prefix::{Prefix, RDS_FULL_PREFIX, leading_timestamp_escape},
     record::{LogRecord, Severity},
+    stderr::TRUNCATED,
 };
 
 /// Lines examined when inferring.
@@ -49,7 +50,7 @@ const LABELS: [&str; 14] = [
 pub struct Inference {
     /// The accepted prefix, if one matched enough of the sample.
     pub prefix: Option<String>,
-    /// Sample lines examined (continuation and blank lines excluded).
+    /// Sample lines examined (continuations, blank lines and RDS truncation markers excluded).
     pub sampled: usize,
     /// The best candidate and how many sample lines it matched.
     pub best: Option<(String, usize)>,
@@ -67,7 +68,7 @@ pub fn infer_prefix(lines: &[String], fallback: Option<Offset>) -> Inference {
     let sample: Vec<&str> = lines
         .iter()
         .map(String::as_str)
-        .filter(|line| !line.is_empty() && !line.starts_with('\t'))
+        .filter(|line| !line.is_empty() && !line.starts_with('\t') && line.trim() != TRUNCATED)
         .take(SAMPLE_LINES)
         .collect();
     // Candidates composed from the observed timestamp shape come first: on a tie they are the
@@ -237,6 +238,21 @@ mod tests {
         let result = infer_prefix(&sample, None);
         assert_eq!(result.sampled, 2);
         assert!(result.prefix.is_some());
+    }
+
+    #[test]
+    fn rds_truncation_markers_are_not_sampled() {
+        let sample = lines(concat!(
+            " [Your log message was truncated]\n",
+            "2026-10-14 10:20:09 UTC:192.0.2.1(5432):demo@testdb:[42]:LOG:  duration: 9000.000 ms  plan:\n",
+            "\tQuery Text: SELECT 1\n",
+            " [Your log message was truncated] \n",
+            "2026-10-14 10:20:10 UTC::@:[44]:LOG:  checkpoint starting: time\n",
+        ));
+        let result = infer_prefix(&sample, None);
+        assert_eq!(result.prefix.as_deref(), Some("%t:%r:%u@%d:[%p]:"));
+        assert_eq!(result.sampled, 2);
+        assert_eq!(result.unmatched, [] as [String; 0]);
     }
 
     #[test]
