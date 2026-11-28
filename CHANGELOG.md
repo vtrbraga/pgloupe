@@ -5,6 +5,10 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- RDS log fetches warn when the server truncates downloaded portions, so incomplete logs are no longer silent.
+
 ## [0.1.4] - 2026-11-21
 
 ### Added
