@@ -29,6 +29,8 @@ It prints a local URL. The page keeps your view, search, selected row and scroll
 | `export` | `doctor`, `snap`, `logs fetch` and `report` in one command |
 | `watch` | repeats all of that and serves the result |
 
+RDS portion downloads warn on stderr when the server truncates a response. A successful fetch may still contain incomplete logs. To fetch finished hourly files again, pass `--whole-files` with a fresh output directory so saved portion markers do not resume the incomplete copy.
+
 ## Connection
 
 Pass `--conn` or set `PGLOUPE_DSN`. Passwords come from `PGPASSWORD` (or the variable named by `--password-env`) or `~/.pgpass`; keep them out of the command line. `PGSSLMODE` and `PGSSLROOTCERT` are honoured; `verify-ca` and `verify-full` check the server certificate, and `--sslrootcert` gives the CA to trust (for RDS, the regional bundle from AWS). A Unix socket skips TLS.

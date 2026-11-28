@@ -32,6 +32,8 @@ const WHOLE_MARKER: &str = "whole";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 /// Portions fetched for one file before giving up (a guard against a marker that never ends).
 const MAX_PORTIONS: u32 = 1_000_000;
+/// Standalone footer that RDS appends to a capped portion response.
+const TRUNCATION_FOOTER: &str = "[Your log message was truncated]";
 
 /// Files downloaded at the same time unless told otherwise.
 pub const DEFAULT_JOBS: usize = 4;
@@ -305,6 +307,7 @@ enum Event {
         job: usize,
         text: Vec<u8>,
         marker: String,
+        truncated: bool,
     },
     Done {
         job: usize,
@@ -523,6 +526,7 @@ impl AwsRds {
         let (tx, rx) = mpsc::sync_channel::<Event>(workers * 2);
         let mut wrote = vec![false; jobs.len()];
         let mut finished = 0;
+        let mut truncated_portions = 0_usize;
         let mut sink_failed = false;
         let mut failure: Option<(usize, FetchError)> = None;
         thread::scope(|scope| {
@@ -558,7 +562,12 @@ impl AwsRds {
             drop(tx);
             for event in rx {
                 match event {
-                    Event::Data { job, text, marker } => {
+                    Event::Data {
+                        job,
+                        text,
+                        marker,
+                        truncated,
+                    } => {
                         if sink_failed {
                             continue;
                         }
@@ -571,6 +580,7 @@ impl AwsRds {
                                 continue;
                             }
                             summary.bytes += text.len() as u64;
+                            truncated_portions += usize::from(truncated);
                             wrote[job] = true;
                         }
                         state.insert(format!("marker:{}", spec.name), marker);
@@ -602,6 +612,7 @@ impl AwsRds {
                 }
             }
         });
+        warn_if_truncated(truncated_portions);
         for (job, wrote) in jobs.iter().zip(wrote) {
             if wrote && !summary.files.contains(&job.local) {
                 summary.files.push(job.local.clone());
@@ -628,7 +639,9 @@ impl AwsRds {
                 return Ok(false);
             }
             let portion = self.portion(&job.name, &marker)?;
-            let text = portion.log_file_data.unwrap_or_default().into_bytes();
+            let text = portion.log_file_data.unwrap_or_default();
+            let truncated =
+                text.trim_end().lines().next_back().map(str::trim) == Some(TRUNCATION_FOOTER);
             let next = portion.marker.unwrap_or_else(|| marker.clone());
             if portion.additional_data_pending && next == marker {
                 // More data is promised but the marker stands still: stop before repeating text.
@@ -641,8 +654,9 @@ impl AwsRds {
             marker = next;
             let event = Event::Data {
                 job: index,
-                text,
+                text: text.into_bytes(),
                 marker: marker.clone(),
+                truncated,
             };
             if tx.send(event).is_err() {
                 return Ok(false);
@@ -737,6 +751,7 @@ impl AwsRds {
                 job: index,
                 text: buffer[..read].to_vec(),
                 marker: job.marker.clone(),
+                truncated: false,
             };
             if tx.send(event).is_err() {
                 return Ok(false);
@@ -746,8 +761,20 @@ impl AwsRds {
             job: index,
             text: Vec::new(),
             marker: WHOLE_MARKER.to_owned(),
+            truncated: false,
         };
         Ok(tx.send(done).is_ok())
+    }
+}
+
+fn warn_if_truncated(count: usize) {
+    if count > 0 {
+        let suffix = if count == 1 { "" } else { "s" };
+        say(&format!(
+            "warning: AWS RDS truncated {count} fetched portion{suffix}. \
+             The saved logs may be incomplete. Use --whole-files with a fresh output directory \
+             to fetch finished hourly files again."
+        ));
     }
 }
 

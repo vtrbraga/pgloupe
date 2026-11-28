@@ -144,6 +144,76 @@ fn fetched_rds_logs_are_analyzed_with_the_inferred_prefix_and_reruns_continue() 
 }
 
 #[test]
+fn warns_once_about_truncated_rds_portions_without_dropping_returned_bytes() {
+    let first = "first record\n [Your log message was truncated] \r\n";
+    let second = "second record\n [Your log message was truncated]\n";
+    let third = " [Your log message was truncated]\nordinary text after the marker\n";
+    let fake = FakeCli::new("fetch-aws-truncated")
+        .on(
+            &["sts get-caller-identity"],
+            vec![Reply::Out("{}".to_owned())],
+        )
+        .on(
+            &["--version"],
+            vec![Reply::Out("aws-cli/2.17\n".to_owned())],
+        )
+        .on(
+            &["describe-db-log-files"],
+            vec![Reply::Out(list(&[(
+                "error/postgresql.log.2026-10-14-10",
+                5_000,
+                8_192,
+            )]))],
+        )
+        .on(
+            &["--marker 0 --no-paginate"],
+            vec![Reply::Out(portion(first, "1:1", true))],
+        )
+        .on(
+            &["--marker 1:1 --no-paginate"],
+            vec![Reply::Out(portion(second, "1:2", true))],
+        )
+        .on(
+            &["--marker 1:2 --no-paginate"],
+            vec![Reply::Out(portion(third, "1:3", false))],
+        );
+    let program = fake.program();
+    let dir = scratch("aws-truncated");
+    let out = run(
+        &[
+            "logs",
+            "fetch",
+            "--provider",
+            "aws-rds",
+            "--instance",
+            "synthetic",
+            "--bin",
+            program.to_str().unwrap(),
+            "--since",
+            "2026-10-14",
+            "--out",
+            dir.to_str().unwrap(),
+        ],
+        &[],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert_eq!(
+        stderr
+            .matches("AWS RDS truncated 2 fetched portions")
+            .count(),
+        1,
+        "{stderr}"
+    );
+    assert!(stderr.contains("--whole-files"), "{stderr}");
+    let saved = dir.join("error_postgresql.log.2026-10-14-10");
+    assert_eq!(
+        fs::read_to_string(saved).unwrap(),
+        [first, second, third].concat()
+    );
+}
+
+#[test]
 fn a_missing_aws_cli_and_a_missing_instance_fail_with_the_fix() {
     let dir = scratch("missing");
     let out = run(
